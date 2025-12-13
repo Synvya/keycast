@@ -163,8 +163,20 @@ async fn test_user_teams_batch_query() {
     // Create stored keys for each team
     let key1_pubkey = Keys::generate().public_key().to_hex();
     let key2_pubkey = Keys::generate().public_key().to_hex();
-    create_stored_key(&pool, team1_id, &format!("Key1 {}", test_suffix), &key1_pubkey).await;
-    create_stored_key(&pool, team2_id, &format!("Key2 {}", test_suffix), &key2_pubkey).await;
+    create_stored_key(
+        &pool,
+        team1_id,
+        &format!("Key1 {}", test_suffix),
+        &key1_pubkey,
+    )
+    .await;
+    create_stored_key(
+        &pool,
+        team2_id,
+        &format!("Key2 {}", test_suffix),
+        &key2_pubkey,
+    )
+    .await;
 
     // Create policies with permissions
     let policy1_id = create_team_policy(&pool, team1_id, &format!("Policy1 {}", test_suffix)).await;
@@ -177,13 +189,9 @@ async fn test_user_teams_batch_query() {
     link_policy_permission(&pool, policy1_id, perm_id).await;
 
     // Now test User::teams()
-    let user = User::find_by_pubkey(
-        &pool,
-        1,
-        &PublicKey::from_hex(&user_pubkey).unwrap(),
-    )
-    .await
-    .expect("User should exist");
+    let user = User::find_by_pubkey(&pool, 1, &PublicKey::from_hex(&user_pubkey).unwrap())
+        .await
+        .expect("User should exist");
 
     let teams = user
         .teams(&pool, 1)
@@ -208,11 +216,7 @@ async fn test_user_teams_batch_query() {
     let team2 = team2.unwrap();
 
     // Verify team1 has 2 users
-    assert_eq!(
-        team1.team_users.len(),
-        2,
-        "Team1 should have 2 users"
-    );
+    assert_eq!(team1.team_users.len(), 2, "Team1 should have 2 users");
 
     // Verify team1 has stored key
     assert!(
@@ -262,7 +266,13 @@ async fn test_team_find_with_relations() {
 
     // Create stored key
     let key_pubkey = Keys::generate().public_key().to_hex();
-    create_stored_key(&pool, team_id, &format!("Test Key {}", test_suffix), &key_pubkey).await;
+    create_stored_key(
+        &pool,
+        team_id,
+        &format!("Test Key {}", test_suffix),
+        &key_pubkey,
+    )
+    .await;
 
     // Create policy with permission
     let policy_id =
@@ -377,9 +387,21 @@ async fn test_policies_batch_query() {
     assert!(p3.is_some(), "Policy 3 should be in results");
 
     // Verify permission counts
-    assert_eq!(p1.unwrap().permissions.len(), 1, "Policy 1 should have 1 permission");
-    assert_eq!(p2.unwrap().permissions.len(), 2, "Policy 2 should have 2 permissions");
-    assert_eq!(p3.unwrap().permissions.len(), 1, "Policy 3 should have 1 permission");
+    assert_eq!(
+        p1.unwrap().permissions.len(),
+        1,
+        "Policy 1 should have 1 permission"
+    );
+    assert_eq!(
+        p2.unwrap().permissions.len(),
+        2,
+        "Policy 2 should have 2 permissions"
+    );
+    assert_eq!(
+        p3.unwrap().permissions.len(),
+        1,
+        "Policy 3 should have 1 permission"
+    );
 }
 
 /// Test empty team list returns empty results
@@ -391,7 +413,10 @@ async fn test_policies_batch_empty() {
         .await
         .expect("Should handle empty team list");
 
-    assert!(policies.is_empty(), "Empty team list should return empty policies");
+    assert!(
+        policies.is_empty(),
+        "Empty team list should return empty policies"
+    );
 }
 
 /// Test user with no teams returns empty
@@ -404,18 +429,17 @@ async fn test_user_no_teams() {
     // Create user but don't add to any teams
     create_test_user(&pool, &user_pubkey).await;
 
-    let user = User::find_by_pubkey(
-        &pool,
-        1,
-        &PublicKey::from_hex(&user_pubkey).unwrap(),
-    )
-    .await
-    .expect("User should exist");
+    let user = User::find_by_pubkey(&pool, 1, &PublicKey::from_hex(&user_pubkey).unwrap())
+        .await
+        .expect("User should exist");
 
     let teams = user
         .teams(&pool, 1)
         .await
         .expect("Should handle user with no teams");
 
-    assert!(teams.is_empty(), "User with no team memberships should have empty teams");
+    assert!(
+        teams.is_empty(),
+        "User with no team memberships should have empty teams"
+    );
 }

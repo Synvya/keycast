@@ -18,8 +18,7 @@ pub use error::RepositoryError;
 pub use key_export::KeyExportRepository;
 pub use oauth_authorization::{CreateOAuthAuthorizationParams, OAuthAuthorizationRepository};
 pub use oauth_code::{
-    OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams,
-    StoreOAuthCodeWithRegistrationParams,
+    OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams,
 };
 pub use personal_keys::PersonalKeysRepository;
 pub use policy::PolicyRepository;

@@ -18,11 +18,7 @@ impl StoredKeyRepository {
     }
 
     /// Find a stored key by ID.
-    pub async fn find(
-        &self,
-        tenant_id: i64,
-        key_id: i32,
-    ) -> Result<StoredKey, RepositoryError> {
+    pub async fn find(&self, tenant_id: i64, key_id: i32) -> Result<StoredKey, RepositoryError> {
         sqlx::query_as::<_, StoredKey>(
             "SELECT id, team_id, name, pubkey, secret_key, created_at, updated_at
              FROM stored_keys WHERE tenant_id = $1 AND id = $2",
@@ -79,11 +75,7 @@ impl StoredKeyRepository {
 
     /// Delete a stored key and its associated authorizations.
     /// Uses a transaction to ensure atomicity.
-    pub async fn delete(
-        &self,
-        tenant_id: i64,
-        key_id: i32,
-    ) -> Result<(), RepositoryError> {
+    pub async fn delete(&self, tenant_id: i64, key_id: i32) -> Result<(), RepositoryError> {
         let mut tx = self.pool.begin().await?;
 
         // Delete user_authorizations for this key's authorizations
@@ -178,10 +170,19 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Key Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Key Test {}", suffix))
+            .await
+            .unwrap();
 
         let key = key_repo
-            .create(1, team.id, "Test Key", &format!("pubkey_{}", suffix), b"encrypted_secret")
+            .create(
+                1,
+                team.id,
+                "Test Key",
+                &format!("pubkey_{}", suffix),
+                b"encrypted_secret",
+            )
             .await;
 
         assert!(key.is_ok(), "Should create stored key");
@@ -197,9 +198,18 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Find Key Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Find Key Test {}", suffix))
+            .await
+            .unwrap();
         let created = key_repo
-            .create(1, team.id, "Find Key", &format!("findkey_{}", suffix), b"secret")
+            .create(
+                1,
+                team.id,
+                "Find Key",
+                &format!("findkey_{}", suffix),
+                b"secret",
+            )
             .await
             .unwrap();
 
@@ -224,7 +234,10 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Pubkey Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Pubkey Test {}", suffix))
+            .await
+            .unwrap();
         let pubkey = format!("bypubkey_{}", suffix);
         key_repo
             .create(1, team.id, "Pubkey Key", &pubkey, b"secret")
@@ -244,15 +257,30 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("List Keys Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("List Keys Test {}", suffix))
+            .await
+            .unwrap();
 
         // Create two keys
         key_repo
-            .create(1, team.id, "Key 1", &format!("listkey1_{}", suffix), b"secret1")
+            .create(
+                1,
+                team.id,
+                "Key 1",
+                &format!("listkey1_{}", suffix),
+                b"secret1",
+            )
             .await
             .unwrap();
         key_repo
-            .create(1, team.id, "Key 2", &format!("listkey2_{}", suffix), b"secret2")
+            .create(
+                1,
+                team.id,
+                "Key 2",
+                &format!("listkey2_{}", suffix),
+                b"secret2",
+            )
             .await
             .unwrap();
 
@@ -268,9 +296,18 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Delete Key Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Delete Key Test {}", suffix))
+            .await
+            .unwrap();
         let key = key_repo
-            .create(1, team.id, "Delete Key", &format!("delkey_{}", suffix), b"secret")
+            .create(
+                1,
+                team.id,
+                "Delete Key",
+                &format!("delkey_{}", suffix),
+                b"secret",
+            )
             .await
             .unwrap();
 
@@ -288,7 +325,10 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Del Pubkey Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Del Pubkey Test {}", suffix))
+            .await
+            .unwrap();
         let pubkey = format!("delpubkey_{}", suffix);
         key_repo
             .create(1, team.id, "Del Pubkey Key", &pubkey, b"secret")
@@ -309,14 +349,29 @@ mod tests {
         let key_repo = StoredKeyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Multi Key Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Multi Key Test {}", suffix))
+            .await
+            .unwrap();
 
         // Create multiple keys for the same team (different pubkeys)
         let key1 = key_repo
-            .create(1, team.id, "Key 1", &format!("multikey1_{}", suffix), b"secret1")
+            .create(
+                1,
+                team.id,
+                "Key 1",
+                &format!("multikey1_{}", suffix),
+                b"secret1",
+            )
             .await;
         let key2 = key_repo
-            .create(1, team.id, "Key 2", &format!("multikey2_{}", suffix), b"secret2")
+            .create(
+                1,
+                team.id,
+                "Key 2",
+                &format!("multikey2_{}", suffix),
+                b"secret2",
+            )
             .await;
 
         assert!(key1.is_ok(), "Should create first key");

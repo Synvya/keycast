@@ -59,13 +59,19 @@ impl KeyExportRepository {
     }
 
     /// Mark a code as used.
-    pub async fn mark_code_used(&self, user_pubkey: &str, code: &str) -> Result<(), RepositoryError> {
-        sqlx::query("UPDATE key_export_codes SET used_at = $1 WHERE user_pubkey = $2 AND code = $3")
-            .bind(Utc::now())
-            .bind(user_pubkey)
-            .bind(code)
-            .execute(&self.pool)
-            .await?;
+    pub async fn mark_code_used(
+        &self,
+        user_pubkey: &str,
+        code: &str,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query(
+            "UPDATE key_export_codes SET used_at = $1 WHERE user_pubkey = $2 AND code = $3",
+        )
+        .bind(Utc::now())
+        .bind(user_pubkey)
+        .bind(code)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -117,12 +123,14 @@ impl KeyExportRepository {
         user_pubkey: &str,
         token: &str,
     ) -> Result<(), RepositoryError> {
-        sqlx::query("UPDATE key_export_tokens SET used_at = $1 WHERE user_pubkey = $2 AND token = $3")
-            .bind(Utc::now())
-            .bind(user_pubkey)
-            .bind(token)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE key_export_tokens SET used_at = $1 WHERE user_pubkey = $2 AND token = $3",
+        )
+        .bind(Utc::now())
+        .bind(user_pubkey)
+        .bind(token)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

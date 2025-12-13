@@ -62,10 +62,7 @@ mod tests {
         let repo = SigningActivityRepository::new(pool);
 
         // Non-existent secret should return empty list
-        let activities = repo
-            .list_recent("non_existent_secret", 100)
-            .await
-            .unwrap();
+        let activities = repo.list_recent("non_existent_secret", 100).await.unwrap();
         assert!(activities.is_empty());
     }
 }

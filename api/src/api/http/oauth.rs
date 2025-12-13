@@ -405,12 +405,10 @@ async fn resolve_policy_from_scope(pool: &sqlx::PgPool, scope: &str) -> Result<i
         .find_by_slug(&policy_slug)
         .await
         .map_err(|e| match e {
-            RepositoryError::NotFound(_) => {
-                OAuthError::InvalidRequest(format!(
-                    "Unknown policy '{}'. See GET /api/policies for available options.",
-                    policy_slug
-                ))
-            }
+            RepositoryError::NotFound(_) => OAuthError::InvalidRequest(format!(
+                "Unknown policy '{}'. See GET /api/policies for available options.",
+                policy_slug
+            )),
             _ => OAuthError::Database(sqlx::Error::Protocol(e.to_string())),
         })?;
 
@@ -1842,7 +1840,11 @@ async fn handle_authorization_code_grant(
 
         // Re-check email uniqueness (handle race condition)
         let user_repo = UserRepository::new(pool.clone());
-        if user_repo.find_pubkey_by_email(pending_email_val, tenant_id).await?.is_some() {
+        if user_repo
+            .find_pubkey_by_email(pending_email_val, tenant_id)
+            .await?
+            .is_some()
+        {
             return Err(OAuthError::InvalidRequest(
                 "This email is already registered. Please sign in instead.".to_string(),
             ));
@@ -2012,9 +2014,8 @@ async fn create_oauth_authorization_and_token(
 
     // Check if personal_keys exist
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
-    let encrypted_user_key: Option<Vec<u8>> = personal_keys_repo
-        .find_encrypted_key(user_pubkey)
-        .await?;
+    let encrypted_user_key: Option<Vec<u8>> =
+        personal_keys_repo.find_encrypted_key(user_pubkey).await?;
 
     let (encrypted_user_key, _keys_just_created) = if let Some(existing_key) = encrypted_user_key {
         // Keys already exist
@@ -2376,7 +2377,11 @@ pub async fn oauth_register(
 
     // Check if email already exists
     let user_repo = UserRepository::new(pool.clone());
-    if user_repo.find_pubkey_by_email(&req.email, tenant_id).await?.is_some() {
+    if user_repo
+        .find_pubkey_by_email(&req.email, tenant_id)
+        .await?
+        .is_some()
+    {
         return Err(OAuthError::InvalidRequest(
             "Email already registered".to_string(),
         ));
@@ -2429,7 +2434,11 @@ pub async fn oauth_register(
     }
 
     // Check if email is already taken
-    if user_repo.find_pubkey_by_email(&req.email, tenant_id).await?.is_some() {
+    if user_repo
+        .find_pubkey_by_email(&req.email, tenant_id)
+        .await?
+        .is_some()
+    {
         return Err(OAuthError::InvalidRequest(
             "This email is already registered. Please sign in instead.".to_string(),
         ));

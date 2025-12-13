@@ -13,7 +13,9 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::extractors::UcanAuth;
 use crate::state::get_key_manager;
 use keycast_core::custom_permissions::{allowed_kinds::AllowedKindsConfig, AVAILABLE_PERMISSIONS};
-use keycast_core::repositories::{AuthorizationRepository, PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository};
+use keycast_core::repositories::{
+    AuthorizationRepository, PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository,
+};
 use keycast_core::types::authorization::{Authorization, AuthorizationWithRelations};
 use keycast_core::types::policy::PolicyWithPermissions;
 use keycast_core::types::stored_key::PublicStoredKey;
@@ -76,7 +78,12 @@ pub async fn create_team(
 
     let team_repo = TeamRepository::new(pool.clone());
     let team_with_relations = team_repo
-        .create_with_admin(tenant_id, &request.name, &user_pubkey_hex, allowed_kinds_config)
+        .create_with_admin(
+            tenant_id,
+            &request.name,
+            &user_pubkey_hex,
+            allowed_kinds_config,
+        )
         .await?;
 
     Ok(Json(team_with_relations))
@@ -153,14 +160,19 @@ pub async fn add_user(
     let team_repo = TeamRepository::new(pool.clone());
 
     // Verify the user isn't already a member of the team
-    if team_repo.is_member(team_id, &new_user_pubkey.to_hex()).await? {
+    if team_repo
+        .is_member(team_id, &new_user_pubkey.to_hex())
+        .await?
+    {
         return Err(ApiError::BadRequest(
             "User already a member of this team".to_string(),
         ));
     }
 
     // Ensure user exists (creates if not)
-    user_repo.find_or_create(tenant_id, &new_user_pubkey).await?;
+    user_repo
+        .find_or_create(tenant_id, &new_user_pubkey)
+        .await?;
 
     // Add the team membership
     let team_user = team_repo
@@ -348,7 +360,10 @@ pub async fn add_authorization(
         .map_err(|_| ApiError::not_found("Stored key not found"))?;
 
     // Verify policy exists and belongs to this team
-    if !policy_repo.exists_for_team(team_id, request.policy_id).await? {
+    if !policy_repo
+        .exists_for_team(team_id, request.policy_id)
+        .await?
+    {
         return Err(ApiError::not_found("Policy not found"));
     }
 

@@ -89,7 +89,12 @@ impl TeamRepository {
     }
 
     /// Update a team's name.
-    pub async fn update(&self, tenant_id: i64, team_id: i32, name: &str) -> Result<Team, RepositoryError> {
+    pub async fn update(
+        &self,
+        tenant_id: i64,
+        team_id: i32,
+        name: &str,
+    ) -> Result<Team, RepositoryError> {
         sqlx::query_as::<_, Team>(
             "UPDATE teams SET name = $1, updated_at = NOW()
              WHERE tenant_id = $2 AND id = $3
@@ -512,7 +517,10 @@ mod tests {
         let suffix = test_suffix();
 
         // Create a team first
-        let created = repo.create(1, &format!("Find Test {}", suffix)).await.unwrap();
+        let created = repo
+            .create(1, &format!("Find Test {}", suffix))
+            .await
+            .unwrap();
 
         // Find it
         let found = repo.find(1, created.id).await;
@@ -535,9 +543,14 @@ mod tests {
         let repo = TeamRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let created = repo.create(1, &format!("Original {}", suffix)).await.unwrap();
+        let created = repo
+            .create(1, &format!("Original {}", suffix))
+            .await
+            .unwrap();
 
-        let updated = repo.update(1, created.id, &format!("Updated {}", suffix)).await;
+        let updated = repo
+            .update(1, created.id, &format!("Updated {}", suffix))
+            .await;
         assert!(updated.is_ok(), "Should update team");
         assert!(updated.unwrap().name.contains("Updated"));
     }
@@ -553,10 +566,15 @@ mod tests {
         let keys = Keys::generate();
         let pubkey = keys.public_key();
         user_repo.find_or_create(1, &pubkey).await.unwrap();
-        let team = team_repo.create(1, &format!("Member Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Member Test {}", suffix))
+            .await
+            .unwrap();
 
         // Add member
-        let member = team_repo.add_member(team.id, &pubkey.to_hex(), "member").await;
+        let member = team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await;
         assert!(member.is_ok(), "Should add member");
         assert_eq!(member.unwrap().user_pubkey, pubkey.to_hex());
     }
@@ -571,11 +589,19 @@ mod tests {
         let keys = Keys::generate();
         let pubkey = keys.public_key();
         user_repo.find_or_create(1, &pubkey).await.unwrap();
-        let team = team_repo.create(1, &format!("Dup Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Dup Test {}", suffix))
+            .await
+            .unwrap();
 
         // Add member twice
-        team_repo.add_member(team.id, &pubkey.to_hex(), "member").await.unwrap();
-        let result = team_repo.add_member(team.id, &pubkey.to_hex(), "member").await;
+        team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await
+            .unwrap();
+        let result = team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await;
         assert!(matches!(result, Err(RepositoryError::Duplicate)));
     }
 
@@ -589,14 +615,26 @@ mod tests {
         let keys = Keys::generate();
         let pubkey = keys.public_key();
         user_repo.find_or_create(1, &pubkey).await.unwrap();
-        let team = team_repo.create(1, &format!("IsMember Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("IsMember Test {}", suffix))
+            .await
+            .unwrap();
 
         // Not a member yet
-        assert!(!team_repo.is_member(team.id, &pubkey.to_hex()).await.unwrap());
+        assert!(!team_repo
+            .is_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap());
 
         // Add and check
-        team_repo.add_member(team.id, &pubkey.to_hex(), "member").await.unwrap();
-        assert!(team_repo.is_member(team.id, &pubkey.to_hex()).await.unwrap());
+        team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await
+            .unwrap();
+        assert!(team_repo
+            .is_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -609,14 +647,29 @@ mod tests {
         let keys = Keys::generate();
         let pubkey = keys.public_key();
         user_repo.find_or_create(1, &pubkey).await.unwrap();
-        let team = team_repo.create(1, &format!("Remove Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Remove Test {}", suffix))
+            .await
+            .unwrap();
 
         // Add then remove
-        team_repo.add_member(team.id, &pubkey.to_hex(), "member").await.unwrap();
-        assert!(team_repo.is_member(team.id, &pubkey.to_hex()).await.unwrap());
+        team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await
+            .unwrap();
+        assert!(team_repo
+            .is_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap());
 
-        team_repo.remove_member(team.id, &pubkey.to_hex()).await.unwrap();
-        assert!(!team_repo.is_member(team.id, &pubkey.to_hex()).await.unwrap());
+        team_repo
+            .remove_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap();
+        assert!(!team_repo
+            .is_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -634,18 +687,33 @@ mod tests {
         user_repo.find_or_create(1, &pubkey1).await.unwrap();
         user_repo.find_or_create(1, &pubkey2).await.unwrap();
 
-        let team = team_repo.create(1, &format!("Admin Count {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Admin Count {}", suffix))
+            .await
+            .unwrap();
 
         // Add both as admins
-        team_repo.add_member(team.id, &pubkey1.to_hex(), "admin").await.unwrap();
-        team_repo.add_member(team.id, &pubkey2.to_hex(), "admin").await.unwrap();
+        team_repo
+            .add_member(team.id, &pubkey1.to_hex(), "admin")
+            .await
+            .unwrap();
+        team_repo
+            .add_member(team.id, &pubkey2.to_hex(), "admin")
+            .await
+            .unwrap();
 
         // Count other admins (excluding first user)
-        let count = team_repo.count_other_admins(team.id, &pubkey1.to_hex()).await.unwrap();
+        let count = team_repo
+            .count_other_admins(team.id, &pubkey1.to_hex())
+            .await
+            .unwrap();
         assert_eq!(count, 1);
 
         // Count other admins (excluding second user)
-        let count = team_repo.count_other_admins(team.id, &pubkey2.to_hex()).await.unwrap();
+        let count = team_repo
+            .count_other_admins(team.id, &pubkey2.to_hex())
+            .await
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -655,7 +723,10 @@ mod tests {
         let team_repo = TeamRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Delete Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Delete Test {}", suffix))
+            .await
+            .unwrap();
         let team_id = team.id;
 
         // Delete it
@@ -678,8 +749,14 @@ mod tests {
         let pubkey = keys.public_key();
         user_repo.find_or_create(1, &pubkey).await.unwrap();
 
-        let team = team_repo.create(1, &format!("Relations Test {}", suffix)).await.unwrap();
-        team_repo.add_member(team.id, &pubkey.to_hex(), "admin").await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Relations Test {}", suffix))
+            .await
+            .unwrap();
+        team_repo
+            .add_member(team.id, &pubkey.to_hex(), "admin")
+            .await
+            .unwrap();
 
         let with_relations = team_repo.find_with_relations(1, team.id).await;
         assert!(with_relations.is_ok(), "Should find with relations");

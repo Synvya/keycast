@@ -103,7 +103,10 @@ impl OAuthAuthorizationRepository {
     }
 
     /// Create a new OAuth authorization and return its ID.
-    pub async fn create(&self, params: CreateOAuthAuthorizationParams) -> Result<i32, RepositoryError> {
+    pub async fn create(
+        &self,
+        params: CreateOAuthAuthorizationParams,
+    ) -> Result<i32, RepositoryError> {
         let now = Utc::now();
         sqlx::query_scalar::<_, i32>(
             "INSERT INTO oauth_authorizations

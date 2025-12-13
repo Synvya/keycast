@@ -316,9 +316,14 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Policy Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Policy Test {}", suffix))
+            .await
+            .unwrap();
 
-        let policy = policy_repo.create(team.id, &format!("Test Policy {}", suffix)).await;
+        let policy = policy_repo
+            .create(team.id, &format!("Test Policy {}", suffix))
+            .await;
         assert!(policy.is_ok(), "Should create policy");
 
         let policy = policy.unwrap();
@@ -333,8 +338,14 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Find Policy Test {}", suffix)).await.unwrap();
-        let created = policy_repo.create(team.id, &format!("Find Policy {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Find Policy Test {}", suffix))
+            .await
+            .unwrap();
+        let created = policy_repo
+            .create(team.id, &format!("Find Policy {}", suffix))
+            .await
+            .unwrap();
 
         let found = policy_repo.find(created.id).await;
         assert!(found.is_ok(), "Should find policy");
@@ -357,11 +368,20 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("List Policy Test {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("List Policy Test {}", suffix))
+            .await
+            .unwrap();
 
         // Create two policies
-        policy_repo.create(team.id, &format!("Policy 1 {}", suffix)).await.unwrap();
-        policy_repo.create(team.id, &format!("Policy 2 {}", suffix)).await.unwrap();
+        policy_repo
+            .create(team.id, &format!("Policy 1 {}", suffix))
+            .await
+            .unwrap();
+        policy_repo
+            .create(team.id, &format!("Policy 2 {}", suffix))
+            .await
+            .unwrap();
 
         let policies = policy_repo.list_by_team(team.id).await;
         assert!(policies.is_ok(), "Should list policies");
@@ -375,16 +395,31 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Exists Test {}", suffix)).await.unwrap();
-        let policy = policy_repo.create(team.id, &format!("Exists Policy {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Exists Test {}", suffix))
+            .await
+            .unwrap();
+        let policy = policy_repo
+            .create(team.id, &format!("Exists Policy {}", suffix))
+            .await
+            .unwrap();
 
         // Should exist
-        let exists = policy_repo.exists_for_team(team.id, policy.id).await.unwrap();
+        let exists = policy_repo
+            .exists_for_team(team.id, policy.id)
+            .await
+            .unwrap();
         assert!(exists, "Policy should exist for team");
 
         // Should not exist for different team
-        let other_team = team_repo.create(1, &format!("Other Team {}", suffix)).await.unwrap();
-        let not_exists = policy_repo.exists_for_team(other_team.id, policy.id).await.unwrap();
+        let other_team = team_repo
+            .create(1, &format!("Other Team {}", suffix))
+            .await
+            .unwrap();
+        let not_exists = policy_repo
+            .exists_for_team(other_team.id, policy.id)
+            .await
+            .unwrap();
         assert!(!not_exists, "Policy should not exist for other team");
     }
 
@@ -394,7 +429,9 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
 
         let config = serde_json::json!({"allowed_kinds": [1, 7]});
-        let permission = policy_repo.create_permission("allowed_kinds", &config).await;
+        let permission = policy_repo
+            .create_permission("allowed_kinds", &config)
+            .await;
 
         assert!(permission.is_ok(), "Should create permission");
         let permission = permission.unwrap();
@@ -408,10 +445,19 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Link Test {}", suffix)).await.unwrap();
-        let policy = policy_repo.create(team.id, &format!("Link Policy {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Link Test {}", suffix))
+            .await
+            .unwrap();
+        let policy = policy_repo
+            .create(team.id, &format!("Link Policy {}", suffix))
+            .await
+            .unwrap();
         let config = serde_json::json!({"allowed_kinds": [1]});
-        let permission = policy_repo.create_permission("allowed_kinds", &config).await.unwrap();
+        let permission = policy_repo
+            .create_permission("allowed_kinds", &config)
+            .await
+            .unwrap();
 
         let result = policy_repo.link_permission(policy.id, permission.id).await;
         assert!(result.is_ok(), "Should link permission to policy");
@@ -424,17 +470,35 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Get Perms Test {}", suffix)).await.unwrap();
-        let policy = policy_repo.create(team.id, &format!("Get Perms Policy {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Get Perms Test {}", suffix))
+            .await
+            .unwrap();
+        let policy = policy_repo
+            .create(team.id, &format!("Get Perms Policy {}", suffix))
+            .await
+            .unwrap();
 
         // Create and link two permissions
         let config1 = serde_json::json!({"allowed_kinds": [1]});
-        let perm1 = policy_repo.create_permission("allowed_kinds", &config1).await.unwrap();
-        policy_repo.link_permission(policy.id, perm1.id).await.unwrap();
+        let perm1 = policy_repo
+            .create_permission("allowed_kinds", &config1)
+            .await
+            .unwrap();
+        policy_repo
+            .link_permission(policy.id, perm1.id)
+            .await
+            .unwrap();
 
         let config2 = serde_json::json!({"blocked_words": ["test"]});
-        let perm2 = policy_repo.create_permission("content_filter", &config2).await.unwrap();
-        policy_repo.link_permission(policy.id, perm2.id).await.unwrap();
+        let perm2 = policy_repo
+            .create_permission("content_filter", &config2)
+            .await
+            .unwrap();
+        policy_repo
+            .link_permission(policy.id, perm2.id)
+            .await
+            .unwrap();
 
         let permissions = policy_repo.get_permissions(policy.id).await;
         assert!(permissions.is_ok(), "Should get permissions");
@@ -448,12 +512,24 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("With Perms Test {}", suffix)).await.unwrap();
-        let policy = policy_repo.create(team.id, &format!("With Perms Policy {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("With Perms Test {}", suffix))
+            .await
+            .unwrap();
+        let policy = policy_repo
+            .create(team.id, &format!("With Perms Policy {}", suffix))
+            .await
+            .unwrap();
 
         let config = serde_json::json!({"allowed_kinds": [1, 7]});
-        let perm = policy_repo.create_permission("allowed_kinds", &config).await.unwrap();
-        policy_repo.link_permission(policy.id, perm.id).await.unwrap();
+        let perm = policy_repo
+            .create_permission("allowed_kinds", &config)
+            .await
+            .unwrap();
+        policy_repo
+            .link_permission(policy.id, perm.id)
+            .await
+            .unwrap();
 
         let with_perms = policy_repo.find_with_permissions(policy.id).await;
         assert!(with_perms.is_ok(), "Should find with permissions");
@@ -470,13 +546,25 @@ mod tests {
         let policy_repo = PolicyRepository::new(pool.clone());
         let suffix = test_suffix();
 
-        let team = team_repo.create(1, &format!("Delete Policy Test {}", suffix)).await.unwrap();
-        let policy = policy_repo.create(team.id, &format!("Delete Policy {}", suffix)).await.unwrap();
+        let team = team_repo
+            .create(1, &format!("Delete Policy Test {}", suffix))
+            .await
+            .unwrap();
+        let policy = policy_repo
+            .create(team.id, &format!("Delete Policy {}", suffix))
+            .await
+            .unwrap();
 
         // Link a permission
         let config = serde_json::json!({"allowed_kinds": [1]});
-        let perm = policy_repo.create_permission("allowed_kinds", &config).await.unwrap();
-        policy_repo.link_permission(policy.id, perm.id).await.unwrap();
+        let perm = policy_repo
+            .create_permission("allowed_kinds", &config)
+            .await
+            .unwrap();
+        policy_repo
+            .link_permission(policy.id, perm.id)
+            .await
+            .unwrap();
 
         // Delete
         let result = policy_repo.delete(policy.id).await;
@@ -511,7 +599,11 @@ mod tests {
         ];
 
         let result = policy_repo
-            .create_with_permissions(team.id, &format!("Atomic Policy {}", suffix), permission_configs)
+            .create_with_permissions(
+                team.id,
+                &format!("Atomic Policy {}", suffix),
+                permission_configs,
+            )
             .await;
 
         assert!(result.is_ok(), "Should create policy with permissions");
@@ -533,7 +625,11 @@ mod tests {
         assert_eq!(fetched.permissions.len(), 2);
 
         // Verify identifiers
-        let identifiers: Vec<&str> = fetched.permissions.iter().map(|p| p.identifier.as_str()).collect();
+        let identifiers: Vec<&str> = fetched
+            .permissions
+            .iter()
+            .map(|p| p.identifier.as_str())
+            .collect();
         assert!(identifiers.contains(&"allowed_kinds"));
         assert!(identifiers.contains(&"content_filter"));
     }

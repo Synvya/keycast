@@ -593,11 +593,7 @@ impl UserRepository {
     }
 
     /// Get user's email (for token exchange).
-    pub async fn get_email(
-        &self,
-        pubkey: &str,
-        tenant_id: i64,
-    ) -> Result<String, RepositoryError> {
+    pub async fn get_email(&self, pubkey: &str, tenant_id: i64) -> Result<String, RepositoryError> {
         sqlx::query_scalar("SELECT email FROM users WHERE pubkey = $1 AND tenant_id = $2")
             .bind(pubkey)
             .bind(tenant_id)

@@ -403,4 +403,3 @@ async fn test_handler_cache_remove() {
     cache.remove("bunker_key").await;
     assert!(cache.get("bunker_key").await.is_none());
 }
-

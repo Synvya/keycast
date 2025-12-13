@@ -215,7 +215,9 @@ impl AuthorizationRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repositories::{PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository};
+    use crate::repositories::{
+        PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository,
+    };
     use nostr_sdk::Keys;
     use sqlx::PgPool;
 
@@ -242,10 +244,7 @@ mod tests {
         Keys::generate().public_key().to_hex()
     }
 
-    async fn create_test_fixtures(
-        pool: &PgPool,
-        suffix: &str,
-    ) -> (i32, i32, i32) {
+    async fn create_test_fixtures(pool: &PgPool, suffix: &str) -> (i32, i32, i32) {
         let team_repo = TeamRepository::new(pool.clone());
         let key_repo = StoredKeyRepository::new(pool.clone());
         let policy_repo = PolicyRepository::new(pool.clone());
@@ -298,7 +297,11 @@ mod tests {
             )
             .await;
 
-        assert!(auth.is_ok(), "Should create authorization: {:?}", auth.err());
+        assert!(
+            auth.is_ok(),
+            "Should create authorization: {:?}",
+            auth.err()
+        );
         let auth = auth.unwrap();
         assert_eq!(auth.stored_key_id, key_id);
         assert_eq!(auth.policy_id, policy_id);
@@ -447,12 +450,24 @@ mod tests {
         // Create users first (foreign key constraint)
         let keys1 = Keys::generate();
         let keys2 = Keys::generate();
-        user_repo.find_or_create(1, &keys1.public_key()).await.unwrap();
-        user_repo.find_or_create(1, &keys2.public_key()).await.unwrap();
+        user_repo
+            .find_or_create(1, &keys1.public_key())
+            .await
+            .unwrap();
+        user_repo
+            .find_or_create(1, &keys2.public_key())
+            .await
+            .unwrap();
 
         // Add users
-        auth_repo.add_user(auth.id, &keys1.public_key().to_hex()).await.unwrap();
-        auth_repo.add_user(auth.id, &keys2.public_key().to_hex()).await.unwrap();
+        auth_repo
+            .add_user(auth.id, &keys1.public_key().to_hex())
+            .await
+            .unwrap();
+        auth_repo
+            .add_user(auth.id, &keys2.public_key().to_hex())
+            .await
+            .unwrap();
 
         // Get users
         let users = auth_repo.get_users(auth.id).await;
@@ -487,7 +502,10 @@ mod tests {
 
         // Create user first (foreign key constraint)
         let keys = Keys::generate();
-        user_repo.find_or_create(1, &keys.public_key()).await.unwrap();
+        user_repo
+            .find_or_create(1, &keys.public_key())
+            .await
+            .unwrap();
 
         // Add and then remove a user
         let pubkey = keys.public_key().to_hex();

@@ -117,6 +117,7 @@ impl OAuthCodeRepository {
     }
 
     /// Find a valid (non-expired) OAuth code.
+    #[allow(clippy::type_complexity)]
     pub async fn find_valid(
         &self,
         tenant_id: i64,

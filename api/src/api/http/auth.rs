@@ -1014,7 +1014,12 @@ pub async fn resend_verification(
     let verification_expires = Utc::now() + Duration::hours(EMAIL_VERIFICATION_EXPIRY_HOURS);
 
     user_repo
-        .set_verification_token(&user_pubkey, tenant_id, &verification_token, verification_expires)
+        .set_verification_token(
+            &user_pubkey,
+            tenant_id,
+            &verification_token,
+            verification_expires,
+        )
         .await?;
 
     // Send verification email
@@ -1058,7 +1063,9 @@ pub async fn forgot_password(
 
     // Check if user exists in this tenant
     let user_repo = UserRepository::new(pool.clone());
-    let user_pubkey = user_repo.find_pubkey_by_email(&req.email, tenant_id).await?;
+    let user_pubkey = user_repo
+        .find_pubkey_by_email(&req.email, tenant_id)
+        .await?;
 
     // Always return success even if email doesn't exist (security best practice)
     let public_key = match user_pubkey {
@@ -1224,7 +1231,9 @@ pub async fn get_account_status(
     );
 
     let user_repo = UserRepository::new(pool.clone());
-    let user = user_repo.get_account_status(&user_pubkey, tenant_id).await?;
+    let user = user_repo
+        .get_account_status(&user_pubkey, tenant_id)
+        .await?;
 
     match user {
         Some((email, email_verified)) => Ok(Json(AccountStatusResponse {
@@ -2272,7 +2281,9 @@ pub async fn export_key(
 
     // Require email verification
     let user_repo = UserRepository::new(pool.clone());
-    let email_verified = user_repo.get_email_verified(&user_pubkey, tenant_id).await?;
+    let email_verified = user_repo
+        .get_email_verified(&user_pubkey, tenant_id)
+        .await?;
 
     if email_verified != Some(true) {
         return Err(AuthError::EmailNotVerified);
@@ -2360,7 +2371,9 @@ pub async fn export_key(
     };
 
     // Log the export for security audit
-    key_export_repo.log_export(&user_pubkey, &req.format).await?;
+    key_export_repo
+        .log_export(&user_pubkey, &req.format)
+        .await?;
 
     Ok(Json(ExportKeyResponse { key: key_string }))
 }

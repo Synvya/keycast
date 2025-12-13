@@ -241,10 +241,9 @@ async fn load_handler_on_demand(
     // Load permissions for this authorization's policy (if any)
     let permissions: Vec<Box<dyn CustomPermission>> = if let Some(pid) = policy_id {
         let policy_repo = PolicyRepository::new(pool.clone());
-        let db_permissions = policy_repo
-            .get_permissions(pid)
-            .await
-            .map_err(|e| RpcError::Internal(format!("Database error loading permissions: {}", e)))?;
+        let db_permissions = policy_repo.get_permissions(pid).await.map_err(|e| {
+            RpcError::Internal(format!("Database error loading permissions: {}", e))
+        })?;
 
         // Convert to CustomPermission trait objects
         db_permissions
