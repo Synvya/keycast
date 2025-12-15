@@ -236,40 +236,7 @@ signing_activity
 
 ---
 
-### 8. Key Export (`key_export_codes`, `key_export_tokens`, `key_export_log`)
-
-**Purpose:** Securely export private keys to users
-
-```
-key_export_codes
-  ├─ user_public_key
-  ├─ code (short OTP)
-  ├─ expires_at
-  └─ tenant_id
-
-key_export_tokens
-  ├─ user_public_key
-  ├─ token_hash (long-lived export token)
-  ├─ expires_at
-  └─ tenant_id
-
-key_export_log
-  ├─ user_public_key
-  ├─ export_type (code/token)
-  ├─ ip_address, user_agent
-  └─ tenant_id, exported_at
-```
-
-**Export Flow:**
-1. User requests key export
-2. Generate OTP/token
-3. User proves ownership via OTP
-4. Return encrypted nsec/hex
-5. Log export event (audit trail)
-
----
-
-### 9. Email Features (`email_verification_tokens`, `password_reset_tokens`)
+### 8. Email Features (`email_verification_tokens`, `password_reset_tokens`)
 
 **Purpose:** Traditional web account features
 

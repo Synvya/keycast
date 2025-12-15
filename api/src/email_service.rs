@@ -146,37 +146,6 @@ impl EmailService {
             .await
     }
 
-    pub async fn send_key_export_code(&self, to_email: &str, code: &str) -> Result<(), String> {
-        let subject = "Your diVine key export verification code".to_string();
-        let html_content = format!(
-            r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Key Export Verification Code</h1>
-                <p>You requested to export your private key. Use the verification code below to complete the export:</p>
-                <div style="margin: 30px 0; padding: 20px; background: #1a1a1a; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 32px; font-weight: bold; color: #00B488; letter-spacing: 8px; font-family: monospace;">
-                        {}
-                    </div>
-                </div>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    This code will expire in 10 minutes. If you didn't request a key export, please ignore this email and ensure your account is secure.
-                </p>
-            </body>
-            </html>
-            "#,
-            code
-        );
-
-        let text_content = format!(
-            "You requested to export your private key. Use this verification code to complete the export:\n\n{}\n\nThis code will expire in 10 minutes. If you didn't request a key export, please ignore this email and ensure your account is secure.",
-            code
-        );
-
-        self.send_email(to_email, &subject, &html_content, &text_content)
-            .await
-    }
-
     async fn send_email(
         &self,
         to_email: &str,

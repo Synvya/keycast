@@ -95,8 +95,6 @@ pub fn api_routes(
             "/user/verify-password",
             post(auth::verify_password_for_export),
         )
-        .route("/user/request-key-export", post(auth::request_key_export))
-        .route("/user/verify-export-code", post(auth::verify_export_code))
         .layer(auth_cors.clone())
         .with_state(pool.clone());
 
@@ -107,10 +105,9 @@ pub fn api_routes(
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
-    // Key export routes (need AuthState for key_manager)
+    // Key export route (needs AuthState for key_manager)
     let key_export_routes = Router::new()
         .route("/user/export-key", post(auth::export_key))
-        .route("/user/export-key-simple", post(auth::export_key_simple))
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 

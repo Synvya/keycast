@@ -8,12 +8,11 @@ use axum::{
     Json,
 };
 use bcrypt::{hash, verify, DEFAULT_COST};
-use bip39;
 use chrono::{Duration, Utc};
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
-    CreateOAuthAuthorizationParams, KeyExportRepository, OAuthAuthorizationRepository,
-    PersonalKeysRepository, PolicyRepository, SigningActivityRepository, UserRepository,
+    CreateOAuthAuthorizationParams, OAuthAuthorizationRepository, PersonalKeysRepository,
+    PolicyRepository, SigningActivityRepository, UserRepository,
 };
 use keycast_core::traits::CustomPermission;
 use nostr_sdk::{Keys, PublicKey, ToBech32, UnsignedEvent};
@@ -2125,34 +2124,9 @@ pub struct VerifyPasswordResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct RequestKeyExportResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VerifyExportCodeRequest {
-    pub code: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct VerifyExportCodeResponse {
-    pub export_token: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ExportKeyRequest {
-    pub export_token: String,
-    pub format: String,                      // "nsec", "ncryptsec", or "mnemonic"
-    pub encryption_password: Option<String>, // Required for ncryptsec
-}
-
-#[derive(Debug, Serialize)]
 pub struct ExportKeyResponse {
     pub key: String,
 }
-
-const KEY_EXPORT_CODE_EXPIRY_MINUTES: i64 = 10;
 
 /// Verify user's password before allowing key export
 pub async fn verify_password_for_export(
@@ -2186,198 +2160,6 @@ pub async fn verify_password_for_export(
     Ok(Json(VerifyPasswordResponse { success: true }))
 }
 
-/// Request key export - sends verification code via email
-pub async fn request_key_export(
-    tenant: crate::api::tenant::TenantExtractor,
-    State(pool): State<PgPool>,
-    headers: HeaderMap,
-) -> Result<Json<RequestKeyExportResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
-    let tenant_id = tenant.0.id;
-
-    // Get user's email and verification status
-    let user_repo = UserRepository::new(pool.clone());
-    let (email, email_verified) = user_repo
-        .get_account_status(&user_pubkey, tenant_id)
-        .await?
-        .ok_or(AuthError::UserNotFound)?;
-
-    // Require email to be set and verified before allowing key export
-    let email = email.ok_or(AuthError::EmailNotVerified)?;
-    if !email_verified.unwrap_or(false) {
-        return Err(AuthError::EmailNotVerified);
-    }
-
-    // Generate 6-digit verification code
-    let code: String = format!("{:06}", rand::thread_rng().gen_range(100000..999999));
-    let expires_at = Utc::now() + Duration::minutes(KEY_EXPORT_CODE_EXPIRY_MINUTES);
-
-    // Store code in database
-    let key_export_repo = KeyExportRepository::new(pool.clone());
-    key_export_repo
-        .create_code(&user_pubkey, &code, expires_at)
-        .await?;
-
-    // Send email with code
-    if let Ok(email_service) = crate::email_service::EmailService::new() {
-        let _ = email_service.send_key_export_code(&email, &code).await;
-    }
-
-    Ok(Json(RequestKeyExportResponse {
-        success: true,
-        message: "Verification code sent to your email".to_string(),
-    }))
-}
-
-/// Verify export code and return export token
-pub async fn verify_export_code(
-    tenant: crate::api::tenant::TenantExtractor,
-    State(pool): State<PgPool>,
-    headers: HeaderMap,
-    Json(req): Json<VerifyExportCodeRequest>,
-) -> Result<Json<VerifyExportCodeResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
-    let _tenant_id = tenant.0.id;
-
-    // Verify code and check expiration
-    let key_export_repo = KeyExportRepository::new(pool.clone());
-    let result = key_export_repo
-        .find_valid_code(&user_pubkey, &req.code)
-        .await?;
-
-    let (_code, expires_at) = result.ok_or(AuthError::InvalidToken)?;
-
-    if expires_at < Utc::now() {
-        return Err(AuthError::TokenExpired);
-    }
-
-    // Mark code as used
-    key_export_repo
-        .mark_code_used(&user_pubkey, &req.code)
-        .await?;
-
-    // Generate export token (valid for 5 minutes)
-    let export_token = generate_secure_token();
-    let token_expires = Utc::now() + Duration::minutes(5);
-
-    key_export_repo
-        .create_token(&user_pubkey, &export_token, token_expires)
-        .await?;
-
-    Ok(Json(VerifyExportCodeResponse { export_token }))
-}
-
-/// Export user's private key in requested format
-pub async fn export_key(
-    tenant: crate::api::tenant::TenantExtractor,
-    State(auth_state): State<super::routes::AuthState>,
-    headers: HeaderMap,
-    Json(req): Json<ExportKeyRequest>,
-) -> Result<Json<ExportKeyResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
-    let pool = &auth_state.state.db;
-    let key_manager = auth_state.state.key_manager.as_ref();
-    let tenant_id = tenant.0.id;
-
-    // Require email verification
-    let user_repo = UserRepository::new(pool.clone());
-    let email_verified = user_repo
-        .get_email_verified(&user_pubkey, tenant_id)
-        .await?;
-
-    if email_verified != Some(true) {
-        return Err(AuthError::EmailNotVerified);
-    }
-
-    // Verify export token
-    let key_export_repo = KeyExportRepository::new(pool.clone());
-    let token_expires = key_export_repo
-        .find_valid_token(&user_pubkey, &req.export_token)
-        .await?
-        .ok_or(AuthError::InvalidToken)?;
-
-    if token_expires < Utc::now() {
-        return Err(AuthError::TokenExpired);
-    }
-
-    // Mark token as used
-    key_export_repo
-        .mark_token_used(&user_pubkey, &req.export_token)
-        .await?;
-
-    // Get user's encrypted secret key
-    let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
-    let encrypted_key = personal_keys_repo
-        .find_encrypted_key_for_tenant(&user_pubkey, tenant_id)
-        .await?
-        .ok_or(AuthError::UserNotFound)?;
-
-    // Decrypt the secret key
-    let decrypted_secret = key_manager
-        .decrypt(&encrypted_key)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to decrypt key: {}", e)))?;
-
-    // Parse the secret key
-    let keys = Keys::parse(&hex::encode(&decrypted_secret))
-        .map_err(|e| AuthError::Internal(format!("Failed to parse key: {}", e)))?;
-
-    // Format the key based on requested format
-    let key_string = match req.format.as_str() {
-        "nsec" => {
-            // Plain nsec format
-            keys.secret_key()
-                .to_bech32()
-                .map_err(|e| AuthError::Internal(format!("Failed to encode nsec: {}", e)))?
-        }
-        "ncryptsec" => {
-            // NIP-49 encrypted format
-            let password = req.encryption_password.ok_or(AuthError::BadRequest(
-                "encryption_password required for ncryptsec format".to_string(),
-            ))?;
-
-            use nostr_sdk::nips::nip49::{EncryptedSecretKey, KeySecurity};
-
-            let encrypted = EncryptedSecretKey::new(
-                keys.secret_key(),
-                &password,
-                16, // log_n parameter (2^16 rounds)
-                KeySecurity::Unknown,
-            )
-            .map_err(|e| AuthError::Internal(format!("Failed to encrypt key: {}", e)))?;
-
-            encrypted
-                .to_bech32()
-                .map_err(|e| AuthError::Internal(format!("Failed to encode ncryptsec: {}", e)))?
-        }
-        "mnemonic" => {
-            // BIP-39 mnemonic format
-            // Convert the secret key to mnemonic
-            // Note: This is a bit tricky - we need to go from secret key to mnemonic
-            // The proper way is to generate FROM mnemonic, but we're going backwards
-            // For now, we'll generate a mnemonic from the secret key bytes
-
-            let secret_bytes = keys.secret_key().as_secret_bytes();
-            let mnemonic = bip39::Mnemonic::from_entropy(secret_bytes)
-                .map_err(|e| AuthError::Internal(format!("Failed to generate mnemonic: {}", e)))?;
-
-            mnemonic.to_string()
-        }
-        _ => {
-            return Err(AuthError::BadRequest(
-                "Invalid format. Must be 'nsec', 'ncryptsec', or 'mnemonic'".to_string(),
-            ));
-        }
-    };
-
-    // Log the export for security audit
-    key_export_repo
-        .log_export(&user_pubkey, &req.format)
-        .await?;
-
-    Ok(Json(ExportKeyResponse { key: key_string }))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ChangeKeyRequest {
     pub password: String,
@@ -2391,8 +2173,8 @@ pub struct ChangeKeyResponse {
     pub message: String,
 }
 
-/// Simplified export that only requires password (requires verified email)
-pub async fn export_key_simple(
+/// Export user's private key (requires password and verified email)
+pub async fn export_key(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
     headers: HeaderMap,
@@ -2460,10 +2242,6 @@ pub async fn export_key_simple(
             ))
         }
     };
-
-    // Log the export for security audit
-    let key_export_repo = KeyExportRepository::new(pool.clone());
-    key_export_repo.log_export(&user_pubkey, format).await?;
 
     Ok(Json(ExportKeyResponse { key: key_string }))
 }

@@ -74,7 +74,7 @@
 			isExporting = true;
 
 			// Get the nsec using the verified password
-			const response = await api.post<{ key: string }>('/user/export-key-simple', {
+			const response = await api.post<{ key: string }>('/user/export-key', {
 				password: mainPassword,
 				format: 'nsec'
 			});

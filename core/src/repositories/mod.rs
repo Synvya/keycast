@@ -3,7 +3,6 @@
 
 mod authorization;
 mod error;
-mod key_export;
 mod oauth_authorization;
 mod oauth_code;
 mod personal_keys;
@@ -15,7 +14,6 @@ mod user;
 
 pub use authorization::AuthorizationRepository;
 pub use error::RepositoryError;
-pub use key_export::KeyExportRepository;
 pub use oauth_authorization::{CreateOAuthAuthorizationParams, OAuthAuthorizationRepository};
 pub use oauth_code::{
     OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams,
