@@ -50,7 +50,7 @@ Current settings:
   Concurrency: 50
   Session affinity: enabled (CRITICAL)
   Execution: Gen2 + CPU boost
-  VPC egress: all-traffic
+  VPC egress: private-ranges-only
 ```
 
 ### Cloud SQL

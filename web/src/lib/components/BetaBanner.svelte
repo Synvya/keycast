@@ -1,5 +1,5 @@
 <div class="beta-banner">
-  <span>Alpha</span> - Database resets periodically during development. Last reset: Dec 5, 2024.
+  <span>Alpha</span> - Database resets periodically during development. Last reset: Dec 15, 2024.
 </div>
 
 <style>

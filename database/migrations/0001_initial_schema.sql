@@ -42,61 +42,6 @@ CREATE TABLE public.email_verification_tokens (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-CREATE TABLE public.key_export_codes (
-    id integer NOT NULL,
-    user_pubkey character(64) NOT NULL,
-    code text NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    used_at timestamp with time zone
-);
-
-CREATE SEQUENCE public.key_export_codes_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-ALTER SEQUENCE public.key_export_codes_id_seq OWNED BY public.key_export_codes.id;
-
-CREATE TABLE public.key_export_log (
-    id integer NOT NULL,
-    user_pubkey character(64) NOT NULL,
-    format text NOT NULL,
-    exported_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-CREATE SEQUENCE public.key_export_log_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-ALTER SEQUENCE public.key_export_log_id_seq OWNED BY public.key_export_log.id;
-
-CREATE TABLE public.key_export_tokens (
-    id integer NOT NULL,
-    user_pubkey character(64) NOT NULL,
-    token text NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    used_at timestamp with time zone
-);
-
-CREATE SEQUENCE public.key_export_tokens_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-ALTER SEQUENCE public.key_export_tokens_id_seq OWNED BY public.key_export_tokens.id;
-
 CREATE TABLE public.oauth_authorizations (
     id integer NOT NULL,
     user_pubkey character(64) NOT NULL,
@@ -145,7 +90,8 @@ CREATE TABLE public.oauth_codes (
     pending_password_hash text,
     pending_email_verification_token text,
     pending_encrypted_secret bytea,
-    previous_auth_id integer
+    previous_auth_id integer,
+    state text  -- CSRF protection and redirect correlation
 );
 
 CREATE TABLE public.password_reset_tokens (
@@ -387,12 +333,6 @@ CREATE TABLE public.users (
 
 ALTER TABLE ONLY public.authorizations ALTER COLUMN id SET DEFAULT nextval('public.authorizations_id_seq'::regclass);
 
-ALTER TABLE ONLY public.key_export_codes ALTER COLUMN id SET DEFAULT nextval('public.key_export_codes_id_seq'::regclass);
-
-ALTER TABLE ONLY public.key_export_log ALTER COLUMN id SET DEFAULT nextval('public.key_export_log_id_seq'::regclass);
-
-ALTER TABLE ONLY public.key_export_tokens ALTER COLUMN id SET DEFAULT nextval('public.key_export_tokens_id_seq'::regclass);
-
 ALTER TABLE ONLY public.oauth_authorizations ALTER COLUMN id SET DEFAULT nextval('public.oauth_authorizations_id_seq'::regclass);
 
 ALTER TABLE ONLY public.permissions ALTER COLUMN id SET DEFAULT nextval('public.permissions_id_seq'::regclass);
@@ -423,18 +363,6 @@ ALTER TABLE ONLY public.email_verification_tokens
 
 ALTER TABLE ONLY public.email_verification_tokens
     ADD CONSTRAINT email_verification_tokens_token_hash_key UNIQUE (token_hash);
-
-ALTER TABLE ONLY public.key_export_codes
-    ADD CONSTRAINT key_export_codes_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY public.key_export_log
-    ADD CONSTRAINT key_export_log_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY public.key_export_tokens
-    ADD CONSTRAINT key_export_tokens_pkey PRIMARY KEY (id);
-
-ALTER TABLE ONLY public.key_export_tokens
-    ADD CONSTRAINT key_export_tokens_token_key UNIQUE (token);
 
 ALTER TABLE ONLY public.oauth_authorizations
     ADD CONSTRAINT oauth_authorizations_pkey PRIMARY KEY (id);
@@ -501,20 +429,6 @@ CREATE INDEX idx_email_verification_tokens_token_hash ON public.email_verificati
 
 CREATE INDEX idx_email_verification_tokens_user_id ON public.email_verification_tokens USING btree (user_pubkey);
 
-CREATE INDEX idx_key_export_codes_expires ON public.key_export_codes USING btree (expires_at);
-
-CREATE INDEX idx_key_export_codes_user ON public.key_export_codes USING btree (user_pubkey);
-
-CREATE INDEX idx_key_export_log_exported_at ON public.key_export_log USING btree (exported_at);
-
-CREATE INDEX idx_key_export_log_user ON public.key_export_log USING btree (user_pubkey);
-
-CREATE INDEX idx_key_export_tokens_expires ON public.key_export_tokens USING btree (expires_at);
-
-CREATE INDEX idx_key_export_tokens_token ON public.key_export_tokens USING btree (token);
-
-CREATE INDEX idx_key_export_tokens_user ON public.key_export_tokens USING btree (user_pubkey);
-
 CREATE INDEX idx_oauth_auth_user ON public.oauth_authorizations USING btree (user_pubkey);
 
 -- Index for active (non-revoked) authorizations
@@ -544,6 +458,8 @@ CREATE INDEX idx_oauth_codes_expires ON public.oauth_codes USING btree (expires_
 CREATE INDEX idx_oauth_codes_tenant_id ON public.oauth_codes USING btree (tenant_id);
 
 CREATE INDEX idx_oauth_codes_user ON public.oauth_codes USING btree (user_pubkey);
+
+CREATE INDEX idx_oauth_codes_state ON public.oauth_codes USING btree (state) WHERE (state IS NOT NULL);
 
 CREATE INDEX idx_password_reset_tokens_expires_at ON public.password_reset_tokens USING btree (expires_at);
 
@@ -682,15 +598,6 @@ ALTER TABLE ONLY public.authorizations
 ALTER TABLE ONLY public.email_verification_tokens
     ADD CONSTRAINT email_verification_tokens_user_pubkey_fkey FOREIGN KEY (user_pubkey) REFERENCES public.users(pubkey) ON DELETE CASCADE;
 
-ALTER TABLE ONLY public.key_export_codes
-    ADD CONSTRAINT key_export_codes_user_pubkey_fkey FOREIGN KEY (user_pubkey) REFERENCES public.users(pubkey) ON DELETE CASCADE;
-
-ALTER TABLE ONLY public.key_export_log
-    ADD CONSTRAINT key_export_log_user_pubkey_fkey FOREIGN KEY (user_pubkey) REFERENCES public.users(pubkey) ON DELETE CASCADE;
-
-ALTER TABLE ONLY public.key_export_tokens
-    ADD CONSTRAINT key_export_tokens_user_pubkey_fkey FOREIGN KEY (user_pubkey) REFERENCES public.users(pubkey) ON DELETE CASCADE;
-
 ALTER TABLE ONLY public.oauth_authorizations
     ADD CONSTRAINT oauth_authorizations_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -754,7 +661,7 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 INSERT INTO tenants (id, domain, name, created_at, updated_at)
-VALUES (1, 'default', 'Default Tenant', NOW(), NOW())
+VALUES (1, 'login.divine.video', 'diVine', NOW(), NOW())
 ON CONFLICT DO NOTHING;
 
 -- Fix sequence after explicit ID insert

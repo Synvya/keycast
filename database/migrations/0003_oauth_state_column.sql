@@ -1,5 +1,2 @@
--- Add state column to oauth_codes for CSRF protection and redirect correlation
--- Used by clients that provide OAuth state parameter
--- Optional: only included in redirect if originally provided
-
-ALTER TABLE oauth_codes ADD COLUMN IF NOT EXISTS state TEXT;
+-- Migration consolidated into 0001_initial_schema.sql during Dec 15, 2024 DB reset
+-- This file kept for sqlx migration version compatibility
