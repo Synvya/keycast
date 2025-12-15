@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { browser } from "$app/environment";
   import { page } from "$app/stores";
+  import { replaceState } from "$app/navigation";
   import DemoSection from "$lib/components/demo/DemoSection.svelte";
   import ResultDisplay from "$lib/components/demo/ResultDisplay.svelte";
   import Copy from "$lib/components/Copy.svelte";
@@ -187,8 +188,8 @@
 
       oauthStatus = "success";
 
-      // Clean URL
-      window.history.replaceState({}, document.title, window.location.pathname);
+      // Clean URL (remove code/state params after exchange)
+      replaceState(window.location.pathname, {});
     } catch (e) {
       oauthStatus = "error";
       oauthError = e instanceof Error ? e.message : "Token exchange failed";

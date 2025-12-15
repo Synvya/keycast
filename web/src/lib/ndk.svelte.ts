@@ -33,10 +33,9 @@ const ndk = $state(ndkStore);
 export const bunkerNDKStore = new NDK({
     explicitRelayUrls: [
         "wss://relay.divine.video",
-        "wss://relay.nsecbunker.com",
-        "wss://relay.nsec.app",
         "wss://relay.primal.net",
-        "wss://relay.nostr.band",
+        "wss://relay.nsec.app",
+        "wss://nos.lol",
     ],
     enableOutboxModel: false,
 });

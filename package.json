@@ -15,6 +15,7 @@
 		"logs": "./scripts/view-logs.sh",
 		"logs:watch": "./scripts/logs-watch.sh",
 		"db:reset": "sqlx database reset --database-url postgres://postgres:password@localhost/keycast --source ./database/migrations",
+		"db:migrate": "sqlx migrate run --database-url postgres://postgres:password@localhost/keycast --source ./database/migrations",
 		"db:migrate:prod": "./tools/run-migrations.sh",
 		"db:sql:prod": "./tools/run-sql.sh",
 		"key:generate": "./scripts/generate_key.sh",
