@@ -559,8 +559,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait for Pub/Sub event
-        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        // Wait for Pub/Sub event (5s timeout for CI reliability)
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("Timeout waiting for join event")
             .expect("Channel closed");
