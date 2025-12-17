@@ -1,5 +1,4 @@
 pub mod authorization_channel;
-pub mod secret_types;
 pub mod bunker_key;
 pub mod custom_permissions;
 pub mod database;
@@ -8,6 +7,7 @@ pub mod instance;
 pub mod metrics;
 pub mod oauth_scopes;
 pub mod repositories;
+pub mod secret_types;
 pub mod signing_handler;
 pub mod signing_session;
 pub mod tenant_query;
