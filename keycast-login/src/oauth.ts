@@ -43,10 +43,12 @@ class MemoryStorage implements KeycastStorage {
  */
 async function derivePublicKeyFromNsec(nsec: string): Promise<string> {
   try {
-    // Use Function constructor to avoid TypeScript module resolution
-    const importModule = new Function('specifier', 'return import(specifier)');
-    const nip19 = await importModule('nostr-tools/nip19');
-    const pure = await importModule('nostr-tools/pure');
+    // Dynamic imports - bundlers will handle these properly
+    // nostr-tools is an optional peer dependency
+    const [nip19, pure] = await Promise.all([
+      import('nostr-tools/nip19'),
+      import('nostr-tools/pure'),
+    ]);
     const decoded = nip19.decode(nsec);
     if (decoded.type !== 'nsec') {
       throw new Error('Not a valid nsec');

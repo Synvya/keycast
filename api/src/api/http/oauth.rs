@@ -704,9 +704,7 @@ pub async fn authorize_get(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Authorize {}</title>
-    <script src="https://unpkg.com/nostr-tools@2.7.2/lib/nostr.bundle.js"
-            integrity="sha384-xf02s8T/9FVjKBW2IA0yLDYKsosKPVCYxGwQskHkNKZ/LpB9oM7yZdP5lqQ0ZC2f"
-            crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/nostr-tools@2.10.0/lib/nostr.bundle.js"></script>
     <style>
         :root {{
             --divine-green: #00B488;
@@ -1149,9 +1147,7 @@ pub async fn authorize_get(
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/nostr-tools@2.7.2/lib/nostr.bundle.js"
-            integrity="sha384-xf02s8T/9FVjKBW2IA0yLDYKsosKPVCYxGwQskHkNKZ/LpB9oM7yZdP5lqQ0ZC2f"
-            crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/nostr-tools@2.10.0/lib/nostr.bundle.js"></script>
     <style>
         :root {{
             --divine-green: #00B488;

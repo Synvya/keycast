@@ -11,6 +11,9 @@ export default defineConfig({
             "keycast-login": path.resolve(__dirname, "../keycast-login/dist/index.mjs"),
         },
     },
+    optimizeDeps: {
+        include: ["nostr-tools", "nostr-tools/pure", "nostr-tools/nip19"],
+    },
     server: {
         proxy: {
             '/api': {
