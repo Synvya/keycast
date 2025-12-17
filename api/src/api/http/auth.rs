@@ -1111,6 +1111,25 @@ pub async fn verify_email(
         };
         oauth_code_repo.store(store_params).await?;
 
+        // Store code in Redis for multi-device polling
+        if let Some(ref state) = oauth_data.state {
+            if let Some(redis) = &auth_state.state.redis {
+                let key = format!("oauth_poll:{}", state);
+                if let Err(e) = redis::cmd("SETEX")
+                    .arg(&key)
+                    .arg(600) // 10 minute TTL
+                    .arg(&new_code)
+                    .query_async::<()>(&mut redis.clone())
+                    .await
+                {
+                    tracing::warn!("Failed to store OAuth code in Redis for polling: {}", e);
+                    // Continue - redirect flow still works for same-device verification
+                } else {
+                    tracing::debug!("Stored OAuth code in Redis for polling: state={}", state);
+                }
+            }
+        }
+
         // Delete the pending registration entry
         oauth_code_repo
             .delete_by_verification_token(&req.token, tenant_id)

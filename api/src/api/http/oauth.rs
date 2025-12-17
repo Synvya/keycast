@@ -10,7 +10,6 @@ use axum::{
 use base64::Engine;
 use bcrypt::verify;
 use chrono::{Duration, Utc};
-use dashmap::DashMap;
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
     CreateOAuthAuthorizationParams, OAuthAuthorizationRepository, OAuthCodeRepository,
@@ -18,20 +17,11 @@ use keycast_core::repositories::{
     StoreOAuthCodeWithRegistrationParams, UserRepository,
 };
 use nostr_sdk::{Keys, ToBech32};
-use once_cell::sync::Lazy;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration as StdDuration, Instant};
 
 // Import constants and helpers from auth module
 use super::auth::{generate_secure_token, EMAIL_VERIFICATION_EXPIRY_HOURS, TOKEN_EXPIRY_HOURS};
-
-/// Polling cache for iOS PWA OAuth flow
-/// Maps state token → (authorization code, expiry time)
-/// TTL: 5 minutes for security
-static POLLING_CACHE: Lazy<DashMap<String, (String, Instant)>> = Lazy::new(DashMap::new);
-
-const POLLING_TTL: StdDuration = StdDuration::from_secs(300); // 5 minutes
 
 /// Generate a 256-bit random authorization handle (64 hex characters)
 /// Used for silent re-authentication in OAuth flows
@@ -302,6 +292,7 @@ pub enum OAuthError {
     InvalidRequest(String),
     Database(sqlx::Error),
     Encryption(String),
+    ServerError(String),
 }
 
 impl IntoResponse for OAuthError {
@@ -333,6 +324,10 @@ impl IntoResponse for OAuthError {
                         .to_string(),
                 )
             }
+            OAuthError::ServerError(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Server error: {}", msg),
+            ),
         };
 
         (status, Json(serde_json::json!({ "error": message }))).into_response()
@@ -1614,6 +1609,48 @@ pub async fn authorize_get(
             const emailSpan = document.getElementById('verification_email');
             if (emailSpan) emailSpan.textContent = email;
             notice.style.display = 'block';
+
+            // Start polling for verification completion (multi-device support)
+            startVerificationPolling();
+        }}
+
+        function startVerificationPolling() {{
+            const urlParams = new URLSearchParams(window.location.search);
+            const state = urlParams.get('state');
+
+            if (!state) {{
+                console.log('No state parameter, polling disabled');
+                return;
+            }}
+
+            console.log('Starting verification polling');
+
+            const pollInterval = setInterval(async () => {{
+                try {{
+                    const response = await fetch(`/api/oauth/poll?state=${{encodeURIComponent(state)}}`);
+
+                    if (response.status === 200) {{
+                        clearInterval(pollInterval);
+                        const data = await response.json();
+
+                        // Redirect to app with code
+                        let url = `${{redirectUri}}?code=${{encodeURIComponent(data.code)}}`;
+                        if (state) url += `&state=${{encodeURIComponent(state)}}`;
+                        window.location.href = url;
+                    }} else if (response.status !== 202) {{
+                        console.error('Poll error:', response.status);
+                        // Don't clear interval on 500 - keep trying
+                    }}
+                }} catch (err) {{
+                    console.error('Poll failed:', err);
+                }}
+            }}, 2000); // Poll every 2 seconds
+
+            // Stop after 30 minutes
+            setTimeout(() => {{
+                clearInterval(pollInterval);
+                console.log('Polling timed out');
+            }}, 30 * 60 * 1000);
         }}
 
         function toggleAdvanced() {{
@@ -3291,35 +3328,59 @@ pub struct PollResponse {
 }
 
 /// GET /oauth/poll?state={state}
-/// Polling endpoint for iOS PWA OAuth flow (where redirect doesn't work)
-/// Returns HTTP 200 with code when ready, HTTP 202 if pending, HTTP 404 if not found/expired
-pub async fn poll(Query(req): Query<PollRequest>) -> Result<Response, OAuthError> {
-    // Clean up expired entries lazily
-    POLLING_CACHE.retain(|_, (_, expiry)| expiry.elapsed() < POLLING_TTL);
+/// Polling endpoint for multi-device OAuth flow (email verified on different device)
+/// Returns HTTP 200 with code when ready, HTTP 202 if pending, HTTP 500 on server error
+pub async fn poll(
+    State(auth_state): State<super::routes::AuthState>,
+    Query(req): Query<PollRequest>,
+) -> Result<Response, OAuthError> {
+    // Validate state parameter (basic sanity check - alphanumeric, reasonable length)
+    if req.state.len() > 128
+        || !req
+            .state
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(OAuthError::InvalidRequest("Invalid state parameter".into()));
+    }
 
-    // Check if code is ready
-    if let Some(entry) = POLLING_CACHE.get(&req.state) {
-        let (code, expiry) = entry.value();
+    let Some(redis) = &auth_state.state.redis else {
+        tracing::error!("Redis not configured for OAuth polling");
+        return Err(OAuthError::ServerError(
+            "Service temporarily unavailable".into(),
+        ));
+    };
 
-        // Check if expired
-        if expiry.elapsed() >= POLLING_TTL {
-            POLLING_CACHE.remove(&req.state);
-            return Err(OAuthError::InvalidRequest("State expired".to_string()));
+    let key = format!("oauth_poll:{}", req.state);
+
+    match redis::cmd("GET")
+        .arg(&key)
+        .query_async::<Option<String>>(&mut redis.clone())
+        .await
+    {
+        Ok(Some(code)) => {
+            // Delete key (one-time use)
+            let _ = redis::cmd("DEL")
+                .arg(&key)
+                .query_async::<()>(&mut redis.clone())
+                .await;
+
+            Ok((StatusCode::OK, Json(PollResponse { code })).into_response())
         }
-
-        // Code ready - return and remove from cache (one-time use)
-        let code = code.clone();
-        drop(entry); // Release lock before removing
-        POLLING_CACHE.remove(&req.state);
-
-        Ok((StatusCode::OK, Json(PollResponse { code })).into_response())
-    } else {
-        // Code not ready yet - return 202 Accepted
-        Ok((
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "status": "pending" })),
-        )
+        Ok(None) => {
+            // Not ready yet
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "status": "pending" })),
+            )
             .into_response())
+        }
+        Err(e) => {
+            tracing::error!("Redis error in poll: {}", e);
+            Err(OAuthError::ServerError(
+                "Service temporarily unavailable".into(),
+            ))
+        }
     }
 }
 

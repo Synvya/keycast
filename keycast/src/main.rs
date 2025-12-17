@@ -275,6 +275,11 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         instance_id
     );
 
+    // Create Redis connection for API (OAuth polling for multi-device email verification)
+    let redis_client = redis::Client::open(redis_url.as_str())?;
+    let redis_conn = redis_client.get_multiplexed_async_connection().await?;
+    tracing::info!("✔︎ Redis connection for API initialized");
+
     // Setup key managers (one for signer, one for API - they're cheap to create)
     let use_gcp_kms = env::var("USE_GCP_KMS").unwrap_or_else(|_| "false".to_string()) == "true";
 
@@ -380,6 +385,7 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         server_keys,
         tenant_cache,
         bcrypt_sender,
+        redis: Some(redis_conn),
     });
 
     // Set global state for routes that use it

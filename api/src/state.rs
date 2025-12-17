@@ -6,6 +6,7 @@ use keycast_core::signing_handler::SignerHandlersCache;
 use moka::future::Cache;
 use nostr_sdk::Keys;
 use once_cell::sync::OnceCell;
+use redis::aio::MultiplexedConnection;
 use sqlx::PgPool;
 use std::sync::Arc;
 use thiserror::Error;
@@ -38,6 +39,9 @@ pub struct KeycastState {
     /// Bcrypt queue sender for async password hashing during registration
     /// Workers hash passwords in background; DB tracks pending state via NULL password_hash
     pub bcrypt_sender: BcryptSender,
+    /// Redis connection for OAuth polling (multi-device email verification)
+    /// Optional to allow graceful degradation if Redis is unavailable
+    pub redis: Option<MultiplexedConnection>,
 }
 
 pub static KEYCAST_STATE: OnceCell<Arc<KeycastState>> = OnceCell::new();

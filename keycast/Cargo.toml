@@ -31,6 +31,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenv = "0.15"
 num_cpus = "1.16"
 moka = { version = "0.12", features = ["future"] }
+redis = { version = "0.27", features = ["tokio-comp", "aio"] }
 sqlx = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 zeroize = { workspace = true }
