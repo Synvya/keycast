@@ -565,13 +565,13 @@ checksum = "8c3c1a368f70d6cf7302d78f8f7093da241fb8e8807c05cc9e51a125895a6d5b"
 
 [[package]]
 name = "bcrypt"
-version = "0.15.1"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e65938ed058ef47d92cf8b346cc76ef48984572ade631927e9937b5ffc7662c7"
+checksum = "abaf6da45c74385272ddf00e1ac074c7d8a6c1a1dda376902bd6a427522a8b2c"
 dependencies = [
  "base64 0.22.1",
  "blowfish",
- "getrandom 0.2.15",
+ "getrandom 0.3.4",
  "subtle",
  "zeroize",
 ]
@@ -2765,7 +2765,9 @@ dependencies = [
  "anchorhash",
  "async-trait",
  "base64 0.22.1",
+ "bcrypt",
  "chrono",
+ "crossbeam-channel",
  "dotenv",
  "gcp_auth",
  "google-cloud-kms",
@@ -2782,6 +2784,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.8",
  "sqlx",
+ "subtle",
  "thiserror 2.0.9",
  "tokio",
  "tracing",
@@ -2798,6 +2801,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "bcrypt",
  "chrono",
  "cluster-hashring",
  "config",
@@ -2813,6 +2817,7 @@ dependencies = [
  "num_cpus",
  "once_cell",
  "secrecy",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.9",
  "tokio",

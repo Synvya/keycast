@@ -2,6 +2,7 @@ use crate::api::tenant::Tenant;
 use crate::bcrypt_queue::BcryptSender;
 use crate::handlers::http_rpc_handler::HttpHandlerCache;
 use keycast_core::encryption::KeyManager;
+use keycast_core::secret_pool::SecretPoolReceiver;
 use keycast_core::signing_handler::SignerHandlersCache;
 use moka::future::Cache;
 use nostr_sdk::Keys;
@@ -42,6 +43,9 @@ pub struct KeycastState {
     /// Redis connection for OAuth polling (multi-device email verification)
     /// Optional to allow graceful degradation if Redis is unavailable
     pub redis: Option<MultiplexedConnection>,
+    /// Pre-computed secret pool for instant authorization creation
+    /// Background producer generates (secret, bcrypt_hash) pairs ahead of time
+    pub secret_pool: SecretPoolReceiver,
 }
 
 pub static KEYCAST_STATE: OnceCell<Arc<KeycastState>> = OnceCell::new();
@@ -70,5 +74,12 @@ pub fn get_tenant_cache() -> Result<&'static TenantCache, StateError> {
     KEYCAST_STATE
         .get()
         .map(|state| &state.tenant_cache)
+        .ok_or(StateError::DatabaseNotInitialized)
+}
+
+pub fn get_secret_pool() -> Result<&'static SecretPoolReceiver, StateError> {
+    KEYCAST_STATE
+        .get()
+        .map(|state| &state.secret_pool)
         .ok_or(StateError::DatabaseNotInitialized)
 }

@@ -14,7 +14,8 @@ pub struct CreateOAuthAuthorizationParams {
     pub redirect_origin: String,
     pub client_id: String,
     pub bunker_public_key: String,
-    pub secret: String,
+    /// The bcrypt hash of the connection secret (verified during NIP-46 connect)
+    pub secret_hash: String,
     pub relays: String,
     pub policy_id: Option<i32>,
     pub client_pubkey: Option<String>,
@@ -39,8 +40,8 @@ impl OAuthAuthorizationRepository {
         authorization_id: i32,
     ) -> Result<OAuthAuthorization, RepositoryError> {
         sqlx::query_as::<_, OAuthAuthorization>(
-            "SELECT id, user_pubkey, redirect_origin, client_id, bunker_public_key, secret,
-                    relays, policy_id, tenant_id, client_pubkey, connected_client_pubkey,
+            "SELECT id, user_pubkey, redirect_origin, client_id, bunker_public_key,
+                    secret_hash, relays, policy_id, tenant_id, client_pubkey, connected_client_pubkey,
                     connected_at, created_at, updated_at, revoked_at, expires_at,
                     handle_expires_at, authorization_handle
              FROM oauth_authorizations WHERE tenant_id = $1 AND id = $2",
@@ -110,8 +111,8 @@ impl OAuthAuthorizationRepository {
         let now = Utc::now();
         sqlx::query_scalar::<_, i32>(
             "INSERT INTO oauth_authorizations
-             (tenant_id, user_pubkey, redirect_origin, client_id, bunker_public_key, secret,
-              relays, policy_id, client_pubkey, authorization_handle, handle_expires_at,
+             (tenant_id, user_pubkey, redirect_origin, client_id, bunker_public_key,
+              secret_hash, relays, policy_id, client_pubkey, authorization_handle, handle_expires_at,
               created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              RETURNING id",
@@ -121,7 +122,7 @@ impl OAuthAuthorizationRepository {
         .bind(&params.redirect_origin)
         .bind(&params.client_id)
         .bind(&params.bunker_public_key)
-        .bind(&params.secret)
+        .bind(&params.secret_hash)
         .bind(&params.relays)
         .bind(params.policy_id)
         .bind(&params.client_pubkey)
@@ -184,18 +185,18 @@ impl OAuthAuthorizationRepository {
         .map_err(Into::into)
     }
 
-    /// Verify session ownership by secret, returning the user pubkey if valid.
+    /// Verify session ownership by bunker pubkey, returning the user pubkey if valid.
     pub async fn verify_session_ownership(
         &self,
-        secret: &str,
+        bunker_pubkey: &str,
         tenant_id: i64,
     ) -> Result<Option<String>, RepositoryError> {
         let result: Option<(String,)> = sqlx::query_as(
             "SELECT oa.user_pubkey FROM oauth_authorizations oa
              JOIN users u ON oa.user_pubkey = u.pubkey
-             WHERE oa.secret = $1 AND u.tenant_id = $2",
+             WHERE oa.bunker_public_key = $1 AND u.tenant_id = $2",
         )
-        .bind(secret)
+        .bind(bunker_pubkey)
         .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -245,15 +246,15 @@ impl OAuthAuthorizationRepository {
         Ok(())
     }
 
-    /// Find bunker pubkey and secret by redirect origin.
-    pub async fn find_by_redirect_origin(
+    /// Find bunker pubkey by redirect origin.
+    pub async fn find_bunker_pubkey_by_redirect_origin(
         &self,
         user_pubkey: &str,
         redirect_origin: &str,
         tenant_id: i64,
-    ) -> Result<Option<(String, String)>, RepositoryError> {
-        sqlx::query_as(
-            "SELECT oa.bunker_public_key, oa.secret FROM oauth_authorizations oa
+    ) -> Result<Option<String>, RepositoryError> {
+        sqlx::query_scalar(
+            "SELECT oa.bunker_public_key FROM oauth_authorizations oa
              WHERE oa.user_pubkey = $1
              AND oa.redirect_origin = $2
              AND oa.tenant_id = $3",
@@ -364,7 +365,7 @@ impl OAuthAuthorizationRepository {
 
     /// List active authorizations with policy info for a user.
     /// Returns tuples of (app_name, policy_id, policy_name, policy_slug, policy_display_name,
-    /// policy_description, created_at, secret, last_activity, activity_count).
+    /// policy_description, created_at, bunker_public_key, last_activity, activity_count).
     #[allow(clippy::type_complexity)]
     pub async fn list_with_policy_info(
         &self,
@@ -379,7 +380,7 @@ impl OAuthAuthorizationRepository {
             Option<String>, // policy_display_name
             Option<String>, // policy_description
             String,         // created_at
-            String,         // secret
+            String,         // bunker_public_key
             Option<String>, // last_activity
             Option<i64>,    // activity_count
         )>,
@@ -394,7 +395,7 @@ impl OAuthAuthorizationRepository {
                 p.display_name as policy_display_name,
                 p.description as policy_description,
                 oa.created_at::text,
-                oa.secret,
+                oa.bunker_public_key,
                 oa.last_activity::text,
                 oa.activity_count::bigint
              FROM oauth_authorizations oa
@@ -478,8 +479,8 @@ mod tests {
 
         // Create authorization for user_b
         sqlx::query(
-            "INSERT INTO oauth_authorizations (user_pubkey, redirect_origin, client_id, bunker_public_key, secret, relays, tenant_id, authorization_handle, handle_expires_at, created_at, updated_at)
-             VALUES ($1, $2, 'Test', $3, 'secret', '[]', 1, $4, NOW() + INTERVAL '30 days', NOW(), NOW())"
+            "INSERT INTO oauth_authorizations (user_pubkey, redirect_origin, client_id, bunker_public_key, secret_hash, relays, tenant_id, authorization_handle, handle_expires_at, created_at, updated_at)
+             VALUES ($1, $2, 'Test', $3, '$2b$10$test_hash', '[]', 1, $4, NOW() + INTERVAL '30 days', NOW(), NOW())"
         )
         .bind(&user_b)
         .bind(&origin)

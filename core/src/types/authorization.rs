@@ -66,12 +66,10 @@ pub struct Authorization {
     pub tenant_id: i64,
     /// The id of the stored key the authorization belongs to
     pub stored_key_id: i32,
-    /// The generated secret connection uuid
-    pub secret: String,
+    /// The bcrypt hash of the connection secret (verified during NIP-46 connect)
+    pub secret_hash: String,
     /// The public key of the bunker nostr secret key
     pub bunker_public_key: String,
-    /// The encrypted bunker nostr secret key
-    pub bunker_secret: Vec<u8>,
     #[sqlx(try_from = "String")]
     /// The list of relays the authorization will listen on
     pub relays: Relays,
@@ -94,7 +92,9 @@ pub struct AuthorizationWithRelations {
     #[sqlx(flatten)]
     pub policy: Policy,
     pub users: Vec<UserAuthorization>,
-    pub bunker_connection_string: String,
+    /// The bunker connection string (only available at creation time, None afterward)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bunker_connection_string: Option<String>,
 }
 
 #[derive(Debug, FromRow, Serialize, Deserialize)]
@@ -108,7 +108,7 @@ pub struct UserAuthorization {
 impl Authorization {
     pub async fn find(pool: &PgPool, tenant_id: i64, id: i32) -> Result<Self, AuthorizationError> {
         let authorization = sqlx::query_as::<_, Authorization>(
-            "SELECT id, tenant_id, stored_key_id, secret, bunker_public_key, bunker_secret,
+            "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
                     relays, policy_id, max_uses, expires_at, created_at, updated_at
              FROM authorizations WHERE tenant_id = $1 AND id = $2",
         )
@@ -182,14 +182,13 @@ impl Authorization {
         Ok(permissions)
     }
 
-    /// Generate a connection string for the authorization
+    /// Generate a bunker connection string (static helper for use at creation time).
     ///
     /// Format: `bunker://<remote-signer-pubkey>?relay=<encoded-relay-1,encoded-relay-2>&secret=<encoded-secret>`
     ///
-    /// Uses the deployment-wide BUNKER_RELAYS configuration (not per-authorization relays).
-    /// All bunker URLs reference the same relay infrastructure for security and scalability.
-    pub async fn bunker_connection_string(&self) -> Result<String, AuthorizationError> {
-        // Get deployment-wide relay list from environment
+    /// Uses the deployment-wide BUNKER_RELAYS configuration.
+    /// The plaintext secret is only available at creation time - after that only the hash is stored.
+    pub fn generate_bunker_url(bunker_public_key: &str, secret: &str) -> String {
         let relays = Self::get_bunker_relays();
 
         let relay_params = relays
@@ -198,12 +197,12 @@ impl Authorization {
             .collect::<Vec<_>>()
             .join("&");
 
-        Ok(format!(
+        format!(
             "bunker://{}?{}&secret={}",
-            self.bunker_public_key,
+            bunker_public_key,
             relay_params,
-            urlencoding::encode(&self.secret),
-        ))
+            urlencoding::encode(secret),
+        )
     }
 
     /// Get the configured bunker relay list from environment

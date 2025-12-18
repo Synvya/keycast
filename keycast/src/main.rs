@@ -375,6 +375,13 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         num_cpus::get()
     );
 
+    // Create secret pool for instant authorization creation
+    // Background producer pre-computes (secret, bcrypt_hash) pairs
+    let secret_pool = keycast_core::secret_pool::SecretPool::default();
+    let secret_pool_receiver = secret_pool.receiver();
+    let _secret_pool_producer = secret_pool.spawn_producer();
+    tracing::info!("✔︎ Secret pool initialized (capacity: 100, bcrypt cost: 10)");
+
     // Create API state with http_handler_cache for on-demand loading
     // Note: api no longer depends on signer's handler cache (decoupled)
     let api_state = Arc::new(keycast_api::state::KeycastState {
@@ -386,6 +393,7 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         tenant_cache,
         bcrypt_sender,
         redis: Some(redis_conn),
+        secret_pool: secret_pool_receiver,
     });
 
     // Set global state for routes that use it

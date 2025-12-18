@@ -17,10 +17,10 @@ pub struct OAuthAuthorization {
     pub redirect_origin: String,
     /// The OAuth client_id (untrusted app display name from OAuth request)
     pub client_id: Option<String>,
-    /// The bunker public key (derived from user key via HKDF, different from user_pubkey for privacy)
+    /// The bunker public key (different from user_pubkey for privacy)
     pub bunker_public_key: String,
-    /// The connection secret for NIP-46 authentication
-    pub secret: String,
+    /// The bcrypt hash of the connection secret (verified during NIP-46 connect)
+    pub secret_hash: String,
     #[sqlx(try_from = "String")]
     /// The list of relays the authorization will listen on
     pub relays: Relays,
@@ -83,8 +83,8 @@ impl OAuthAuthorization {
 
     pub async fn find(pool: &PgPool, tenant_id: i64, id: i32) -> Result<Self, AuthorizationError> {
         let authorization = sqlx::query_as::<_, OAuthAuthorization>(
-            "SELECT id, user_pubkey, redirect_origin, client_id, bunker_public_key, secret,
-                    relays, policy_id, tenant_id, client_pubkey, connected_client_pubkey,
+            "SELECT id, user_pubkey, redirect_origin, client_id, bunker_public_key,
+                    secret_hash, relays, policy_id, tenant_id, client_pubkey, connected_client_pubkey,
                     connected_at, created_at, updated_at, revoked_at, expires_at,
                     handle_expires_at, authorization_handle
              FROM oauth_authorizations WHERE tenant_id = $1 AND id = $2",

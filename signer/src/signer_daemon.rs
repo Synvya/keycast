@@ -33,8 +33,8 @@ pub struct Nip46Handler {
     bunker_keys: Keys,
     /// Keys for signing user events
     pub user_keys: Keys,
-    /// Connection secret for NIP-46 connect validation
-    secret: SecretString,
+    /// Bcrypt hash of connection secret for NIP-46 connect validation
+    secret_hash: String,
     authorization_id: i32,
     tenant_id: i64,
     is_oauth: bool,
@@ -47,7 +47,7 @@ impl Nip46Handler {
     pub fn new_for_test(
         bunker_keys: Keys,
         user_keys: Keys,
-        secret: String,
+        secret_hash: String,
         authorization_id: i32,
         tenant_id: i64,
         is_oauth: bool,
@@ -56,7 +56,7 @@ impl Nip46Handler {
         Self {
             bunker_keys,
             user_keys,
-            secret: SecretString::from(secret),
+            secret_hash,
             authorization_id,
             tenant_id,
             is_oauth,
@@ -121,51 +121,59 @@ impl Nip46Handler {
         client_pubkey: &str,
         provided_secret: &str,
     ) -> SignerResult<String> {
-        if !self.is_oauth {
-            // For regular authorizations, just validate secret
-            if provided_secret == self.secret.expose_secret() {
-                return Ok("ack".to_string());
-            } else {
-                return Err(SignerError::permission_denied("Invalid secret"));
-            }
+        // Validate secret against bcrypt hash (same for both OAuth and team authorizations)
+        let valid =
+            keycast_core::secret_pool::verify_secret(provided_secret, &self.secret_hash).await;
+        if !valid {
+            tracing::warn!(
+                "Invalid secret for authorization {}",
+                self.authorization_id
+            );
+            return Err(SignerError::permission_denied("Invalid secret"));
         }
 
-        // For OAuth authorizations, check if secret exists and if client is already connected
-        let bunker_pubkey = self.bunker_keys.public_key().to_hex();
+        if !self.is_oauth {
+            // For regular authorizations, secret validation is sufficient
+            // No client tracking (allows shared bunker URLs for teams)
+            return Ok("ack".to_string());
+        }
 
-        let existing: Option<(i32, Option<String>)> = sqlx::query_as(
-            "SELECT id, connected_client_pubkey FROM oauth_authorizations
-             WHERE bunker_public_key = $1 AND secret = $2
+        // For OAuth authorizations, also enforce one-client-per-bunker (NIP-46 spec)
+        // Check if a client is already connected
+        let existing_client: Option<String> = sqlx::query_scalar(
+            "SELECT connected_client_pubkey FROM oauth_authorizations
+             WHERE id = $1 AND tenant_id = $2
                AND revoked_at IS NULL
                AND (expires_at IS NULL OR expires_at > NOW())",
         )
-        .bind(&bunker_pubkey)
-        .bind(provided_secret)
+        .bind(self.authorization_id)
+        .bind(self.tenant_id)
         .fetch_optional(&self.pool)
-        .await?;
+        .await?
+        .flatten();
 
-        match existing {
-            Some((_auth_id, Some(existing_client))) => {
-                // Already connected - verify it's the same client
-                if existing_client == client_pubkey {
-                    tracing::debug!("Same client reconnecting: {}", client_pubkey);
-                    Ok("ack".to_string())
-                } else {
-                    tracing::warn!(
-                        "Secret already used by different client. Existing: {}, Attempting: {}",
-                        existing_client,
-                        client_pubkey
-                    );
-                    Err(SignerError::permission_denied(
-                        "Secret already used by another client",
-                    ))
-                }
+        match existing_client {
+            Some(existing) if existing == client_pubkey => {
+                // Same client reconnecting - allowed
+                tracing::debug!("Same client reconnecting: {}", client_pubkey);
+                Ok("ack".to_string())
             }
-            Some((auth_id, None)) => {
+            Some(existing) => {
+                // Different client trying to use same bunker - rejected
+                tracing::warn!(
+                    "Secret already used by different client. Existing: {}, Attempting: {}",
+                    existing,
+                    client_pubkey
+                );
+                Err(SignerError::permission_denied(
+                    "Secret already used by another client",
+                ))
+            }
+            None => {
                 // First connect - store client pubkey
                 tracing::info!(
                     "First connect for OAuth auth {}, storing client pubkey: {}",
-                    auth_id,
+                    self.authorization_id,
                     client_pubkey
                 );
                 sqlx::query(
@@ -174,15 +182,11 @@ impl Nip46Handler {
                      WHERE id = $2",
                 )
                 .bind(client_pubkey)
-                .bind(auth_id)
+                .bind(self.authorization_id)
                 .execute(&self.pool)
                 .await?;
 
                 Ok("ack".to_string())
-            }
-            None => {
-                tracing::warn!("Invalid secret for bunker {}", bunker_pubkey);
-                Err(SignerError::permission_denied("Invalid secret"))
             }
         }
     }
@@ -633,7 +637,7 @@ impl UnifiedSigner {
             .await?;
 
             if let Some(auth) = auth {
-                // Get user's key from personal_keys (single source of truth)
+                // Get user's key from personal_keys first (needed for HKDF derivation)
                 let encrypted_user_key: Vec<u8> = sqlx::query_scalar(
                     "SELECT encrypted_secret_key FROM personal_keys WHERE user_pubkey = $1 AND tenant_id = $2"
                 )
@@ -652,27 +656,17 @@ impl UnifiedSigner {
                     })?;
                 let user_keys = Keys::new(user_secret_key.clone());
 
-                // Derive bunker keys using HKDF with connection secret (privacy: bunker_pubkey ≠ user_pubkey)
-                let bunker_keys =
-                    keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &auth.secret);
-
-                // Validate derived key matches stored bunker_public_key
-                if bunker_keys.public_key().to_hex() != auth.bunker_public_key {
-                    tracing::error!(
-                        "Derived bunker key mismatch for auth {}: expected {}, got {}",
-                        auth.id,
-                        auth.bunker_public_key,
-                        bunker_keys.public_key().to_hex()
-                    );
-                    return Err(SignerError::data_corruption(
-                        "Derived bunker key mismatch - possible data corruption or migration issue",
-                    ));
-                }
+                // Derive bunker keys using HKDF with secret_hash as entropy
+                // This avoids an extra KMS call - user_secret is already decrypted
+                let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(
+                    &user_secret_key,
+                    &auth.secret_hash,
+                );
 
                 let handler = Nip46Handler {
                     bunker_keys,
                     user_keys,
-                    secret: SecretString::from(auth.secret.clone()),
+                    secret_hash: auth.secret_hash.clone(),
                     authorization_id: auth.id,
                     tenant_id,
                     is_oauth: true,
@@ -684,8 +678,8 @@ impl UnifiedSigner {
             }
         } else {
             // Load regular authorization
-            let auth_data: Option<(i32, Vec<u8>, String, i64)> = sqlx::query_as(
-                "SELECT id, bunker_secret, secret, stored_key_id FROM authorizations
+            let auth_data: Option<(i32, String, i64)> = sqlx::query_as(
+                "SELECT id, secret_hash, stored_key_id FROM authorizations
                  WHERE tenant_id = $1 AND bunker_public_key = $2",
             )
             .bind(tenant_id)
@@ -693,17 +687,8 @@ impl UnifiedSigner {
             .fetch_optional(pool)
             .await?;
 
-            if let Some((auth_id, bunker_secret, connection_secret, stored_key_id)) = auth_data {
-                let decrypted_bunker_secret = key_manager
-                    .decrypt(&bunker_secret)
-                    .await
-                    .map_err(|e| SignerError::encryption(e.to_string()))?;
-                let bunker_secret_key =
-                    SecretKey::from_slice(&decrypted_bunker_secret).map_err(|e| {
-                        SignerError::invalid_key(format!("Invalid bunker secret key: {}", e))
-                    })?;
-                let bunker_keys = Keys::new(bunker_secret_key);
-
+            if let Some((auth_id, secret_hash, stored_key_id)) = auth_data {
+                // Load stored_key (team's signing key) first - needed for HKDF derivation
                 let stored_key_secret: Vec<u8> = sqlx::query_scalar(
                     "SELECT secret_key FROM stored_keys WHERE id = $1 AND tenant_id = $2",
                 )
@@ -720,12 +705,19 @@ impl UnifiedSigner {
                     SecretKey::from_slice(&decrypted_user_secret).map_err(|e| {
                         SignerError::invalid_key(format!("Invalid user secret key: {}", e))
                     })?;
-                let user_keys = Keys::new(user_secret_key);
+                let user_keys = Keys::new(user_secret_key.clone());
+
+                // Derive bunker keys using HKDF with secret_hash as entropy
+                // This avoids an extra KMS call - user_secret is already decrypted
+                let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(
+                    &user_secret_key,
+                    &secret_hash,
+                );
 
                 let handler = Nip46Handler {
                     bunker_keys,
                     user_keys,
-                    secret: SecretString::from(connection_secret),
+                    secret_hash,
                     authorization_id: auth_id,
                     tenant_id,
                     is_oauth: false,
@@ -809,6 +801,7 @@ impl UnifiedSigner {
                         tracing::debug!("Loading authorization on-demand: {}", bunker_pubkey);
 
                         // Get user's key from personal_keys table (single source of truth)
+                        // Must load this first - needed for HKDF bunker key derivation
                         let encrypted_user_key: Vec<u8> = sqlx::query_scalar(
                             "SELECT encrypted_secret_key FROM personal_keys WHERE user_pubkey = $1 AND tenant_id = $2"
                         )
@@ -827,24 +820,17 @@ impl UnifiedSigner {
                             })?;
                         let user_keys = Keys::new(user_secret_key.clone());
 
-                        // Derive bunker keys using HKDF with connection secret (privacy: bunker_pubkey ≠ user_pubkey)
+                        // Derive bunker keys using HKDF with secret_hash as entropy
+                        // This avoids an extra KMS call - user_secret is already decrypted
                         let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(
                             &user_secret_key,
-                            &auth.secret,
+                            &auth.secret_hash,
                         );
-
-                        // Validate derived key matches stored bunker_public_key
-                        if bunker_keys.public_key().to_hex() != auth.bunker_public_key {
-                            return Err(SignerError::data_corruption(format!(
-                                "Derived bunker key mismatch for auth {} - possible data corruption",
-                                auth.id
-                            )));
-                        }
 
                         let handler = Nip46Handler {
                             bunker_keys,
                             user_keys,
-                            secret: SecretString::from(auth.secret.clone()),
+                            secret_hash: auth.secret_hash.clone(),
                             authorization_id: auth.id,
                             tenant_id: auth.tenant_id,
                             is_oauth: true,
@@ -866,8 +852,8 @@ impl UnifiedSigner {
                         );
 
                         // Query regular authorizations table (team bunkers)
-                        let auth_data: Option<(i32, Vec<u8>, String, i32, i64)> = sqlx::query_as(
-                            r#"SELECT id, bunker_secret, secret, stored_key_id, tenant_id
+                        let auth_data: Option<(i32, String, i32, i64)> = sqlx::query_as(
+                            r#"SELECT id, secret_hash, stored_key_id, tenant_id
                                FROM authorizations
                                WHERE bunker_public_key = $1
                                  AND (expires_at IS NULL OR expires_at > NOW())"#,
@@ -877,33 +863,13 @@ impl UnifiedSigner {
                         .await?;
 
                         match auth_data {
-                            Some((
-                                auth_id,
-                                bunker_secret,
-                                connection_secret,
-                                stored_key_id,
-                                tenant_id,
-                            )) => {
+                            Some((auth_id, secret_hash, stored_key_id, tenant_id)) => {
                                 tracing::debug!(
                                     "Loading team authorization on-demand: {}",
                                     bunker_pubkey
                                 );
 
-                                let decrypted_bunker_secret = key_manager
-                                    .decrypt(&bunker_secret)
-                                    .await
-                                    .map_err(|e| SignerError::encryption(e.to_string()))?;
-                                let bunker_secret_key = SecretKey::from_slice(
-                                    &decrypted_bunker_secret,
-                                )
-                                .map_err(|e| {
-                                    SignerError::invalid_key(format!(
-                                        "Invalid bunker secret key: {}",
-                                        e
-                                    ))
-                                })?;
-                                let bunker_keys = Keys::new(bunker_secret_key);
-
+                                // Load stored_key (team's signing key) first - needed for HKDF derivation
                                 let stored_key_secret: Vec<u8> = sqlx::query_scalar(
                                     "SELECT secret_key FROM stored_keys WHERE id = $1 AND tenant_id = $2"
                                 )
@@ -923,12 +889,19 @@ impl UnifiedSigner {
                                             e
                                         ))
                                     })?;
-                                let user_keys = Keys::new(user_secret_key);
+                                let user_keys = Keys::new(user_secret_key.clone());
+
+                                // Derive bunker keys using HKDF with secret_hash as entropy
+                                // This avoids an extra KMS call - user_secret is already decrypted
+                                let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(
+                                    &user_secret_key,
+                                    &secret_hash,
+                                );
 
                                 let handler = Nip46Handler {
                                     bunker_keys,
                                     user_keys,
-                                    secret: SecretString::from(connection_secret),
+                                    secret_hash,
                                     authorization_id: auth_id,
                                     tenant_id,
                                     is_oauth: false,
@@ -1466,10 +1439,11 @@ impl Nip46Handler {
         source: &str,
     ) -> SignerResult<()> {
         // Get user public key and client pubkey
-        let (user_pubkey, client_pubkey, bunker_secret) = if self.is_oauth {
+        // Use bunker_public_key to identify the authorization (secret_hash can't be searched)
+        let (user_pubkey, client_pubkey, bunker_pubkey) = if self.is_oauth {
             // For OAuth, look up the oauth_authorization
             let oauth_auth: (String, Option<String>, String) = sqlx::query_as(
-                "SELECT user_pubkey, client_pubkey, secret
+                "SELECT user_pubkey, client_pubkey, bunker_public_key
                  FROM oauth_authorizations
                  WHERE tenant_id = $1 AND id = $2",
             )
@@ -1481,7 +1455,7 @@ impl Nip46Handler {
         } else {
             // For regular authorizations, look up via authorizations table
             let auth: (i64, String) = sqlx::query_as(
-                "SELECT stored_key_id, secret FROM authorizations WHERE tenant_id = $1 AND id = $2",
+                "SELECT stored_key_id, bunker_public_key FROM authorizations WHERE tenant_id = $1 AND id = $2",
             )
             .bind(self.tenant_id)
             .bind(self.authorization_id as i64)
@@ -1489,7 +1463,7 @@ impl Nip46Handler {
             .await?;
 
             let stored_key_id = auth.0;
-            let bunker_secret = auth.1;
+            let bunker_pubkey = auth.1;
 
             // Get public_key from stored_keys
             let stored_key: (String,) =
@@ -1499,7 +1473,7 @@ impl Nip46Handler {
                     .fetch_one(&self.pool)
                     .await?;
 
-            (stored_key.0, None, bunker_secret)
+            (stored_key.0, None, bunker_pubkey)
         };
 
         // Truncate content for storage (don't store huge amounts of text)
@@ -1512,11 +1486,11 @@ impl Nip46Handler {
         // Insert signing activity
         sqlx::query(
             "INSERT INTO signing_activity
-             (user_pubkey, bunker_secret, event_kind, event_content, event_id, client_pubkey, tenant_id, source, created_at)
+             (user_pubkey, bunker_pubkey, event_kind, event_content, event_id, client_pubkey, tenant_id, source, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())"
         )
         .bind(&user_pubkey)
-        .bind(&bunker_secret)
+        .bind(&bunker_pubkey)
         .bind(event_kind as i32)
         .bind(&truncated_content)
         .bind(event_id)
@@ -1624,11 +1598,11 @@ mod tests {
         .unwrap();
 
         // Create oauth_authorization and get the ID
-        // Note: bunker_secret is no longer stored (derived via HKDF on demand)
+        // bunker_keys are derived via HKDF at runtime from user_secret + secret_hash
         let auth_id: i32 = sqlx::query_scalar(
             "INSERT INTO oauth_authorizations
-             (user_pubkey, redirect_origin, bunker_public_key, secret, relays, tenant_id, handle_expires_at, created_at, updated_at)
-             VALUES ($1, 'http://test.example.com', $2, 'test_secret', '[\"wss://relay.test\"]', 1, NOW() + INTERVAL '30 days', NOW(), NOW())
+             (user_pubkey, redirect_origin, bunker_public_key, secret_hash, relays, tenant_id, handle_expires_at, created_at, updated_at)
+             VALUES ($1, 'http://test.example.com', $2, 'test_hash', '[\"wss://relay.test\"]', 1, NOW() + INTERVAL '30 days', NOW(), NOW())
              RETURNING id"
         )
         .bind(&user_pubkey)
@@ -1640,7 +1614,7 @@ mod tests {
         Nip46Handler {
             bunker_keys,
             user_keys,
-            secret: SecretString::from("test_secret".to_string()),
+            secret_hash: "test_hash".to_string(),
             authorization_id: auth_id,
             tenant_id: 1,
             is_oauth: true,
@@ -1757,7 +1731,7 @@ mod tests {
         let test_handler = Nip46Handler {
             bunker_keys: Keys::generate(),
             user_keys: Keys::generate(),
-            secret: SecretString::from("test".to_string()),
+            secret_hash: "test_hash".to_string(),
             authorization_id: 999,
             tenant_id: 1,
             is_oauth: true,

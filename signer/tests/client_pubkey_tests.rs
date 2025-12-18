@@ -66,18 +66,21 @@ async fn create_oauth_authorization_for_client_test(
     .await
     .expect("Failed to create personal key");
 
-    // Create OAuth authorization (bunker key derived via HKDF, not stored)
+    // Create OAuth authorization
+    // Hash the secret with bcrypt for storage (like production code does)
+    let secret_hash = bcrypt::hash(&unique_secret, 4).expect("Failed to hash secret"); // Cost 4 for fast tests
+
     let redirect_origin = format!("https://test-{}.example.com", Uuid::new_v4());
     let oauth_id: i32 = sqlx::query_scalar(
         "INSERT INTO oauth_authorizations
-         (user_pubkey, redirect_origin, client_id, bunker_public_key, secret, relays, tenant_id, handle_expires_at, created_at, updated_at)
+         (user_pubkey, redirect_origin, client_id, bunker_public_key, secret_hash, relays, tenant_id, handle_expires_at, created_at, updated_at)
          VALUES ($1, $2, 'Client Test App', $3, $4, $5, $6, NOW() + INTERVAL '30 days', NOW(), NOW())
          RETURNING id"
     )
     .bind(user_keys.public_key().to_hex())
     .bind(&redirect_origin)
     .bind(user_keys.public_key().to_hex())
-    .bind(&unique_secret)
+    .bind(&secret_hash)
     .bind(json!(["wss://relay.damus.io"]))
     .bind(tenant_id)
     .fetch_one(pool)
@@ -105,11 +108,11 @@ async fn test_connect_stores_client_pubkey() {
     let (oauth_auth, user_keys, secret) =
         create_oauth_authorization_for_client_test(&pool, tenant_id, &key_manager).await;
 
-    // Create handler
+    // Create handler - use the hash from the authorization, keep plaintext secret for process_connect
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -161,7 +164,7 @@ async fn test_connect_rejects_reused_secret() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -209,7 +212,7 @@ async fn test_same_client_can_reconnect() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -243,7 +246,7 @@ async fn test_request_from_connected_client_succeeds() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -288,7 +291,7 @@ async fn test_request_from_unknown_client_rejected() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -329,13 +332,13 @@ async fn test_first_request_without_connect_allowed() {
     let key_manager = FileKeyManager::new().expect("Failed to create key manager");
     let tenant_id = 1;
 
-    let (oauth_auth, user_keys, secret) =
+    let (oauth_auth, user_keys, _secret) =
         create_oauth_authorization_for_client_test(&pool, tenant_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -396,7 +399,7 @@ async fn test_revocation_clears_client_pubkey() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,
@@ -455,7 +458,7 @@ async fn test_connected_at_timestamp_set() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        secret.clone(),
+        oauth_auth.secret_hash.clone(), // Handler needs the hash for verification
         oauth_auth.id,
         tenant_id,
         true,

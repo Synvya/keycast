@@ -67,3 +67,12 @@ impl From<Team> for TeamResponse {
         }
     }
 }
+
+/// Response for authorization creation - includes the bunker URL (only available at creation time)
+#[derive(Debug, Serialize)]
+pub struct AuthorizationCreatedResponse {
+    #[serde(flatten)]
+    pub authorization: keycast_core::types::authorization::Authorization,
+    /// The bunker URL with connection secret - only returned at creation time, cannot be retrieved later
+    pub bunker_url: String,
+}

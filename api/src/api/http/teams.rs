@@ -1,4 +1,5 @@
 use crate::api::types::*;
+use secrecy::ExposeSecret;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -11,7 +12,7 @@ use sqlx::PgPool;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extractors::UcanAuth;
-use crate::state::get_key_manager;
+use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::custom_permissions::{allowed_kinds::AllowedKindsConfig, AVAILABLE_PERMISSIONS};
 use keycast_core::repositories::{
     AuthorizationRepository, PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository,
@@ -323,10 +324,8 @@ pub async fn get_key(
             authorization: auth.clone(),
             policy,
             users,
-            bunker_connection_string: auth
-                .bunker_connection_string()
-                .await
-                .map_err(|e| ApiError::internal(e.to_string()))?,
+            // bunker URL is only available at creation time (secret is now hashed)
+            bunker_connection_string: None,
         });
     }
 
@@ -343,7 +342,7 @@ pub async fn add_authorization(
     UcanAuth(user_pubkey_hex): UcanAuth,
     Path((team_id, pubkey)): Path<(i32, String)>,
     Json(request): Json<AddAuthorizationRequest>,
-) -> ApiResult<Json<Authorization>> {
+) -> ApiResult<Json<AuthorizationCreatedResponse>> {
     let tenant_id = tenant.0.id;
     verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
 
@@ -367,18 +366,26 @@ pub async fn add_authorization(
         return Err(ApiError::not_found("Policy not found"));
     }
 
-    // Create bunker keys for this authorization
-    let bunker_keys = Keys::generate();
-
-    // Encrypt the secret key
-    let key_manager = get_key_manager().map_err(|e| ApiError::internal(e.to_string()))?;
-    let encrypted_bunker_secret = key_manager
-        .encrypt(bunker_keys.secret_key().as_secret_bytes())
+    // Get pre-computed (secret, hash) from pool - instant, no waiting for bcrypt
+    let secret_pool = get_secret_pool().map_err(|e| ApiError::internal(e.to_string()))?;
+    let secret_pair = secret_pool
+        .get()
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+        .ok_or_else(|| ApiError::internal("Secret pool exhausted".to_string()))?;
+    let connection_secret = secret_pair.secret;
+    let secret_hash = secret_pair.hash;
 
-    // Create a secret uuid for the authorization connection string
-    let secret = uuid::Uuid::new_v4().to_string();
+    // Derive bunker keys from stored_key secret using HKDF with secret_hash as entropy
+    // This avoids an extra KMS call at runtime - the signer can re-derive using the same inputs
+    let key_manager = get_key_manager().map_err(|e| ApiError::internal(e.to_string()))?;
+    let decrypted_stored_key = key_manager
+        .decrypt(&stored_key.secret_key)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to decrypt stored key: {}", e)))?;
+    let stored_key_secret = nostr_sdk::SecretKey::from_slice(&decrypted_stored_key)
+        .map_err(|e| ApiError::internal(format!("Invalid stored key: {}", e)))?;
+    let bunker_keys =
+        keycast_core::bunker_key::derive_bunker_keys(&stored_key_secret, &secret_hash);
 
     let relays =
         serde_json::to_value(&request.relays).map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -389,9 +396,8 @@ pub async fn add_authorization(
             tenant_id,
             stored_key.id,
             request.policy_id,
-            &secret,
+            &secret_hash,
             &bunker_keys.public_key().to_hex(),
-            &encrypted_bunker_secret,
             &relays,
             request.max_uses,
             request.expires_at,
@@ -399,7 +405,16 @@ pub async fn add_authorization(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    Ok(Json(authorization))
+    // Generate bunker URL - only available at creation time (secret is hashed for storage)
+    let bunker_url = Authorization::generate_bunker_url(
+        &bunker_keys.public_key().to_hex(),
+        connection_secret.expose_secret(),
+    );
+
+    Ok(Json(AuthorizationCreatedResponse {
+        authorization,
+        bunker_url,
+    }))
 }
 
 pub async fn delete_authorization(

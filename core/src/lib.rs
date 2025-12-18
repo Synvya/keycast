@@ -7,6 +7,7 @@ pub mod instance;
 pub mod metrics;
 pub mod oauth_scopes;
 pub mod repositories;
+pub mod secret_pool;
 pub mod secret_types;
 pub mod signing_handler;
 pub mod signing_session;

@@ -17,17 +17,17 @@ impl SigningActivityRepository {
     /// Get recent signing activity for a bunker session.
     pub async fn list_recent(
         &self,
-        bunker_secret: &str,
+        bunker_pubkey: &str,
         limit: i32,
     ) -> Result<Vec<(i64, Option<String>, Option<String>, String)>, RepositoryError> {
         sqlx::query_as(
             "SELECT event_kind, event_content, event_id, created_at
              FROM signing_activity
-             WHERE bunker_secret = $1
+             WHERE bunker_pubkey = $1
              ORDER BY created_at DESC
              LIMIT $2",
         )
-        .bind(bunker_secret)
+        .bind(bunker_pubkey)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -61,8 +61,8 @@ mod tests {
         let pool = setup_pool().await;
         let repo = SigningActivityRepository::new(pool);
 
-        // Non-existent secret should return empty list
-        let activities = repo.list_recent("non_existent_secret", 100).await.unwrap();
+        // Non-existent bunker pubkey should return empty list
+        let activities = repo.list_recent("non_existent_pubkey", 100).await.unwrap();
         assert!(activities.is_empty());
     }
 }

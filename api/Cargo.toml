@@ -14,7 +14,7 @@ aes-gcm = "0.10"
 async-trait = "0.1"
 axum = "0.7"
 base64 = { workspace = true }
-bcrypt = "0.15"
+bcrypt = "0.17.1"
 bip39 = "2.0"
 chrono = { workspace = true }
 config = { workspace = true }
@@ -63,5 +63,5 @@ http-body-util = "0.1"
 aes-gcm = "0.10"
 async-trait = "0.1"
 md5 = "0.7"
-bcrypt = "0.15"
+bcrypt = "0.17.1"
 serial_test = "3.2"

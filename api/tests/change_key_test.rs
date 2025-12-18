@@ -83,17 +83,15 @@ async fn create_test_oauth_authorization(pool: &PgPool, user_pubkey: &str, app_n
     let bunker_keys = Keys::generate();
     let bunker_pubkey = bunker_keys.public_key().to_hex();
     let now = Utc::now();
-    let secret = format!("secret-{}", Uuid::new_v4());
 
     let (id,): (i32,) = sqlx::query_as(
         "INSERT INTO oauth_authorizations
-         (user_pubkey, bunker_public_key, secret, relays, redirect_origin, tenant_id, created_at, updated_at, handle_expires_at)
-         VALUES ($1, $2, $3, 'wss://relay.example.com', $4, 1, $5, $6, $7)
+         (user_pubkey, bunker_public_key, secret_hash, relays, redirect_origin, tenant_id, created_at, updated_at, handle_expires_at)
+         VALUES ($1, $2, 'test_hash', 'wss://relay.example.com', $3, 1, $4, $5, $6)
          RETURNING id",
     )
     .bind(user_pubkey)
     .bind(&bunker_pubkey)
-    .bind(&secret)
     .bind(format!("https://{}.example.com", app_name.to_lowercase().replace(' ', "-")))
     .bind(now)
     .bind(now)

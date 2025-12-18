@@ -1,2 +1,0 @@
--- Migration consolidated into 0001_initial_schema.sql during Dec 15, 2024 DB reset
--- This file kept for sqlx migration version compatibility

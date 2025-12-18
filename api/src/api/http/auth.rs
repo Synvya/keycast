@@ -9,7 +9,7 @@ use axum::{
 };
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration, Utc};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::bcrypt_queue::{BcryptJob, BcryptQueueError};
 use keycast_core::metrics::METRICS;
@@ -818,12 +818,15 @@ pub async fn create_bunker(
         .await?
         .ok_or(AuthError::Internal("Personal keys not found".to_string()))?;
 
-    // Generate connection secret
-    let connection_secret: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(48)
-        .map(char::from)
-        .collect();
+    // Get pre-computed (secret, hash) from pool - instant, no waiting for bcrypt
+    let secret_pair = auth_state
+        .state
+        .secret_pool
+        .get()
+        .await
+        .ok_or_else(|| AuthError::Internal("Secret pool exhausted".to_string()))?;
+    let connection_secret = secret_pair.secret;
+    let secret_hash = secret_pair.hash;
 
     // Look up policy_id from slug if provided
     let policy_repo = PolicyRepository::new(pool.clone());
@@ -833,7 +836,8 @@ pub async fn create_bunker(
         None
     };
 
-    // Derive bunker key using HKDF with connection secret (privacy: bunker_pubkey ≠ user_pubkey)
+    // Derive bunker key using HKDF with secret_hash as entropy (privacy: bunker_pubkey ≠ user_pubkey)
+    // The bunker key is derived at runtime - not stored in DB - avoiding extra KMS roundtrips
     let key_manager = auth_state.state.key_manager.as_ref();
     let decrypted_user_secret = key_manager
         .decrypt(&encrypted_secret)
@@ -842,8 +846,7 @@ pub async fn create_bunker(
     let user_secret_key = nostr_sdk::SecretKey::from_slice(&decrypted_user_secret)
         .map_err(|e| AuthError::Internal(format!("Invalid secret key: {}", e)))?;
 
-    let bunker_keys =
-        keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &connection_secret);
+    let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &secret_hash);
     let bunker_public_key = bunker_keys.public_key();
 
     // Use deployment-wide relay list (ignore any client-provided relay)
@@ -853,7 +856,6 @@ pub async fn create_bunker(
 
     // Create OAuth authorization - always INSERT (multi-device support)
     // Each "Accept" creates a NEW authorization, old ones remain valid until revoked
-    // Note: bunker key is derived via HKDF from user secret, not stored
     let created_at = Utc::now();
     let handle_expires_at = created_at + chrono::Duration::days(30);
     let oauth_auth_repo = OAuthAuthorizationRepository::new(pool.clone());
@@ -864,7 +866,7 @@ pub async fn create_bunker(
             redirect_origin: redirect_origin.clone(),
             client_id: display_name.to_string(),
             bunker_public_key: bunker_public_key.to_hex(),
-            secret: connection_secret.clone(),
+            secret_hash,
             relays: relays_json.clone(),
             policy_id,
             client_pubkey: None,
@@ -908,7 +910,7 @@ pub async fn create_bunker(
         "bunker://{}?{}&secret={}",
         bunker_public_key.to_hex(),
         relay_params,
-        connection_secret
+        connection_secret.expose_secret()
     );
 
     tracing::info!(
@@ -927,7 +929,9 @@ pub async fn create_bunker(
 }
 
 /// Get bunker URL for the authenticated user
-/// The redirect_origin in the UCAN determines which authorization's bunker URL to return
+/// DEPRECATED: Bunker URLs with secrets are only available at creation time.
+/// The connection secret is now hashed (bcrypt) for security and cannot be retrieved.
+/// Use /user/bunker/create to create a new authorization if you need a bunker URL.
 pub async fn get_bunker_url(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
@@ -938,51 +942,47 @@ pub async fn get_bunker_url(
         extract_user_and_origin_from_token(&headers).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
-        "Fetching bunker URL for user: {} origin: {} in tenant: {}",
+        "get_bunker_url called for user: {} origin: {} in tenant: {}",
         user_pubkey,
         redirect_origin,
         tenant_id
     );
 
-    // Get the authorization for this specific origin
+    // Check if authorization exists (but we can't return the secret anymore)
     let oauth_auth_repo = OAuthAuthorizationRepository::new(pool.clone());
-    let result = oauth_auth_repo
-        .find_by_redirect_origin(&user_pubkey, &redirect_origin, tenant_id)
+    let bunker_pubkey = oauth_auth_repo
+        .find_bunker_pubkey_by_redirect_origin(&user_pubkey, &redirect_origin, tenant_id)
         .await?;
 
-    let (bunker_pubkey, connection_secret) = result.ok_or_else(|| {
-        tracing::warn!(
-            "No authorization found for user {} origin {} in tenant {}",
-            user_pubkey,
-            redirect_origin,
-            tenant_id
-        );
-        AuthError::Forbidden(
-            "No authorization for this origin. Create one via OAuth or /user/bunker/create"
-                .to_string(),
-        )
-    })?;
-
-    // Build bunker URL with deployment-wide relay list
-    let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
-    let relay_params: String = relays
-        .iter()
-        .map(|r| format!("relay={}", urlencoding::encode(r)))
-        .collect::<Vec<_>>()
-        .join("&");
-
-    let bunker_url = format!(
-        "bunker://{}?{}&secret={}",
-        bunker_pubkey, relay_params, connection_secret
-    );
-
-    tracing::info!(
-        "Returning bunker URL for origin: {} with pubkey: {}",
-        redirect_origin,
-        bunker_pubkey
-    );
-
-    Ok(Json(BunkerUrlResponse { bunker_url }))
+    match bunker_pubkey {
+        Some(pubkey) => {
+            // Authorization exists but we can't return the secret
+            // Return error explaining the new security model
+            tracing::info!(
+                "Authorization exists for origin: {} with pubkey: {} but secret is hashed",
+                redirect_origin,
+                pubkey
+            );
+            Err(AuthError::BadRequest(
+                "Bunker URLs with secrets are only available at creation time. \
+                 The connection secret is now hashed for security. \
+                 Create a new authorization via /user/bunker/create if you need a bunker URL."
+                    .to_string(),
+            ))
+        }
+        None => {
+            tracing::warn!(
+                "No authorization found for user {} origin {} in tenant {}",
+                user_pubkey,
+                redirect_origin,
+                tenant_id
+            );
+            Err(AuthError::Forbidden(
+                "No authorization for this origin. Create one via OAuth or /user/bunker/create"
+                    .to_string(),
+            ))
+        }
+    }
 }
 
 /// Verify email address with token
@@ -1711,20 +1711,20 @@ pub async fn get_session_activity(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
     headers: HeaderMap,
-    axum::extract::Path(secret): axum::extract::Path<String>,
+    axum::extract::Path(bunker_pubkey): axum::extract::Path<String>,
 ) -> Result<Json<SessionActivityResponse>, AuthError> {
     let user_pubkey = extract_user_from_token(&headers).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
-        "Fetching activity for bunker secret: {} in tenant: {}",
-        secret,
+        "Fetching activity for bunker pubkey: {} in tenant: {}",
+        bunker_pubkey,
         tenant_id
     );
 
     // Verify this bunker session belongs to the user in this tenant
     let oauth_auth_repo = OAuthAuthorizationRepository::new(pool.clone());
     let session_pubkey = oauth_auth_repo
-        .verify_session_ownership(&secret, tenant_id)
+        .verify_session_ownership(&bunker_pubkey, tenant_id)
         .await?;
 
     match session_pubkey {
@@ -1734,7 +1734,7 @@ pub async fn get_session_activity(
 
     // Get activity log
     let signing_activity_repo = SigningActivityRepository::new(pool.clone());
-    let activities = signing_activity_repo.list_recent(&secret, 100).await?;
+    let activities = signing_activity_repo.list_recent(&bunker_pubkey, 100).await?;
 
     let activities = activities
         .into_iter()
@@ -1889,7 +1889,8 @@ pub struct PermissionDetail {
     pub created_at: String,
     pub last_activity: Option<String>,
     pub activity_count: i64,
-    pub secret: String,
+    /// Bunker public key - used to identify the session for activity lookups
+    pub bunker_pubkey: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1928,7 +1929,7 @@ pub async fn list_permissions(
         policy_display_name,
         policy_description,
         created_at,
-        secret,
+        bunker_pubkey,
         last_activity,
         activity_count,
     ) in auth_data
@@ -2004,7 +2005,7 @@ pub async fn list_permissions(
             created_at,
             last_activity,
             activity_count: activity_count.unwrap_or(0),
-            secret,
+            bunker_pubkey,
         });
     }
 
@@ -2751,8 +2752,8 @@ mod tests {
         let bunker_pubkey = bunker_keys.public_key().to_hex();
 
         sqlx::query(
-            "INSERT INTO oauth_authorizations (user_pubkey, redirect_origin, client_id, bunker_public_key, secret, relays, tenant_id, handle_expires_at, created_at, updated_at)
-             VALUES ($1, $2, 'Test App', $3, 'test-secret', '[]', 1, NOW() + INTERVAL '30 days', NOW(), NOW())"
+            "INSERT INTO oauth_authorizations (user_pubkey, redirect_origin, client_id, bunker_public_key, secret_hash, relays, tenant_id, handle_expires_at, created_at, updated_at)
+             VALUES ($1, $2, 'Test App', $3, 'test_hash', '[]', 1, NOW() + INTERVAL '30 days', NOW(), NOW())"
         )
         .bind(&user_pubkey)
         .bind(&redirect_origin)

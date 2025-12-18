@@ -24,7 +24,7 @@ impl AuthorizationRepository {
         authorization_id: i32,
     ) -> Result<Authorization, RepositoryError> {
         sqlx::query_as::<_, Authorization>(
-            "SELECT id, tenant_id, stored_key_id, secret, bunker_public_key, bunker_secret,
+            "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
                     relays, policy_id, max_uses, expires_at, created_at, updated_at
              FROM authorizations WHERE tenant_id = $1 AND id = $2",
         )
@@ -42,7 +42,7 @@ impl AuthorizationRepository {
         stored_key_id: i32,
     ) -> Result<Vec<Authorization>, RepositoryError> {
         sqlx::query_as::<_, Authorization>(
-            "SELECT id, tenant_id, stored_key_id, secret, bunker_public_key, bunker_secret,
+            "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
                     relays, policy_id, max_uses, expires_at, created_at, updated_at
              FROM authorizations WHERE tenant_id = $1 AND stored_key_id = $2",
         )
@@ -71,30 +71,31 @@ impl AuthorizationRepository {
     }
 
     /// Create a new authorization.
+    ///
+    /// The `secret_hash` is the bcrypt hash of the connection secret.
+    /// The plaintext secret is only available at creation time and returned in the bunker URL.
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         tenant_id: i64,
         stored_key_id: i32,
         policy_id: i32,
-        secret: &str,
+        secret_hash: &str,
         bunker_public_key: &str,
-        bunker_secret: &[u8],
         relays: &serde_json::Value,
         max_uses: Option<i32>,
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Authorization, RepositoryError> {
         sqlx::query_as::<_, Authorization>(
-            "INSERT INTO authorizations (tenant_id, stored_key_id, policy_id, secret, bunker_public_key, bunker_secret, relays, max_uses, expires_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-             RETURNING id, tenant_id, stored_key_id, secret, bunker_public_key, bunker_secret, relays, policy_id, max_uses, expires_at, created_at, updated_at",
+            "INSERT INTO authorizations (tenant_id, stored_key_id, policy_id, secret_hash, bunker_public_key, relays, max_uses, expires_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+             RETURNING id, tenant_id, stored_key_id, secret_hash, bunker_public_key, relays, policy_id, max_uses, expires_at, created_at, updated_at",
         )
         .bind(tenant_id)
         .bind(stored_key_id)
         .bind(policy_id)
-        .bind(secret)
+        .bind(secret_hash)
         .bind(bunker_public_key)
-        .bind(bunker_secret)
         .bind(relays)
         .bind(max_uses)
         .bind(expires_at)
@@ -283,14 +284,15 @@ mod tests {
 
         let relays = serde_json::json!(["wss://relay1.test", "wss://relay2.test"]);
         let bunker_pubkey = generate_bunker_pubkey();
+        // Use a fake bcrypt hash for testing (real hash would be from secret pool)
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let auth = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &bunker_pubkey,
-                b"bunker_secret",
                 &relays,
                 Some(10i32),
                 None,
@@ -317,14 +319,14 @@ mod tests {
 
         let relays = serde_json::json!(["wss://relay.test"]);
         let bunker_pubkey = generate_bunker_pubkey();
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let created = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &bunker_pubkey,
-                b"bunker_secret",
                 &relays,
                 None,
                 None,
@@ -356,14 +358,14 @@ mod tests {
 
         // Create two authorizations for the same key
         let relays = serde_json::json!(["wss://relay.test"]);
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret1_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret1",
                 &relays,
                 None,
                 None,
@@ -375,9 +377,8 @@ mod tests {
                 1,
                 key_id,
                 policy_id,
-                &format!("secret2_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret2",
                 &relays,
                 None,
                 None,
@@ -399,14 +400,14 @@ mod tests {
         let (_, key_id, policy_id) = create_test_fixtures(&pool, &suffix).await;
 
         let relays = serde_json::json!(["wss://relay.test"]);
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let auth = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret",
                 &relays,
                 None,
                 None,
@@ -432,14 +433,14 @@ mod tests {
         let (_, key_id, policy_id) = create_test_fixtures(&pool, &suffix).await;
 
         let relays = serde_json::json!(["wss://relay.test"]);
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let auth = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret",
                 &relays,
                 None,
                 None,
@@ -485,14 +486,14 @@ mod tests {
         let (_, key_id, policy_id) = create_test_fixtures(&pool, &suffix).await;
 
         let relays = serde_json::json!(["wss://relay.test"]);
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let auth = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret",
                 &relays,
                 None,
                 None,
@@ -529,14 +530,14 @@ mod tests {
         let (_, key_id, policy_id) = create_test_fixtures(&pool, &suffix).await;
 
         let relays = serde_json::json!(["wss://relay.test"]);
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let auth = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret",
                 &relays,
                 None,
                 None,
@@ -559,14 +560,14 @@ mod tests {
         let (_, key_id, policy_id) = create_test_fixtures(&pool, &suffix).await;
 
         let relays = serde_json::json!(["wss://relay.test"]);
+        let secret_hash = "$2b$10$test_hash_not_real_but_valid_format_xxxxx";
         let auth = auth_repo
             .create(
                 1,
                 key_id,
                 policy_id,
-                &format!("secret_{}", suffix),
+                secret_hash,
                 &generate_bunker_pubkey(),
-                b"bunker_secret",
                 &relays,
                 None,
                 None,

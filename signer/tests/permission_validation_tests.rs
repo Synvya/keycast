@@ -128,27 +128,20 @@ async fn create_test_authorization(
     .await
     .expect("Failed to create stored key");
 
-    // Encrypt bunker secret
-    let bunker_secret = bunker_keys.secret_key().secret_bytes();
-    let encrypted_bunker_secret = key_manager
-        .encrypt(&bunker_secret)
-        .await
-        .expect("Failed to encrypt bunker secret");
-
-    // Generate unique secret for this test
+    // Generate unique secret for this test and hash it
     let unique_secret = format!("test_secret_{}", Uuid::new_v4());
+    let secret_hash = bcrypt::hash(&unique_secret, 4).expect("Failed to hash secret"); // Cost 4 for fast tests
 
-    // Create authorization
+    // Create authorization (bunker keys derived via HKDF at runtime, not stored)
     let auth_id: i32 = sqlx::query_scalar(
         "INSERT INTO authorizations
-         (stored_key_id, secret, bunker_public_key, bunker_secret, relays, policy_id, tenant_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+         (stored_key_id, secret_hash, bunker_public_key, relays, policy_id, tenant_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
          RETURNING id"
     )
     .bind(stored_key_id)
-    .bind(&unique_secret)
+    .bind(&secret_hash)
     .bind(bunker_keys.public_key().to_hex())
-    .bind(&encrypted_bunker_secret)
     .bind(json!(["wss://relay.damus.io"]))
     .bind(policy_id)
     .bind(tenant_id)
@@ -174,8 +167,9 @@ async fn create_oauth_authorization(
     // Generate user keys (used for both bunker and signing in OAuth)
     let user_keys = Keys::generate();
 
-    // Generate unique secret for this test
+    // Generate unique secret for this test and hash it
     let unique_secret = format!("oauth_secret_{}", Uuid::new_v4());
+    let secret_hash = bcrypt::hash(&unique_secret, 4).expect("Failed to hash secret"); // Cost 4 for fast tests
 
     // Create user first
     sqlx::query(
@@ -207,18 +201,18 @@ async fn create_oauth_authorization(
     .await
     .expect("Failed to create personal key");
 
-    // Create OAuth authorization (bunker key derived via HKDF, not stored)
+    // Create OAuth authorization (bunker keys derived via HKDF at runtime, not stored)
     let redirect_origin = format!("https://test-{}.example.com", Uuid::new_v4());
     let oauth_id: i32 = sqlx::query_scalar(
         "INSERT INTO oauth_authorizations
-         (user_pubkey, redirect_origin, client_id, bunker_public_key, secret, relays, policy_id, tenant_id, handle_expires_at, created_at, updated_at)
+         (user_pubkey, redirect_origin, client_id, bunker_public_key, secret_hash, relays, policy_id, tenant_id, handle_expires_at, created_at, updated_at)
          VALUES ($1, $2, 'Test App', $3, $4, $5, $6, $7, NOW() + INTERVAL '30 days', NOW(), NOW())
          RETURNING id"
     )
     .bind(user_keys.public_key().to_hex())
     .bind(&redirect_origin)
     .bind(user_keys.public_key().to_hex())
-    .bind(&unique_secret)
+    .bind(&secret_hash)
     .bind(json!(["wss://relay.damus.io"]))
     .bind(policy_id)
     .bind(tenant_id)
@@ -252,7 +246,7 @@ async fn test_1_no_policy_allows_all() {
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
         user_keys.clone(),
-        auth.secret.clone(),
+        auth.secret_hash.clone(),
         auth.id,
         1,
         false,
@@ -287,7 +281,7 @@ async fn test_2_allowed_kinds_permits_matching_kind() {
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
         user_keys.clone(),
-        auth.secret.clone(),
+        auth.secret_hash.clone(),
         auth.id,
         1,
         false,
@@ -322,7 +316,7 @@ async fn test_3_allowed_kinds_denies_non_matching_kind() {
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
         user_keys.clone(),
-        auth.secret.clone(),
+        auth.secret_hash.clone(),
         auth.id,
         1,
         false,
@@ -363,7 +357,7 @@ async fn test_4_content_filter_allows_clean_content() {
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
         user_keys.clone(),
-        auth.secret.clone(),
+        auth.secret_hash.clone(),
         auth.id,
         1,
         false,
@@ -396,7 +390,7 @@ async fn test_5_content_filter_denies_blocked_words() {
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
         user_keys.clone(),
-        auth.secret.clone(),
+        auth.secret_hash.clone(),
         auth.id,
         1,
         false,
@@ -441,7 +435,7 @@ async fn test_6_multiple_permissions_all_must_pass() {
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
         user_keys.clone(),
-        auth.secret.clone(),
+        auth.secret_hash.clone(),
         auth.id,
         1,
         false,
@@ -485,7 +479,7 @@ async fn test_7_oauth_no_policy_allows_all() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        oauth_auth.secret.clone(),
+        oauth_auth.secret_hash.clone(),
         oauth_auth.id,
         1,
         true,
@@ -522,7 +516,7 @@ async fn test_8_oauth_with_policy_enforces_restrictions() {
     let handler = Nip46Handler::new_for_test(
         user_keys.clone(),
         user_keys.clone(),
-        oauth_auth.secret.clone(),
+        oauth_auth.secret_hash.clone(),
         oauth_auth.id,
         1,
         true,
@@ -556,12 +550,12 @@ async fn create_oauth_authorization_with_expiry(
     let user_keys = Keys::generate();
     let user_pubkey = user_keys.public_key().to_hex();
 
-    // Generate unique secret for this test
+    // Generate unique secret for this test and hash it
     let unique_secret = format!("oauth_secret_{}", Uuid::new_v4());
+    let secret_hash = bcrypt::hash(&unique_secret, 4).expect("Failed to hash secret");
 
-    // Derive bunker keys using HKDF (same as production)
-    let bunker_keys =
-        keycast_core::bunker_key::derive_bunker_keys(user_keys.secret_key(), &unique_secret);
+    // Generate bunker keys (we're not using HKDF anymore - bunker secret is stored encrypted)
+    let bunker_keys = Keys::generate();
     let bunker_pubkey = bunker_keys.public_key().to_hex();
 
     // Create user first
@@ -594,17 +588,17 @@ async fn create_oauth_authorization_with_expiry(
     .await
     .expect("Failed to create personal key");
 
-    // Create OAuth authorization with specified expiry
+    // Create OAuth authorization with specified expiry (bunker keys derived via HKDF at runtime)
     let redirect_origin = format!("https://expiry-test-{}.example.com", Uuid::new_v4());
     sqlx::query(
         "INSERT INTO oauth_authorizations
-         (user_pubkey, redirect_origin, client_id, bunker_public_key, secret, relays, policy_id, tenant_id, expires_at, handle_expires_at, created_at, updated_at)
+         (user_pubkey, redirect_origin, client_id, bunker_public_key, secret_hash, relays, policy_id, tenant_id, expires_at, handle_expires_at, created_at, updated_at)
          VALUES ($1, $2, 'Test App', $3, $4, $5, NULL, $6, $7, NOW() + INTERVAL '30 days', NOW(), NOW())"
     )
     .bind(&user_pubkey)
     .bind(&redirect_origin)
     .bind(&bunker_pubkey)
-    .bind(&unique_secret)
+    .bind(&secret_hash)
     .bind(json!(["wss://relay.damus.io"]).to_string())
     .bind(tenant_id)
     .bind(expires_at)
@@ -804,26 +798,19 @@ async fn create_team_authorization_with_expiry(
     .await
     .expect("Failed to create stored key");
 
-    // Encrypt bunker secret
-    let bunker_secret = bunker_keys.secret_key().secret_bytes();
-    let encrypted_bunker_secret = key_manager
-        .encrypt(&bunker_secret)
-        .await
-        .expect("Failed to encrypt bunker secret");
-
     let unique_secret = format!("test_secret_{}", Uuid::new_v4());
+    let secret_hash = bcrypt::hash(&unique_secret, 4).expect("Failed to hash secret");
     let bunker_pubkey = bunker_keys.public_key().to_hex();
 
-    // Create authorization with specified expiry
+    // Create authorization with specified expiry (bunker keys derived via HKDF at runtime)
     sqlx::query(
         "INSERT INTO authorizations
-         (stored_key_id, secret, bunker_public_key, bunker_secret, relays, policy_id, tenant_id, expires_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NOW(), NOW())"
+         (stored_key_id, secret_hash, bunker_public_key, relays, policy_id, tenant_id, expires_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, NULL, $5, $6, NOW(), NOW())"
     )
     .bind(stored_key_id)
-    .bind(&unique_secret)
+    .bind(&secret_hash)
     .bind(&bunker_pubkey)
-    .bind(&encrypted_bunker_secret)
     .bind(json!(["wss://relay.damus.io"]).to_string())
     .bind(tenant_id)
     .bind(expires_at)
@@ -844,9 +831,9 @@ async fn test_13_expired_team_authorization_not_loaded() {
     let (bunker_pubkey, _bunker_keys, _user_keys) =
         create_team_authorization_with_expiry(&pool, 1, 1, Some(expired_at), &key_manager).await;
 
-    // Query using the same SQL the signer uses (lines 843-851 in signer_daemon.rs)
-    let auth_opt: Option<(i32, Vec<u8>, String, i32, i64)> = sqlx::query_as(
-        r#"SELECT id, bunker_secret, secret, stored_key_id, tenant_id
+    // Query using the same SQL the signer uses
+    let auth_opt: Option<(i32, String, i32, i64)> = sqlx::query_as(
+        r#"SELECT id, secret_hash, stored_key_id, tenant_id
            FROM authorizations
            WHERE bunker_public_key = $1
              AND (expires_at IS NULL OR expires_at > NOW())"#,
@@ -874,8 +861,8 @@ async fn test_14_non_expired_team_authorization_loads() {
         create_team_authorization_with_expiry(&pool, 1, 1, Some(expires_at), &key_manager).await;
 
     // Query using the same SQL the signer uses
-    let auth_opt: Option<(i32, Vec<u8>, String, i32, i64)> = sqlx::query_as(
-        r#"SELECT id, bunker_secret, secret, stored_key_id, tenant_id
+    let auth_opt: Option<(i32, String, i32, i64)> = sqlx::query_as(
+        r#"SELECT id, secret_hash, stored_key_id, tenant_id
            FROM authorizations
            WHERE bunker_public_key = $1
              AND (expires_at IS NULL OR expires_at > NOW())"#,
@@ -902,8 +889,8 @@ async fn test_15_null_expiry_team_authorization_loads() {
         create_team_authorization_with_expiry(&pool, 1, 1, None, &key_manager).await;
 
     // Query using the same SQL the signer uses
-    let auth_opt: Option<(i32, Vec<u8>, String, i32, i64)> = sqlx::query_as(
-        r#"SELECT id, bunker_secret, secret, stored_key_id, tenant_id
+    let auth_opt: Option<(i32, String, i32, i64)> = sqlx::query_as(
+        r#"SELECT id, secret_hash, stored_key_id, tenant_id
            FROM authorizations
            WHERE bunker_public_key = $1
              AND (expires_at IS NULL OR expires_at > NOW())"#,

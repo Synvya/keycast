@@ -10,9 +10,8 @@ $$;
 CREATE TABLE public.authorizations (
     id integer NOT NULL,
     stored_key_id integer,
-    secret text NOT NULL,
+    secret_hash text NOT NULL,
     bunker_public_key character(64) NOT NULL,
-    bunker_secret bytea NOT NULL,
     relays text NOT NULL,
     policy_id integer,
     max_uses integer,
@@ -48,7 +47,7 @@ CREATE TABLE public.oauth_authorizations (
     redirect_origin text,  -- nullable for bunker-only apps (no OAuth flow)
     client_id text,        -- app display name from OAuth request
     bunker_public_key character(64) NOT NULL,
-    secret text NOT NULL,
+    secret_hash text NOT NULL,
     relays text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -91,7 +90,8 @@ CREATE TABLE public.oauth_codes (
     pending_email_verification_token text,
     pending_encrypted_secret bytea,
     previous_auth_id integer,
-    state text  -- CSRF protection and redirect correlation
+    state text,  -- CSRF protection and redirect correlation
+    device_code text  -- RFC 8628 device code for secure polling (returned in response body only)
 );
 
 CREATE TABLE public.password_reset_tokens (
@@ -183,7 +183,7 @@ CREATE TABLE public.signing_activity (
     id integer NOT NULL,
     user_pubkey character(64) NOT NULL,
     application_id integer,
-    bunker_secret text NOT NULL,
+    bunker_pubkey character(64) NOT NULL,
     event_kind integer NOT NULL,
     event_content text,
     event_id character(64),
@@ -417,7 +417,7 @@ ALTER TABLE ONLY public.users
 
 CREATE INDEX authorizations_stored_key_id_idx ON public.authorizations USING btree (stored_key_id);
 
-CREATE UNIQUE INDEX idx_authorizations_secret_tenant ON public.authorizations USING btree (tenant_id, secret);
+-- Note: No index on secret_hash as bcrypt hashes cannot be efficiently searched
 
 CREATE INDEX idx_authorizations_tenant_id ON public.authorizations USING btree (tenant_id);
 
@@ -461,6 +461,8 @@ CREATE INDEX idx_oauth_codes_user ON public.oauth_codes USING btree (user_pubkey
 
 CREATE INDEX idx_oauth_codes_state ON public.oauth_codes USING btree (state) WHERE (state IS NOT NULL);
 
+CREATE INDEX idx_oauth_codes_device_code ON public.oauth_codes USING btree (device_code) WHERE (device_code IS NOT NULL);
+
 CREATE INDEX idx_password_reset_tokens_expires_at ON public.password_reset_tokens USING btree (expires_at);
 
 CREATE INDEX idx_password_reset_tokens_token_hash ON public.password_reset_tokens USING btree (token_hash);
@@ -475,7 +477,7 @@ CREATE INDEX idx_personal_keys_user_pubkey ON public.personal_keys USING btree (
 
 CREATE INDEX idx_signing_activity_app ON public.signing_activity USING btree (application_id);
 
-CREATE INDEX idx_signing_activity_bunker_secret ON public.signing_activity USING btree (bunker_secret);
+CREATE INDEX idx_signing_activity_bunker_pubkey ON public.signing_activity USING btree (bunker_pubkey);
 
 CREATE INDEX idx_signing_activity_created_at ON public.signing_activity USING btree (created_at);
 
@@ -602,7 +604,7 @@ ALTER TABLE ONLY public.oauth_authorizations
     ADD CONSTRAINT oauth_authorizations_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.oauth_authorizations
-    ADD CONSTRAINT oauth_authorizations_user_pubkey_fkey FOREIGN KEY (user_pubkey) REFERENCES public.users(pubkey);
+    ADD CONSTRAINT oauth_authorizations_user_pubkey_fkey FOREIGN KEY (user_pubkey) REFERENCES public.users(pubkey) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.oauth_codes
     ADD CONSTRAINT oauth_codes_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);

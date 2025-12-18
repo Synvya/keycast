@@ -18,6 +18,7 @@ use keycast_core::repositories::{
 };
 use nostr_sdk::{Keys, ToBech32};
 use rand::Rng;
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 // Import constants and helpers from auth module
@@ -2210,15 +2211,18 @@ async fn create_oauth_authorization_and_token(
     // Extract origin from redirect_uri - this is the primary identifier
     let redirect_origin = extract_origin(redirect_uri)?;
 
-    // Generate connection secret for NIP-46 authentication (must be generated first for HKDF)
-    let connection_secret: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(48)
-        .map(char::from)
-        .collect();
+    // Get pre-computed (secret, hash) from pool - instant, no waiting for bcrypt
+    let secret_pair = auth_state
+        .state
+        .secret_pool
+        .get()
+        .await
+        .ok_or_else(|| OAuthError::ServerError("Secret pool exhausted".to_string()))?;
+    let connection_secret = secret_pair.secret;
+    let secret_hash = secret_pair.hash;
 
-    // Derive bunker keys from user secret using HKDF with connection secret
-    // (privacy: bunker_pubkey ≠ user_pubkey, avoids extra KMS call)
+    // Derive bunker keys from user secret using HKDF with secret_hash as entropy
+    // (privacy: bunker_pubkey ≠ user_pubkey, zero extra KMS calls at runtime)
     let decrypted_user_secret = key_manager
         .decrypt(&encrypted_user_key)
         .await
@@ -2226,8 +2230,8 @@ async fn create_oauth_authorization_and_token(
     let user_secret_key = nostr_sdk::SecretKey::from_slice(&decrypted_user_secret)
         .map_err(|e| OAuthError::InvalidRequest(format!("Invalid secret key: {}", e)))?;
 
-    let bunker_keys =
-        keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &connection_secret);
+    // Use secret_hash as HKDF entropy - can be re-derived at runtime without KMS
+    let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &secret_hash);
     let bunker_public_key = bunker_keys.public_key();
 
     // Generate server-signed UCAN for REST RPC API access (after bunker key derivation)
@@ -2260,7 +2264,6 @@ async fn create_oauth_authorization_and_token(
     // Create new OAuth authorization - always INSERT (multi-device support)
     // Each authorization is a separate "ticket" for one client/device
     // Old authorizations remain valid until explicitly revoked
-    // Note: bunker key is derived via HKDF from user secret, not stored
     let oauth_auth_repo = OAuthAuthorizationRepository::new(pool.clone());
     let auth_id = oauth_auth_repo
         .create(CreateOAuthAuthorizationParams {
@@ -2269,7 +2272,7 @@ async fn create_oauth_authorization_and_token(
             redirect_origin: redirect_origin.clone(),
             client_id: client_id.to_string(),
             bunker_public_key: bunker_public_key.to_hex(),
-            secret: connection_secret.clone(),
+            secret_hash,
             relays: relays_json.clone(),
             policy_id: Some(policy_id),
             client_pubkey: None,
@@ -2327,7 +2330,7 @@ async fn create_oauth_authorization_and_token(
         "bunker://{}?{}&secret={}",
         bunker_public_key.to_hex(),
         relay_params,
-        connection_secret
+        connection_secret.expose_secret()
     );
 
     // Load policy info from scope for response (policies are now global)
@@ -3228,7 +3231,15 @@ pub async fn connect_post(
     // For nostr-login, redirect_origin is "nostrconnect://{client_pubkey}" (the secure identifier)
     let redirect_origin = format!("nostrconnect://{}", &form.client_pubkey);
 
-    // Derive bunker keys from user secret using HKDF with connection secret (privacy: bunker_pubkey ≠ user_pubkey)
+    // Hash the client-provided secret with bcrypt for storage
+    let client_secret = form.secret.clone();
+    let secret_hash = tokio::task::spawn_blocking(move || bcrypt::hash(&client_secret, 10))
+        .await
+        .map_err(|e| OAuthError::ServerError(format!("Hash task failed: {}", e)))?
+        .map_err(|e| OAuthError::ServerError(format!("Failed to hash secret: {}", e)))?;
+
+    // Derive bunker keys from user secret using HKDF with secret_hash as entropy
+    // (privacy: bunker_pubkey ≠ user_pubkey, zero extra KMS calls at runtime)
     let key_manager = auth_state.state.key_manager.as_ref();
     let decrypted_user_secret = key_manager
         .decrypt(&encrypted_user_key)
@@ -3237,14 +3248,14 @@ pub async fn connect_post(
     let user_secret_key = nostr_sdk::SecretKey::from_slice(&decrypted_user_secret)
         .map_err(|e| OAuthError::InvalidRequest(format!("Invalid secret key: {}", e)))?;
 
-    let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &form.secret);
+    // Use secret_hash as HKDF entropy - can be re-derived at runtime without KMS
+    let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &secret_hash);
     let bunker_public_key = bunker_keys.public_key();
 
     // Use a descriptive name for nostr-login connections
     let client_id = format!("nostr-login-{}", &form.client_pubkey[..12]);
 
     // Create authorization
-    // Note: bunker key is derived via HKDF from user secret, not stored
     let relays_json = serde_json::to_string(&vec![form.relay.clone()])
         .map_err(|e| OAuthError::InvalidRequest(format!("Failed to serialize relays: {}", e)))?;
 
@@ -3264,7 +3275,7 @@ pub async fn connect_post(
             redirect_origin: redirect_origin.clone(),
             client_id: client_id.clone(),
             bunker_public_key: bunker_public_key.to_hex(),
-            secret: form.secret.clone(),
+            secret_hash,
             relays: relays_json.clone(),
             policy_id: None,
             client_pubkey: Some(form.client_pubkey.clone()),

@@ -108,19 +108,17 @@ async fn create_test_oauth_authorization(
 ) -> (i32, String) {
     let bunker_keys = Keys::generate();
     let bunker_pubkey = bunker_keys.public_key().to_hex();
-    let secret = format!("auth_secret_{}", Uuid::new_v4());
     let auth_handle = hex::encode(rand::random::<[u8; 32]>());
 
     let auth_id: i32 = sqlx::query_scalar(
         "INSERT INTO oauth_authorizations
-         (user_pubkey, redirect_origin, bunker_public_key, secret, relays, policy_id, tenant_id, expires_at, revoked_at, authorization_handle, handle_expires_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW() + INTERVAL '30 days', NOW(), NOW())
+         (user_pubkey, redirect_origin, bunker_public_key, secret_hash, relays, policy_id, tenant_id, expires_at, revoked_at, authorization_handle, handle_expires_at, created_at, updated_at)
+         VALUES ($1, $2, $3, 'test_hash', $4, $5, $6, $7, $8, $9, NOW() + INTERVAL '30 days', NOW(), NOW())
          RETURNING id"
     )
     .bind(user_pubkey)
     .bind(redirect_origin)
     .bind(&bunker_pubkey)
-    .bind(&secret)
     .bind(json!(["wss://relay.example.com"]).to_string())
     .bind(policy_id)
     .bind(tenant_id)

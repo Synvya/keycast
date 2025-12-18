@@ -37,3 +37,7 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+bcrypt = "0.17.1"
+serde_json = { workspace = true }

@@ -34,3 +34,6 @@ uuid = { workspace = true }
 anchorhash = "0.2"
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+bcrypt = "0.17.1"
+crossbeam-channel = "0.5"
+subtle = "2.5"
