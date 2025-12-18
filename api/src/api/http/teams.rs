@@ -1,10 +1,10 @@
 use crate::api::types::*;
-use secrecy::ExposeSecret;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
+use secrecy::ExposeSecret;
 
 use nostr_sdk::prelude::*;
 

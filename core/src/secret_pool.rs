@@ -99,8 +99,7 @@ impl SecretPool {
                 // Send to pool - blocks if full (backpressure)
                 // Use spawn_blocking since crossbeam send is sync
                 let tx_clone = tx.clone();
-                let send_result =
-                    tokio::task::spawn_blocking(move || tx_clone.send(pair)).await;
+                let send_result = tokio::task::spawn_blocking(move || tx_clone.send(pair)).await;
 
                 match send_result {
                     Ok(Ok(())) => {

@@ -1728,7 +1728,9 @@ pub async fn get_session_activity(
 
     // Get activity log
     let signing_activity_repo = SigningActivityRepository::new(pool.clone());
-    let activities = signing_activity_repo.list_recent(&bunker_pubkey, 100).await?;
+    let activities = signing_activity_repo
+        .list_recent(&bunker_pubkey, 100)
+        .await?;
 
     let activities = activities
         .into_iter()

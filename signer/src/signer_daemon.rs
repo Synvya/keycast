@@ -125,10 +125,7 @@ impl Nip46Handler {
         let valid =
             keycast_core::secret_pool::verify_secret(provided_secret, &self.secret_hash).await;
         if !valid {
-            tracing::warn!(
-                "Invalid secret for authorization {}",
-                self.authorization_id
-            );
+            tracing::warn!("Invalid secret for authorization {}", self.authorization_id);
             return Err(SignerError::permission_denied("Invalid secret"));
         }
 
@@ -780,10 +777,8 @@ impl UnifiedSigner {
 
                 // Derive bunker keys using HKDF with secret_hash as entropy
                 // This avoids an extra KMS call - user_secret is already decrypted
-                let bunker_keys = keycast_core::bunker_key::derive_bunker_keys(
-                    &user_secret_key,
-                    &secret_hash,
-                );
+                let bunker_keys =
+                    keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &secret_hash);
 
                 let handler = Nip46Handler {
                     bunker_keys,

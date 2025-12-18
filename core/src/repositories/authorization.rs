@@ -142,7 +142,6 @@ impl AuthorizationRepository {
 
         Ok(result.rows_affected() > 0)
     }
-
 }
 
 #[cfg(test)]
