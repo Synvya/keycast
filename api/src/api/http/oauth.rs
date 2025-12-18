@@ -963,6 +963,7 @@ pub async fn authorize_get(
         const scope = '{}';
         const codeChallenge = '{}';
         const codeChallengeMethod = '{}';
+        const oauthState = '{}';
         const userPubkey = '{}';
         const userRelays = {};
         const policyInfo = {};
@@ -1098,7 +1099,9 @@ pub async fn authorize_get(
 
                 const data = await response.json();
                 if (data.code) {{
-                    window.location.href = `${{redirectUri}}?code=${{data.code}}`;
+                    let url = `${{redirectUri}}?code=${{data.code}}`;
+                    if (oauthState) url += `&state=${{encodeURIComponent(oauthState)}}`;
+                    window.location.href = url;
                 }} else {{
                     alert('Error: ' + (data.error || 'Unknown error'));
                 }}
@@ -1108,7 +1111,9 @@ pub async fn authorize_get(
         }}
 
         function deny() {{
-            window.location.href = `${{redirectUri}}?error=access_denied`;
+            let url = `${{redirectUri}}?error=access_denied`;
+            if (oauthState) url += `&state=${{encodeURIComponent(oauthState)}}`;
+            window.location.href = url;
         }}
     </script>
 </body>
@@ -1128,6 +1133,7 @@ pub async fn authorize_get(
             scope_str,        // JS scope
             params.code_challenge.as_deref().unwrap_or(""), // JS codeChallenge
             params.code_challenge_method.as_deref().unwrap_or(""), // JS codeChallengeMethod
+            params.state.as_deref().unwrap_or(""), // JS oauthState
             pubkey,           // JS userPubkey (hex)
             relays_json,      // JS userRelays (JSON array)
             policy_info_json, // JS policyInfo (JSON object)
