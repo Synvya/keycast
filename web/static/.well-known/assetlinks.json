@@ -1,11 +1,12 @@
 [
   {
-    "_comment": "TODO: Add sha256_cert_fingerprints for production Android builds. Get with: keytool -list -v -keystore release.keystore",
     "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "co.openvine.keycast_flutter_demo",
-      "sha256_cert_fingerprints": []
+      "sha256_cert_fingerprints": [
+        "CF:7E:6A:A4:99:A8:00:A8:0E:93:E4:07:03:60:38:4F:2F:9C:22:81:3B:3D:7B:81:88:15:A0:1B:37:6F:ED:B1"
+      ]
     }
   },
   {
