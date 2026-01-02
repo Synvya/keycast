@@ -416,6 +416,48 @@ impl UserRepository {
             .map_err(Into::into)
     }
 
+    /// Get email verification status by email address.
+    ///
+    /// Returns (pubkey, email_verified, last_sent_at) if user exists.
+    pub async fn get_verification_status_by_email(
+        &self,
+        email: &str,
+        tenant_id: i64,
+    ) -> Result<Option<(String, bool, Option<DateTime<Utc>>)>, RepositoryError> {
+        sqlx::query_as(
+            "SELECT pubkey, email_verified, email_verification_sent_at FROM users WHERE LOWER(email) = LOWER($1) AND tenant_id = $2",
+        )
+        .bind(email)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Set new email verification token by email address.
+    pub async fn set_verification_token_by_email(
+        &self,
+        email: &str,
+        tenant_id: i64,
+        token: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query(
+            "UPDATE users
+             SET email_verification_token = $1, email_verification_expires_at = $2, email_verification_sent_at = $3, updated_at = $4
+             WHERE LOWER(email) = LOWER($5) AND tenant_id = $6",
+        )
+        .bind(token)
+        .bind(expires_at)
+        .bind(Utc::now())
+        .bind(Utc::now())
+        .bind(email)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // =========================================================================
     // Password reset methods
     // =========================================================================

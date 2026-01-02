@@ -1280,52 +1280,93 @@ pub async fn verify_email(
         .into_response())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ResendVerificationRequest {
+    /// Email address (optional if using Bearer token auth)
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ResendVerificationResponse {
     pub success: bool,
     pub message: String,
 }
 
-/// Resend email verification (requires authentication)
+/// Resend email verification.
+///
+/// Accepts either:
+/// - Bearer token in Authorization header (existing users with session)
+/// - Email address in request body (headless flow, no session yet)
+///
+/// Always returns success to prevent email enumeration attacks.
 pub async fn resend_verification(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
     headers: HeaderMap,
-) -> Result<Json<ResendVerificationResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    Json(req): Json<ResendVerificationRequest>,
+) -> Json<ResendVerificationResponse> {
     let tenant_id = tenant.0.id;
-    tracing::info!(
-        "Resend verification requested for user: {} in tenant: {}",
-        user_pubkey,
-        tenant_id
-    );
 
-    // Get user's email and verification status
-    let user_repo = UserRepository::new(pool.clone());
-    let (email, email_verified, last_sent) = user_repo
-        .get_verification_status(&user_pubkey, tenant_id)
-        .await?
-        .ok_or(AuthError::UserNotFound)?;
+    // Try to get user identity from token first, then fall back to email
+    let lookup_result: Option<(String, String, bool, Option<chrono::DateTime<chrono::Utc>>)> =
+        if let Ok(user_pubkey) = extract_user_from_token(&headers).await {
+            // Authenticated: look up by pubkey
+            let user_repo = UserRepository::new(pool.clone());
+            match user_repo
+                .get_verification_status(&user_pubkey, tenant_id)
+                .await
+            {
+                Ok(Some((email, verified, last_sent))) => {
+                    Some((user_pubkey, email, verified, last_sent))
+                }
+                _ => None,
+            }
+        } else if let Some(ref email) = req.email {
+            // Unauthenticated: look up by email
+            let user_repo = UserRepository::new(pool.clone());
+            match user_repo
+                .get_verification_status_by_email(email, tenant_id)
+                .await
+            {
+                Ok(Some((pubkey, verified, last_sent))) => {
+                    Some((pubkey, email.clone(), verified, last_sent))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
 
-    // Already verified
+    // Always return success to prevent enumeration
+    let success_response = Json(ResendVerificationResponse {
+        success: true,
+        message: "If this email is registered, you will receive a verification email shortly."
+            .to_string(),
+    });
+
+    let Some((pubkey, email, email_verified, last_sent)) = lookup_result else {
+        // User not found - return success anyway to prevent enumeration
+        tracing::debug!("Resend verification: user not found (not leaking this to client)");
+        return success_response;
+    };
+
+    // Already verified - return success (don't leak verification status)
     if email_verified {
-        return Ok(Json(ResendVerificationResponse {
-            success: true,
-            message: "Email is already verified.".to_string(),
-        }));
+        tracing::debug!("Resend verification: email already verified for {}", email);
+        return success_response;
     }
 
     // Rate limit: 1 per 5 minutes
     if let Some(sent_at) = last_sent {
         let minutes_since = (Utc::now() - sent_at).num_minutes();
         if minutes_since < 5 {
-            return Ok(Json(ResendVerificationResponse {
-                success: false,
-                message: format!(
-                    "Please wait {} minutes before requesting another verification email.",
-                    5 - minutes_since
-                ),
-            }));
+            tracing::debug!(
+                "Resend verification: rate limited for {} ({} minutes since last send)",
+                email,
+                minutes_since
+            );
+            // Return success anyway - don't reveal rate limiting to potential attackers
+            return success_response;
         }
     }
 
@@ -1333,39 +1374,46 @@ pub async fn resend_verification(
     let verification_token = generate_secure_token();
     let verification_expires = Utc::now() + Duration::hours(EMAIL_VERIFICATION_EXPIRY_HOURS);
 
-    user_repo
+    let user_repo = UserRepository::new(pool.clone());
+    if let Err(e) = user_repo
         .set_verification_token(
-            &user_pubkey,
+            &pubkey,
             tenant_id,
             &verification_token,
             verification_expires,
         )
-        .await?;
-
-    // Send verification email
-    match crate::email_service::EmailService::new() {
-        Ok(email_service) => {
-            if let Err(e) = email_service
-                .send_verification_email(&email, &verification_token)
-                .await
-            {
-                tracing::error!("Failed to send verification email to {}: {}", email, e);
-                return Err(AuthError::EmailSendFailed(e.to_string()));
-            }
-            tracing::info!("Sent verification email to {}", email);
-        }
-        Err(e) => {
-            tracing::warn!("Email service unavailable: {}", e);
-            return Err(AuthError::EmailSendFailed(
-                "Email service unavailable".to_string(),
-            ));
-        }
+        .await
+    {
+        tracing::error!("Failed to set verification token: {}", e);
+        return success_response;
     }
 
-    Ok(Json(ResendVerificationResponse {
-        success: true,
-        message: "Verification email sent! Please check your inbox.".to_string(),
-    }))
+    // Send verification email (don't await to prevent timing attacks)
+    let email_clone = email.clone();
+    let token_clone = verification_token.clone();
+    tokio::spawn(async move {
+        match crate::email_service::EmailService::new() {
+            Ok(email_service) => {
+                if let Err(e) = email_service
+                    .send_verification_email(&email_clone, &token_clone)
+                    .await
+                {
+                    tracing::error!(
+                        "Failed to send verification email to {}: {}",
+                        email_clone,
+                        e
+                    );
+                } else {
+                    tracing::info!("Sent verification email to {}", email_clone);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Email service unavailable: {}", e);
+            }
+        }
+    });
+
+    success_response
 }
 
 /// Request password reset email

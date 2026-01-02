@@ -50,6 +50,7 @@ pub fn api_routes(
     let email_routes = Router::new()
         .route("/auth/forgot-password", post(auth::forgot_password))
         .route("/auth/reset-password", post(auth::reset_password))
+        .route("/auth/resend-verification", post(auth::resend_verification))
         .with_state(pool.clone());
 
     // OAuth routes (no authentication required for initial authorize request)
@@ -85,7 +86,6 @@ pub fn api_routes(
         .route("/user/bunker", get(auth::get_bunker_url))
         .route("/user/pubkey", get(auth::get_pubkey))
         .route("/user/account", get(auth::get_account_status))
-        .route("/auth/resend-verification", post(auth::resend_verification))
         .route("/user/profile", get(auth::get_profile))
         .route("/user/sessions", get(auth::list_sessions))
         .route("/user/permissions", get(auth::list_permissions))
