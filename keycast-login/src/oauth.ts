@@ -77,22 +77,52 @@ export class KeycastOAuth {
   }
 
   /**
-   * Get stored session from storage
-   * Returns null if no session or session is expired
+   * Get stored session from storage (synchronous, no refresh)
+   * Returns null if no session exists
+   * Use getSessionWithRefresh() for automatic token refresh
    */
   getSession(): StoredCredentials | null {
     const json = this.storage.getItem(STORAGE_KEY_SESSION);
     if (!json) return null;
 
     try {
-      const credentials = JSON.parse(json) as StoredCredentials;
-      if (this.isExpired(credentials)) {
-        return null;
-      }
-      return credentials;
+      return JSON.parse(json) as StoredCredentials;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Get stored session with automatic refresh if expired or near-expiry
+   * Returns null if no session or refresh fails
+   */
+  async getSessionWithRefresh(): Promise<StoredCredentials | null> {
+    const credentials = this.getSession();
+    if (!credentials) return null;
+
+    // If not near expiry, return as-is
+    if (!this.shouldRefresh(credentials)) {
+      return credentials;
+    }
+
+    // Try to refresh if we have a refresh token
+    if (credentials.refreshToken) {
+      try {
+        return await this.refreshSession(credentials.refreshToken);
+      } catch (e) {
+        // Refresh failed - clear session and return null
+        console.warn('Session refresh failed:', e);
+        this.storage.removeItem(STORAGE_KEY_SESSION);
+        return null;
+      }
+    }
+
+    // No refresh token and expired - return null
+    if (this.isExpired(credentials)) {
+      return null;
+    }
+
+    return credentials;
   }
 
   /**
@@ -267,6 +297,7 @@ export class KeycastOAuth {
       accessToken: response.access_token,
       expiresAt,
       authorizationHandle: response.authorization_handle,
+      refreshToken: response.refresh_token,
     };
   }
 
@@ -276,5 +307,45 @@ export class KeycastOAuth {
   isExpired(credentials: StoredCredentials): boolean {
     if (!credentials.expiresAt) return false;
     return Date.now() >= credentials.expiresAt;
+  }
+
+  /**
+   * Check if credentials should be refreshed (expired or within 5 minutes of expiry)
+   */
+  private shouldRefresh(credentials: StoredCredentials): boolean {
+    if (!credentials.expiresAt) return false;
+    const fiveMinutes = 5 * 60 * 1000;
+    return Date.now() >= credentials.expiresAt - fiveMinutes;
+  }
+
+  /**
+   * Refresh session using stored refresh token
+   *
+   * @param refreshToken - Refresh token from previous session
+   * @returns New credentials with fresh access token and new refresh token
+   */
+  async refreshSession(refreshToken: string): Promise<StoredCredentials> {
+    const response = await this.fetch(`${this.config.serverUrl}/api/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: this.config.clientId,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const error = data as OAuthError;
+      throw new Error(error.error_description ?? error.error ?? 'Token refresh failed');
+    }
+
+    const tokenResponse = data as TokenResponse;
+    const credentials = this.toStoredCredentials(tokenResponse);
+    this.saveSession(credentials);
+
+    return credentials;
   }
 }

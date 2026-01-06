@@ -13,16 +13,17 @@ use chrono::{Duration, Utc};
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
     CreateOAuthAuthorizationParams, OAuthAuthorizationRepository, OAuthCodeRepository,
-    PersonalKeysRepository, PolicyRepository, RepositoryError, StoreOAuthCodeParams,
-    StoreOAuthCodeWithRegistrationParams, UserRepository,
+    PersonalKeysRepository, PolicyRepository, RefreshTokenRepository, RepositoryError,
+    StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams, UserRepository,
 };
+use keycast_core::types::refresh_token::generate_refresh_token;
 use nostr_sdk::{Keys, ToBech32};
 use rand::Rng;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 // Import constants and helpers from auth module
-use super::auth::{generate_secure_token, EMAIL_VERIFICATION_EXPIRY_HOURS, TOKEN_EXPIRY_HOURS};
+use super::auth::{generate_secure_token, token_expiry_seconds, EMAIL_VERIFICATION_EXPIRY_HOURS};
 
 /// Generate a 256-bit random authorization handle (64 hex characters)
 /// Used for silent re-authentication in OAuth flows
@@ -215,11 +216,12 @@ pub struct ApproveRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
-    pub grant_type: Option<String>, // "authorization_code" only
-    pub code: String,
+    pub grant_type: Option<String>, // "authorization_code" or "refresh_token"
+    pub code: Option<String>,       // For authorization_code grant
     pub client_id: String,
-    pub redirect_uri: String,
-    pub code_verifier: Option<String>, // For PKCE
+    pub redirect_uri: Option<String>, // For authorization_code grant
+    pub code_verifier: Option<String>, // For PKCE (authorization_code grant)
+    pub refresh_token: Option<String>, // For refresh_token grant
 }
 
 /// Generate UCAN token signed by user's key
@@ -248,7 +250,7 @@ async fn generate_ucan_token(
     let ucan = UcanBuilder::default()
         .issued_by(&key_material)
         .for_audience(&user_did) // Self-issued
-        .with_lifetime((TOKEN_EXPIRY_HOURS * 3600) as u64) // 24 hours in seconds
+        .with_lifetime(token_expiry_seconds() as u64)
         .with_fact(facts)
         .build()
         .map_err(|e| OAuthError::InvalidRequest(format!("Failed to build UCAN: {}", e)))?
@@ -286,13 +288,16 @@ pub struct TokenResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<TokenPolicyInfo>, // Keycast extension - policy details
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub authorization_handle: Option<String>, // For silent re-authentication
+    pub authorization_handle: Option<String>, // For silent re-authentication (consent-skip)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>, // RFC 6749 - for silent token renewal
 }
 
 #[derive(Debug)]
 pub enum OAuthError {
     Unauthorized,
     InvalidRequest(String),
+    InvalidGrant(String), // RFC 6749 - for invalid/expired refresh tokens or auth codes
     Database(sqlx::Error),
     Encryption(String),
     ServerError(String),
@@ -308,6 +313,17 @@ impl IntoResponse for OAuthError {
             ),
             OAuthError::InvalidRequest(msg) => {
                 (StatusCode::BAD_REQUEST, format!("Invalid request: {}", msg))
+            }
+            OAuthError::InvalidGrant(msg) => {
+                // RFC 6749 error response format for invalid_grant
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_grant",
+                        "error_description": msg
+                    })),
+                )
+                    .into_response();
             }
             OAuthError::Database(e) => {
                 // Log the real error but return generic message to user
@@ -1908,26 +1924,172 @@ pub async fn authorize_post(
 }
 
 /// POST /oauth/token
-/// Exchange authorization code for bunker URL (authorization_code grant ONLY)
+/// Exchange authorization code or refresh token for access tokens
 /// This is the standard OAuth 2.0 token endpoint for third-party apps
+/// Supports: authorization_code (default), refresh_token
 pub async fn token(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
     Json(req): Json<TokenRequest>,
 ) -> Result<Response, OAuthError> {
     let tenant_id = tenant.0.id;
-
-    // Only accept authorization_code grant (ROPC removed)
     let grant_type = req.grant_type.as_deref().unwrap_or("authorization_code");
 
-    if grant_type != "authorization_code" {
-        return Err(OAuthError::InvalidRequest(format!(
-            "Invalid grant_type '{}'. This endpoint only accepts 'authorization_code'.",
+    match grant_type {
+        "authorization_code" => handle_authorization_code_grant(tenant_id, auth_state, req).await,
+        "refresh_token" => handle_refresh_token_grant(tenant_id, auth_state, req).await,
+        _ => Err(OAuthError::InvalidRequest(format!(
+            "Invalid grant_type '{}'. Supported: authorization_code, refresh_token.",
             grant_type
-        )));
+        ))),
+    }
+}
+
+/// Handle refresh token grant (RFC 6749 §6)
+/// Exchanges a valid refresh token for new access token and rotated refresh token
+async fn handle_refresh_token_grant(
+    tenant_id: i64,
+    auth_state: super::routes::AuthState,
+    req: TokenRequest,
+) -> Result<Response, OAuthError> {
+    let pool = &auth_state.state.db;
+    let key_manager = auth_state.state.key_manager.as_ref();
+
+    // Extract required refresh_token parameter
+    let refresh_token = req.refresh_token.as_ref().ok_or_else(|| {
+        OAuthError::InvalidRequest(
+            "Missing 'refresh_token' parameter for refresh_token grant".into(),
+        )
+    })?;
+
+    // Consume refresh token atomically (validates + marks as consumed)
+    // This implements one-time use per RFC 9700 token rotation
+    let refresh_token_repo = RefreshTokenRepository::new(pool.clone());
+    let token_record = refresh_token_repo
+        .consume(refresh_token)
+        .await?
+        .ok_or_else(|| OAuthError::InvalidGrant("Invalid or expired refresh token".into()))?;
+
+    // Get the OAuth authorization (verify not revoked)
+    let oauth_auth = keycast_core::types::oauth_authorization::OAuthAuthorization::find(
+        pool,
+        tenant_id,
+        token_record.authorization_id,
+    )
+    .await
+    .map_err(|e| OAuthError::InvalidGrant(format!("Authorization not found: {}", e)))?;
+
+    if oauth_auth.revoked_at.is_some() {
+        return Err(OAuthError::InvalidGrant(
+            "Authorization has been revoked".into(),
+        ));
     }
 
-    handle_authorization_code_grant(tenant_id, auth_state, req).await
+    // Get user email for UCAN generation
+    let user_repo = UserRepository::new(pool.clone());
+    let email = user_repo
+        .get_email(&oauth_auth.user_pubkey, tenant_id)
+        .await
+        .unwrap_or_default();
+
+    // Get user's encrypted keys for bunker key derivation
+    let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
+    let encrypted_user_key = personal_keys_repo
+        .find_encrypted_key(&oauth_auth.user_pubkey)
+        .await?
+        .ok_or_else(|| OAuthError::InvalidGrant("User keys not found".into()))?;
+
+    // Decrypt user key for bunker derivation
+    let decrypted_user_secret = key_manager
+        .decrypt(&encrypted_user_key)
+        .await
+        .map_err(|e| OAuthError::Encryption(format!("Failed to decrypt user key: {}", e)))?;
+    let user_secret_key = nostr_sdk::SecretKey::from_slice(&decrypted_user_secret)
+        .map_err(|e| OAuthError::InvalidRequest(format!("Invalid secret key: {}", e)))?;
+
+    // Re-derive bunker keys using the stored secret_hash (deterministic)
+    let bunker_keys =
+        keycast_core::bunker_key::derive_bunker_keys(&user_secret_key, &oauth_auth.secret_hash);
+    let bunker_public_key = bunker_keys.public_key();
+
+    // Generate new UCAN access token (server-signed)
+    let access_token = super::auth::generate_server_signed_ucan(
+        &nostr_sdk::PublicKey::from_hex(&oauth_auth.user_pubkey)
+            .map_err(|e| OAuthError::InvalidRequest(format!("Invalid public key: {}", e)))?,
+        tenant_id,
+        &email,
+        &oauth_auth.redirect_origin,
+        Some(&bunker_public_key.to_hex()),
+        &auth_state.state.server_keys,
+    )
+    .await
+    .map_err(|e| OAuthError::InvalidRequest(format!("UCAN generation failed: {:?}", e)))?;
+
+    // Generate new refresh token (rotation per RFC 9700)
+    let new_refresh_token = generate_refresh_token();
+    refresh_token_repo
+        .create(&new_refresh_token, oauth_auth.id, tenant_id)
+        .await?;
+
+    tracing::info!(
+        "Refreshed token for user {} authorization {}",
+        oauth_auth.user_pubkey,
+        oauth_auth.id
+    );
+
+    // Build bunker URL (same as initial issuance)
+    let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
+    let relay_params: String = relays
+        .iter()
+        .map(|r| format!("relay={}", urlencoding::encode(r)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    // Get connection secret from the stored hash (for bunker URL reconstruction)
+    // Note: We can't recover the original secret, but client already has it
+    // The bunker_url in refresh response uses the same bunker pubkey
+    let bunker_url = format!("bunker://{}?{}", bunker_public_key.to_hex(), relay_params,);
+
+    // Load policy info for response
+    let policy_info = if let Some(policy_id) = oauth_auth.policy_id {
+        let policy_repo = PolicyRepository::new(pool.clone());
+        match policy_repo.find(policy_id).await {
+            Ok(policy) => {
+                let permissions = policy.permission_displays(pool).await.unwrap_or_default();
+                Some(TokenPolicyInfo {
+                    slug: policy.slug.clone().unwrap_or_else(|| policy.id.to_string()),
+                    display_name: policy
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| policy.name.clone()),
+                    description: policy.description.clone().unwrap_or_default(),
+                    permissions,
+                })
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Parse scope from policy for response
+    let scope = if let Some(ref info) = policy_info {
+        format!("policy:{}", info.slug)
+    } else {
+        "policy:social".to_string()
+    };
+
+    Ok(Json(TokenResponse {
+        bunker_url,
+        access_token: Some(access_token),
+        token_type: "Bearer".to_string(),
+        expires_in: token_expiry_seconds(),
+        scope: Some(scope),
+        policy: policy_info,
+        authorization_handle: oauth_auth.authorization_handle,
+        refresh_token: Some(new_refresh_token),
+    })
+    .into_response())
 }
 
 /// Handle authorization code grant (standard OAuth flow)
@@ -1939,10 +2101,20 @@ async fn handle_authorization_code_grant(
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
 
+    // Extract required fields for authorization_code grant
+    let code = req.code.as_ref().ok_or_else(|| {
+        OAuthError::InvalidRequest("Missing 'code' parameter for authorization_code grant".into())
+    })?;
+    let redirect_uri = req.redirect_uri.as_ref().ok_or_else(|| {
+        OAuthError::InvalidRequest(
+            "Missing 'redirect_uri' parameter for authorization_code grant".into(),
+        )
+    })?;
+
     // Fetch and validate authorization code with PKCE fields AND pending registration data
     let oauth_code_repo = OAuthCodeRepository::new(pool.clone());
     let auth_code = oauth_code_repo
-        .find_valid(tenant_id, &req.code)
+        .find_valid(tenant_id, code)
         .await?
         .ok_or(OAuthError::Unauthorized)?;
 
@@ -1959,7 +2131,7 @@ async fn handle_authorization_code_grant(
     let previous_auth_id = auth_code.previous_auth_id;
 
     // Validate redirect_uri matches
-    if stored_redirect_uri != req.redirect_uri {
+    if stored_redirect_uri != *redirect_uri {
         return Err(OAuthError::InvalidRequest(
             "redirect_uri mismatch".to_string(),
         ));
@@ -1973,7 +2145,7 @@ async fn handle_authorization_code_grant(
         })?;
 
         validate_pkce(verifier, &challenge, method)?;
-        tracing::debug!("PKCE validation successful for code: {}", &req.code[..8]);
+        tracing::debug!("PKCE validation successful for code: {}", &code[..8]);
     }
 
     // Extract optional nsec from code_verifier (for BYOK flow)
@@ -2060,7 +2232,7 @@ async fn handle_authorization_code_grant(
                 &verification_token,
                 verification_expires,
                 &encrypted_secret,
-                &req.code,
+                code,
             )
             .await
             .map_err(|e| OAuthError::Database(sqlx::Error::Protocol(e.to_string())))?;
@@ -2099,7 +2271,7 @@ async fn handle_authorization_code_grant(
     } else {
         // Normal token exchange (existing user, not registration)
         // Delete the authorization code (one-time use)
-        oauth_code_repo.delete(tenant_id, &req.code).await?;
+        oauth_code_repo.delete(tenant_id, code).await?;
 
         // Get user's email for UCAN
         let user_repo = UserRepository::new(pool.clone());
@@ -2310,11 +2482,33 @@ async fn create_oauth_authorization_and_token(
         redirect_origin
     );
 
+    // Generate and store refresh token for silent token renewal (RFC 6749 §6)
+    let refresh_token = generate_refresh_token();
+    let refresh_token_repo = RefreshTokenRepository::new(pool.clone());
+    refresh_token_repo
+        .create(&refresh_token, auth_id, tenant_id)
+        .await?;
+
+    tracing::debug!("Created refresh token for authorization {}", auth_id);
+
     // Track OAuth authorization created
     METRICS.inc_oauth_created();
 
     // Revoke old authorization if this was a re-auth (cleanup)
     if let Some(old_auth_id) = previous_auth_id {
+        // Revoke all refresh tokens for the old authorization
+        let old_refresh_repo = RefreshTokenRepository::new(pool.clone());
+        let revoked_count = old_refresh_repo
+            .revoke_for_authorization(old_auth_id)
+            .await?;
+        if revoked_count > 0 {
+            tracing::debug!(
+                "Revoked {} refresh tokens for old authorization {}",
+                revoked_count,
+                old_auth_id
+            );
+        }
+
         oauth_auth_repo.revoke(old_auth_id).await?;
         METRICS.inc_oauth_revoked();
         tracing::info!(
@@ -2386,10 +2580,11 @@ async fn create_oauth_authorization_and_token(
         bunker_url,
         access_token: Some(access_token),
         token_type: "Bearer".to_string(),
-        expires_in: super::auth::TOKEN_EXPIRY_HOURS * 3600, // UCAN expiry in seconds
+        expires_in: token_expiry_seconds(), // UCAN expiry in seconds
         scope: Some(scope.to_string()),
         policy: policy_info,
         authorization_handle: Some(authorization_handle),
+        refresh_token: Some(refresh_token),
     })
     .into_response())
 }

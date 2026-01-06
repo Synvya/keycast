@@ -301,6 +301,7 @@ async fn test_token_response_includes_authorization_handle() {
         scope: Some("sign".to_string()),
         policy: None,
         authorization_handle: Some("a".repeat(64)),
+        refresh_token: Some("b".repeat(64)),
     };
 
     // Serialize to JSON and verify authorization_handle is present

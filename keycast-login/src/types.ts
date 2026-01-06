@@ -27,6 +27,8 @@ export interface TokenResponse {
   scope?: string;
   /** Handle for silent re-authentication (pass to next authorize request) */
   authorization_handle?: string;
+  /** Refresh token for silent token renewal */
+  refresh_token?: string;
 }
 
 /**
@@ -105,4 +107,6 @@ export interface StoredCredentials {
   expiresAt?: number;
   /** Handle for silent re-authentication */
   authorizationHandle?: string;
+  /** Refresh token for silent token renewal */
+  refreshToken?: string;
 }

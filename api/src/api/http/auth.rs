@@ -25,9 +25,18 @@ use sqlx::PgPool;
 
 // Registration and login return simple JSON (not OAuth TokenResponse)
 
-pub const TOKEN_EXPIRY_HOURS: i64 = 24;
+const DEFAULT_TOKEN_EXPIRY_HOURS: i64 = 24;
 pub const EMAIL_VERIFICATION_EXPIRY_HOURS: i64 = 24;
 const PASSWORD_RESET_EXPIRY_HOURS: i64 = 1;
+
+/// Get token expiry in seconds. Uses `TOKEN_EXPIRY_SECONDS` env var if set,
+/// otherwise defaults to 24 hours (86400 seconds).
+pub fn token_expiry_seconds() -> i64 {
+    std::env::var("TOKEN_EXPIRY_SECONDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_TOKEN_EXPIRY_HOURS * 3600)
+}
 
 pub fn generate_secure_token() -> String {
     use rand::distributions::Alphanumeric;
@@ -70,7 +79,7 @@ pub(crate) async fn generate_ucan_token(
     let ucan = UcanBuilder::default()
         .issued_by(&key_material)
         .for_audience(&user_did) // Self-issued
-        .with_lifetime((TOKEN_EXPIRY_HOURS * 3600) as u64) // 24 hours in seconds
+        .with_lifetime(token_expiry_seconds() as u64)
         .with_fact(facts)
         .build()
         .map_err(|e| AuthError::Internal(format!("Failed to build UCAN: {}", e)))?
@@ -113,7 +122,7 @@ pub(crate) async fn generate_server_signed_ucan(
     let ucan = UcanBuilder::default()
         .issued_by(&server_key_material) // Server issues
         .for_audience(&user_did) // For this user
-        .with_lifetime((TOKEN_EXPIRY_HOURS * 3600) as u64)
+        .with_lifetime(token_expiry_seconds() as u64)
         .with_fact(facts)
         .build()
         .map_err(|e| AuthError::Internal(format!("Failed to build UCAN: {}", e)))?
@@ -2726,7 +2735,7 @@ mod tests {
     async fn create_test_db() -> PgPool {
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:password@localhost/keycast_test".to_string());
-        PgPool::connect(&database_url).await.expect(
+        let pool = PgPool::connect(&database_url).await.expect(
             "\n\n\
             ╔══════════════════════════════════════════════════════════════════╗\n\
             ║  PostgreSQL connection failed - these tests require a database   ║\n\
@@ -2738,7 +2747,15 @@ mod tests {
             ║                                                                  ║\n\
             ║  Or skip these tests:  cargo test -- --skip test_fast_path      ║\n\
             ╚══════════════════════════════════════════════════════════════════╝\n\n",
-        )
+        );
+
+        // Run migrations
+        sqlx::migrate!("../database/migrations")
+            .run(&pool)
+            .await
+            .expect("Failed to run migrations");
+
+        pool
     }
 
     /// Mock signing handler for testing

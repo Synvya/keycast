@@ -134,7 +134,7 @@ describe('KeycastOAuth', () => {
       const oauth = new KeycastOAuth(config);
 
       await expect(oauth.exchangeCode('code')).rejects.toThrow(
-        'No PKCE verifier'
+        'Session not found'
       );
     });
   });
@@ -199,6 +199,75 @@ describe('KeycastOAuth', () => {
       };
 
       expect(oauth.isExpired(credentials)).toBe(false);
+    });
+  });
+
+  describe('toStoredCredentials with refresh_token', () => {
+    it('should store refresh_token', () => {
+      const oauth = new KeycastOAuth(config);
+      const response = {
+        bunker_url: 'bunker://abc',
+        access_token: 'token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: 'refresh123',
+      };
+
+      const credentials = oauth.toStoredCredentials(response);
+
+      expect(credentials.refreshToken).toBe('refresh123');
+    });
+  });
+
+  describe('getSessionWithRefresh', () => {
+    it('should return null if no session', async () => {
+      const oauth = new KeycastOAuth(config);
+      const result = await oauth.getSessionWithRefresh();
+      expect(result).toBeNull();
+    });
+
+    it('should return credentials if not near expiry', async () => {
+      const storage = new Map<string, string>();
+      const oauth = new KeycastOAuth({
+        ...config,
+        storage: {
+          getItem: (k) => storage.get(k) ?? null,
+          setItem: (k, v) => storage.set(k, v),
+          removeItem: (k) => storage.delete(k),
+        },
+      });
+
+      const credentials = {
+        bunkerUrl: 'bunker://abc',
+        accessToken: 'token',
+        expiresAt: Date.now() + 3600000, // 1 hour from now
+      };
+      storage.set('keycast_session', JSON.stringify(credentials));
+
+      const result = await oauth.getSessionWithRefresh();
+      expect(result?.bunkerUrl).toBe('bunker://abc');
+    });
+
+    it('should return null if expired and no refresh token', async () => {
+      const storage = new Map<string, string>();
+      const oauth = new KeycastOAuth({
+        ...config,
+        storage: {
+          getItem: (k) => storage.get(k) ?? null,
+          setItem: (k, v) => storage.set(k, v),
+          removeItem: (k) => storage.delete(k),
+        },
+      });
+
+      const credentials = {
+        bunkerUrl: 'bunker://abc',
+        accessToken: 'token',
+        expiresAt: Date.now() - 1000, // expired
+      };
+      storage.set('keycast_session', JSON.stringify(credentials));
+
+      const result = await oauth.getSessionWithRefresh();
+      expect(result).toBeNull();
     });
   });
 });

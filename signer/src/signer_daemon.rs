@@ -1758,7 +1758,7 @@ mod tests {
             Box::new(keycast_core::encryption::file_key_manager::FileKeyManager::new().unwrap());
         let (_tx, rx) = tokio::sync::mpsc::channel(100);
         let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+            std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
         let coordinator = Arc::new(ClusterCoordinator::start(&redis_url).await.unwrap());
         let signer = UnifiedSigner::new(pool, key_manager, rx, coordinator)
             .await
@@ -1787,7 +1787,7 @@ mod tests {
             Box::new(keycast_core::encryption::file_key_manager::FileKeyManager::new().unwrap());
         let (_tx, rx) = tokio::sync::mpsc::channel(100);
         let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+            std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
         let coordinator = Arc::new(ClusterCoordinator::start(&redis_url).await.unwrap());
         let signer = UnifiedSigner::new(pool.clone(), key_manager, rx, coordinator)
             .await
