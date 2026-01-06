@@ -381,13 +381,11 @@ onMount(async () => {
 										<p class="app-name">{session.application_name}</p>
 										<p class="app-domain">{session.redirect_origin}</p>
 										<p class="app-meta">
+											{new Date(session.created_at).toLocaleDateString()}
 											{#if session.activity_count > 0}
-												{session.activity_count} {session.activity_count === 1 ? 'request' : 'requests'}
-												{#if session.last_activity}
-													• Last used {new Date(session.last_activity).toLocaleDateString()}
-												{/if}
+												• {session.activity_count} {session.activity_count === 1 ? 'request' : 'requests'}
 											{:else}
-												Not used yet
+												• Not used yet
 											{/if}
 										</p>
 									</div>
