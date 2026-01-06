@@ -89,7 +89,7 @@ pub async fn headless_register(
         .map_err(|e| HeadlessError::InvalidRequest(format!("Invalid redirect_uri: {:?}", e)))?;
 
     // Validate scope if provided
-    let scope = req.scope.as_deref().unwrap_or("policy:social");
+    let scope = req.scope.as_deref().unwrap_or("policy:full");
     if scope.starts_with("policy:") {
         let policy_slug = parse_policy_scope(scope)
             .map_err(|e| HeadlessError::InvalidRequest(format!("{:?}", e)))?;
@@ -361,7 +361,7 @@ pub async fn headless_login(
 
     // Store authorization code (10 minute expiry)
     let expires_at = Utc::now() + Duration::minutes(10);
-    let scope = req.scope.as_deref().unwrap_or("policy:social");
+    let scope = req.scope.as_deref().unwrap_or("policy:full");
 
     let oauth_code_repo = OAuthCodeRepository::new(pool.clone());
     oauth_code_repo
@@ -470,7 +470,7 @@ pub async fn headless_authorize(
 
     // Store authorization code
     let expires_at = Utc::now() + Duration::minutes(10);
-    let scope = req.scope.as_deref().unwrap_or("policy:social");
+    let scope = req.scope.as_deref().unwrap_or("policy:full");
 
     let oauth_code_repo = OAuthCodeRepository::new(pool.clone());
     oauth_code_repo

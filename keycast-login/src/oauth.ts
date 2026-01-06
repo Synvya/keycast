@@ -175,7 +175,7 @@ export class KeycastOAuth {
     const url = new URL(`${this.config.serverUrl}/api/oauth/authorize`);
     url.searchParams.set('client_id', this.config.clientId);
     url.searchParams.set('redirect_uri', this.config.redirectUri);
-    url.searchParams.set('scope', options.scopes?.join(' ') ?? 'policy:social');
+    url.searchParams.set('scope', options.scopes?.join(' ') ?? 'policy:full');
     url.searchParams.set('code_challenge', pkce.challenge);
     url.searchParams.set('code_challenge_method', 'S256');
     url.searchParams.set('state', state);

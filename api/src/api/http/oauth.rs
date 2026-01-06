@@ -645,8 +645,8 @@ pub async fn authorize_get(
     }
 
     // Load policy info from scope for display
-    // Default to "policy:social" if no scope provided
-    let scope_str = params.scope.as_deref().unwrap_or("policy:social");
+    // Default to "policy:full" if no scope provided (permissive for dev, can tighten later)
+    let scope_str = params.scope.as_deref().unwrap_or("policy:full");
     let policy_info_json = {
         // Parse policy slug from scope
         let policy_slug = match parse_policy_scope(scope_str) {
@@ -2076,7 +2076,7 @@ async fn handle_refresh_token_grant(
     let scope = if let Some(ref info) = policy_info {
         format!("policy:{}", info.slug)
     } else {
-        "policy:social".to_string()
+        "policy:full".to_string()
     };
 
     Ok(Json(TokenResponse {
