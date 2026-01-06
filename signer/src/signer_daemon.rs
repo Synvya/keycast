@@ -1171,6 +1171,9 @@ impl UnifiedSigner {
                     .map_err(|e| SignerError::internal(format!("spawn_blocking failed: {}", e)))??
                 };
 
+                // Log activity in background (non-blocking)
+                handler.spawn_update_activity();
+
                 serde_json::json!({
                     "id": request_id,
                     "result": ciphertext
@@ -1200,6 +1203,9 @@ impl UnifiedSigner {
                     .await
                     .map_err(|e| SignerError::internal(format!("spawn_blocking failed: {}", e)))??
                 };
+
+                // Log activity in background (non-blocking)
+                handler.spawn_update_activity();
 
                 // Expose secret only at serialization boundary
                 serde_json::json!({
@@ -1231,6 +1237,9 @@ impl UnifiedSigner {
                         })??
                 };
 
+                // Log activity in background (non-blocking)
+                handler.spawn_update_activity();
+
                 serde_json::json!({
                     "id": request_id,
                     "result": ciphertext
@@ -1260,6 +1269,9 @@ impl UnifiedSigner {
                     .await
                     .map_err(|e| SignerError::internal(format!("spawn_blocking failed: {}", e)))??
                 };
+
+                // Log activity in background (non-blocking)
+                handler.spawn_update_activity();
 
                 // Expose secret only at serialization boundary
                 serde_json::json!({
@@ -1528,34 +1540,8 @@ impl Nip46Handler {
                 }
             };
 
-            // Truncate content for storage
-            let truncated_content = if event_content.len() > 500 {
-                format!("{}... (truncated)", &event_content[..500])
-            } else {
-                event_content
-            };
-
-            // Insert signing activity
-            if let Err(e) = sqlx::query(
-                "INSERT INTO signing_activity
-                 (user_pubkey, bunker_pubkey, event_kind, event_content, event_id, client_pubkey, tenant_id, source, created_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'relay', NOW())",
-            )
-            .bind(&user_pubkey)
-            .bind(&bunker_pubkey)
-            .bind(event_kind as i32)
-            .bind(&truncated_content)
-            .bind(&event_id)
-            .bind(&client_pubkey)
-            .bind(tenant_id)
-            .execute(&pool)
-            .await
-            {
-                tracing::error!("Failed to log signing activity: {}", e);
-                return;
-            }
-
-            // Update activity stats on oauth_authorizations
+            // Update activity stats on oauth_authorizations FIRST (critical for UI)
+            // This must succeed even if the detailed signing_activity log fails
             if is_oauth {
                 if let Err(e) = sqlx::query(
                     "UPDATE oauth_authorizations
@@ -1571,12 +1557,65 @@ impl Nip46Handler {
                 }
             }
 
+            // Truncate content for storage
+            let truncated_content = if event_content.len() > 500 {
+                format!("{}... (truncated)", &event_content[..500])
+            } else {
+                event_content
+            };
+
+            // Insert detailed signing activity log (non-critical, FK may fail if user not in users table)
+            if let Err(e) = sqlx::query(
+                "INSERT INTO signing_activity
+                 (user_pubkey, bunker_pubkey, event_kind, event_content, event_id, client_pubkey, tenant_id, source, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'relay', NOW())",
+            )
+            .bind(&user_pubkey)
+            .bind(&bunker_pubkey)
+            .bind(event_kind as i32)
+            .bind(&truncated_content)
+            .bind(&event_id)
+            .bind(&client_pubkey)
+            .bind(tenant_id)
+            .execute(&pool)
+            .await
+            {
+                tracing::warn!("Failed to log signing activity (user may not exist in users table): {}", e);
+            }
+
             tracing::debug!(
                 "Logged signing activity for tenant {} user {} kind {}",
                 tenant_id,
                 user_pubkey,
                 event_kind
             );
+        });
+    }
+
+    /// Spawn simple activity update in background (for encrypt/decrypt operations)
+    /// Only updates oauth_authorizations stats without detailed signing_activity log
+    fn spawn_update_activity(&self) {
+        if !self.is_oauth {
+            return;
+        }
+
+        let pool = self.pool.clone();
+        let tenant_id = self.tenant_id;
+        let authorization_id = self.authorization_id as i64;
+
+        tokio::spawn(async move {
+            if let Err(e) = sqlx::query(
+                "UPDATE oauth_authorizations
+                 SET last_activity = NOW(), activity_count = activity_count + 1
+                 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(authorization_id)
+            .bind(tenant_id)
+            .execute(&pool)
+            .await
+            {
+                tracing::error!("Failed to update oauth_authorizations activity: {}", e);
+            }
         });
     }
 }

@@ -18,6 +18,7 @@ use nostr_sdk::{Keys, PublicKey, UnsignedEvent};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sqlx::PgPool;
 use std::sync::Arc;
 
 use super::auth::AuthError;
@@ -163,6 +164,9 @@ pub async fn nostr_rpc(
                 signed.kind.as_u16()
             );
 
+            // Log activity in background (non-blocking)
+            spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
+
             serde_json::to_value(&signed)
                 .map_err(|e| RpcError::Internal(format!("JSON serialization failed: {}", e)))?
         }
@@ -174,6 +178,9 @@ pub async fn nostr_rpc(
             // Crypto runs on spawn_blocking to avoid blocking async workers
             let ciphertext = handler.nip44_encrypt(&recipient_pubkey, &plaintext).await?;
 
+            // Log activity in background (non-blocking)
+            spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
+
             JsonValue::String(ciphertext)
         }
 
@@ -183,6 +190,9 @@ pub async fn nostr_rpc(
             // Handler validates expiration, revocation, and permissions (all cached)
             // Crypto runs on spawn_blocking to avoid blocking async workers
             let plaintext = handler.nip44_decrypt(&sender_pubkey, &ciphertext).await?;
+
+            // Log activity in background (non-blocking)
+            spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
 
             // Expose secret only at serialization boundary
             JsonValue::String(plaintext.expose_secret().to_string())
@@ -195,6 +205,9 @@ pub async fn nostr_rpc(
             // Crypto runs on spawn_blocking to avoid blocking async workers
             let ciphertext = handler.nip04_encrypt(&recipient_pubkey, &plaintext).await?;
 
+            // Log activity in background (non-blocking)
+            spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
+
             JsonValue::String(ciphertext)
         }
 
@@ -204,6 +217,9 @@ pub async fn nostr_rpc(
             // Handler validates expiration, revocation, and permissions (all cached)
             // Crypto runs on spawn_blocking to avoid blocking async workers
             let plaintext = handler.nip04_decrypt(&sender_pubkey, &ciphertext).await?;
+
+            // Log activity in background (non-blocking)
+            spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
 
             // Expose secret only at serialization boundary
             JsonValue::String(plaintext.expose_secret().to_string())
@@ -442,6 +458,28 @@ fn parse_decrypt_params(params: &[JsonValue]) -> Result<(PublicKey, String), Rpc
         .map_err(|e| RpcError::InvalidParams(format!("Invalid pubkey: {}", e)))?;
 
     Ok((pubkey, ciphertext.to_string()))
+}
+
+/// Spawn activity logging in background (non-blocking)
+/// Updates oauth_authorizations stats without blocking the response
+fn spawn_log_activity(pool: PgPool, is_oauth: bool, authorization_id: i64) {
+    if !is_oauth {
+        return;
+    }
+
+    tokio::spawn(async move {
+        if let Err(e) = sqlx::query(
+            "UPDATE oauth_authorizations
+             SET last_activity = NOW(), activity_count = activity_count + 1
+             WHERE id = $1",
+        )
+        .bind(authorization_id)
+        .execute(&pool)
+        .await
+        {
+            tracing::error!("Failed to update oauth_authorizations activity: {}", e);
+        }
+    });
 }
 
 #[cfg(test)]
