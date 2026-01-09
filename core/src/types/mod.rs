@@ -1,4 +1,5 @@
 pub mod authorization;
+pub mod claim_token;
 pub mod oauth_authorization;
 pub mod permission;
 pub mod policy;

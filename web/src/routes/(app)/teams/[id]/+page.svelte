@@ -17,7 +17,6 @@ import type {
     User,
 } from "$lib/types";
 import { truncatedNpubForPubkey } from "$lib/utils/nostr";
-import { type NDKEvent, NDKNip07Signer } from "@nostr-dev-kit/ndk";
 import { DotsThreeVertical } from "phosphor-svelte";
 import { toast } from "svelte-hot-french-toast";
 
@@ -26,59 +25,25 @@ const { id } = $page.params;
 const api = new KeycastApi();
 const user = $derived(getCurrentUser()?.user);
 let isLoading = $state(true);
-let unsignedAuthEvent: NDKEvent | null = $state(null);
-let encodedAuthEvent: string | null = $state(null);
+let hasFetched = $state(false);
 let team: TeamWithRelations | null = $state(null);
 let users: User[] = $state([]);
 let storedKeys: StoredKey[] = $state([]);
 let policies: PolicyWithPermissions[] = $state([]);
 
 $effect(() => {
-    if (user?.pubkey && !unsignedAuthEvent) {
-        const authMethod = getCurrentUser()?.authMethod;
-        let authHeaders: Record<string, string> = {};
-
-        if (authMethod === 'nip07') {
-            api.buildUnsignedAuthEvent(`/teams/${id}`, "GET", user.pubkey).then(
-                async (event) => {
-                    unsignedAuthEvent = event;
-                    if (unsignedAuthEvent) {
-                        if (!ndk.signer) {
-                            ndk.signer = new NDKNip07Signer();
-                        }
-                        await unsignedAuthEvent.sign();
-                        encodedAuthEvent = `Nostr ${btoa(JSON.stringify(unsignedAuthEvent))}`;
-                        authHeaders.Authorization = encodedAuthEvent;
-                        api.get(`/teams/${id}`, {
-                            headers: authHeaders,
-                        })
-                            .then((teamResponse) => {
-                                team = teamResponse as TeamWithRelations;
-                                users = team.team_users;
-                                storedKeys = team.stored_keys;
-                                policies = team.policies;
-                            })
-                            .finally(() => {
-                                isLoading = false;
-                            });
-                    }
-                },
-            );
-        } else {
-            // Cookie auth (sent automatically via credentials: 'include')
-            api.get(`/teams/${id}`, {
-                headers: authHeaders,
+    if (user?.pubkey && !hasFetched) {
+        hasFetched = true;
+        api.get(`/teams/${id}`)
+            .then((teamResponse) => {
+                team = teamResponse as TeamWithRelations;
+                users = team.team_users;
+                storedKeys = team.stored_keys;
+                policies = team.policies;
             })
-                .then((teamResponse) => {
-                    team = teamResponse as TeamWithRelations;
-                    users = team.team_users;
-                    storedKeys = team.stored_keys;
-                    policies = team.policies;
-                })
-                .finally(() => {
-                    isLoading = false;
-                });
-        }
+            .finally(() => {
+                isLoading = false;
+            });
     }
 });
 
@@ -89,26 +54,7 @@ async function deleteTeam() {
             "Are you sure you want to delete this team? This action is irreversible.",
         )
     ) {
-        const authMethod = getCurrentUser()?.authMethod;
-        let authHeaders: Record<string, string> = {};
-
-        if (authMethod === 'nip07') {
-            const authEvent = await api.buildUnsignedAuthEvent(
-                `/teams/${id}`,
-                "DELETE",
-                user?.pubkey,
-            );
-            if (!ndk.signer) {
-                ndk.signer = new NDKNip07Signer();
-            }
-            await authEvent?.sign();
-            authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-        }
-        // Otherwise cookie auth (sent automatically via credentials: 'include')
-
-        api.delete(`/teams/${id}`, {
-            headers: authHeaders,
-        }).then(() => {
+        api.delete(`/teams/${id}`).then(() => {
             toast.success("Team deleted successfully");
             goto("/teams");
         });
@@ -126,26 +72,7 @@ async function removeUser(userToRemove: User) {
     if (!user?.pubkey) return;
     if (!confirm("Are you sure you want to remove this user?")) return;
 
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        const authEvent = await api.buildUnsignedAuthEvent(
-            `/teams/${id}/users/${userToRemove.user_pubkey}`,
-            "DELETE",
-            user?.pubkey,
-        );
-        if (!ndk.signer) {
-            ndk.signer = new NDKNip07Signer();
-        }
-        await authEvent?.sign();
-        authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-    }
-    // Otherwise cookie auth (sent automatically via credentials: 'include')
-
-    api.delete(`/teams/${id}/users/${userToRemove.user_pubkey}`, {
-        headers: authHeaders,
-    })
+    api.delete(`/teams/${id}/users/${userToRemove.user_pubkey}`)
         .then(() => {
             toast.success("User removed successfully");
             users = users.filter(

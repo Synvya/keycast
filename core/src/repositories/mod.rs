@@ -2,6 +2,7 @@
 // ABOUTME: Provides abstraction layer between handlers and database
 
 mod authorization;
+mod claim_token;
 mod error;
 mod oauth_authorization;
 mod oauth_code;
@@ -14,6 +15,7 @@ mod team;
 mod user;
 
 pub use authorization::AuthorizationRepository;
+pub use claim_token::ClaimTokenRepository;
 pub use error::RepositoryError;
 pub use oauth_authorization::{CreateOAuthAuthorizationParams, OAuthAuthorizationRepository};
 pub use oauth_code::{

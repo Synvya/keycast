@@ -835,6 +835,149 @@ impl UserRepository {
         tx.commit().await?;
         Ok(oauth_count)
     }
+
+    // =========================================================================
+    // Preloaded account methods (for Vine import)
+    // =========================================================================
+
+    /// Create a preloaded user with personal key atomically.
+    ///
+    /// Creates a user without email/password for later claiming.
+    /// Used for importing users from external systems (e.g., Vine).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_preloaded_user(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+        vine_id: &str,
+        username: &str,
+        display_name: Option<&str>,
+        encrypted_secret: &[u8],
+    ) -> Result<(), RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now();
+
+        // Insert user with vine_id, username, display_name, but no email/password
+        sqlx::query(
+            "INSERT INTO users (pubkey, tenant_id, vine_id, username, display_name, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(pubkey)
+        .bind(tenant_id)
+        .bind(vine_id)
+        .bind(username)
+        .bind(display_name)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        // Insert personal key
+        sqlx::query(
+            "INSERT INTO personal_keys (user_pubkey, encrypted_secret_key, tenant_id, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(pubkey)
+        .bind(encrypted_secret)
+        .bind(tenant_id)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Find user pubkey by vine_id.
+    pub async fn find_pubkey_by_vine_id(
+        &self,
+        vine_id: &str,
+        tenant_id: i64,
+    ) -> Result<Option<String>, RepositoryError> {
+        let result: Option<(String,)> =
+            sqlx::query_as("SELECT pubkey FROM users WHERE vine_id = $1 AND tenant_id = $2")
+                .bind(vine_id)
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(result.map(|r| r.0))
+    }
+
+    /// Check if a user is unclaimed (has no email set).
+    /// Returns None if user doesn't exist, Some(true) if unclaimed, Some(false) if claimed.
+    pub async fn is_unclaimed(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<Option<bool>, RepositoryError> {
+        let result: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT email FROM users WHERE pubkey = $1 AND tenant_id = $2")
+                .bind(pubkey)
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(result.map(|r| r.0.is_none()))
+    }
+
+    /// Get user info for claim page (username, display_name).
+    pub async fn get_claim_info(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<Option<(Option<String>, Option<String>)>, RepositoryError> {
+        sqlx::query_as(
+            "SELECT username, display_name FROM users WHERE pubkey = $1 AND tenant_id = $2",
+        )
+        .bind(pubkey)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Claim a preloaded account by setting email and password.
+    /// Also marks email as verified (claim link is proof of ownership).
+    pub async fn claim_account(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+        email: &str,
+        password_hash: &str,
+    ) -> Result<(), RepositoryError> {
+        let result = sqlx::query(
+            "UPDATE users
+             SET email = $1, password_hash = $2, email_verified = true, updated_at = $3
+             WHERE pubkey = $4 AND tenant_id = $5 AND email IS NULL",
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(Utc::now())
+        .bind(pubkey)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(RepositoryError::NotFound(
+                "User not found or already claimed".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Check if email is already in use.
+    pub async fn email_exists(&self, email: &str, tenant_id: i64) -> Result<bool, RepositoryError> {
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT pubkey FROM users WHERE LOWER(email) = LOWER($1) AND tenant_id = $2",
+        )
+        .bind(email)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(result.is_some())
+    }
 }
 
 #[cfg(test)]

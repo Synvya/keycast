@@ -1,16 +1,16 @@
 <script lang="ts">
 import { getCurrentUser, setCurrentUser } from "$lib/current_user.svelte";
-import ndk from "$lib/ndk.svelte";
 import { KeycastApi } from "$lib/keycast_api.svelte";
 import { BRAND } from "$lib/brand";
 import type { TeamWithRelations, BunkerSession } from "$lib/types";
-import { NDKNip07Signer } from "@nostr-dev-kit/ndk";
-import { Users, Key, ArrowRight, PlusCircle, Gear, Copy, Check, EnvelopeSimple, CaretDown, CaretUp, Question, ArrowSquareOut, ShieldCheck, Export } from "phosphor-svelte";
+import { Users, Key, ArrowRight, PlusCircle, Gear, Copy, Check, EnvelopeSimple, CaretDown, CaretUp, Question, ArrowSquareOut, ShieldCheck, Export, PlugsConnected } from "phosphor-svelte";
 import Loader from "$lib/components/Loader.svelte";
 import CreateBunkerModal from "$lib/components/CreateBunkerModal.svelte";
 import { onMount } from "svelte";
 import { nip19 } from "nostr-tools";
 import { toast } from "svelte-hot-french-toast";
+import ndk from "$lib/ndk.svelte";
+import { signin, SigninMethod } from "$lib/utils/auth";
 
 const api = new KeycastApi();
 const currentUser = $derived(getCurrentUser());
@@ -34,6 +34,18 @@ let sessionToRevoke = $state<BunkerSession | null>(null);
 let showLearnMore = $state(false);
 let pubkeyFormat = $state<'hex' | 'npub'>('npub');
 let copiedPubkey = $state<string | null>(null);
+let isNip07Loading = $state(false);
+
+async function handleNip07Signin() {
+	isNip07Loading = true;
+	try {
+		await signin(ndk, undefined, SigninMethod.Nip07);
+	} catch (err) {
+		console.error('NIP-07 signin error:', err);
+	} finally {
+		isNip07Loading = false;
+	}
+}
 
 function formatPubkey(hexPubkey: string): string {
 	if (pubkeyFormat === 'npub') {
@@ -67,20 +79,7 @@ async function loadTeams() {
 	if (!user?.pubkey) return;
 
 	try {
-		let authHeaders: Record<string, string> = {};
-
-		if (authMethod === 'nip07') {
-			if (!ndk.signer) {
-				ndk.signer = new NDKNip07Signer();
-			}
-			const authEvent = await api.buildUnsignedAuthEvent('/teams', 'GET', user.pubkey);
-			await authEvent?.sign();
-			authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-		}
-
-		const response = await api.get<TeamWithRelations[]>('/teams', {
-			headers: authHeaders
-		});
+		const response = await api.get<TeamWithRelations[]>('/teams');
 		teams = response || [];
 	} catch (err: any) {
 		console.error('Failed to load teams:', err);
@@ -92,20 +91,7 @@ async function loadSessions() {
 	if (!user?.pubkey) return;
 
 	try {
-		let authHeaders: Record<string, string> = {};
-
-		if (authMethod === 'nip07') {
-			if (!ndk.signer) {
-				ndk.signer = new NDKNip07Signer();
-			}
-			const authEvent = await api.buildUnsignedAuthEvent('/user/sessions', 'GET', user.pubkey);
-			await authEvent?.sign();
-			authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-		}
-
-		const response = await api.get<{ sessions: BunkerSession[] }>('/user/sessions', {
-			headers: authHeaders
-		});
+		const response = await api.get<{ sessions: BunkerSession[] }>('/user/sessions');
 		sessions = response.sessions || [];
 	} catch (err: any) {
 		console.error('Failed to load sessions:', err);
@@ -148,16 +134,7 @@ function confirmRevoke(session: BunkerSession) {
 
 async function revokeSession(bunkerPubkey: string, appName: string) {
 	try {
-		let authHeaders: Record<string, string> = {};
-
-		if (authMethod === 'nip07' && ndk.signer) {
-			const body = JSON.stringify({ bunker_pubkey: bunkerPubkey });
-			const authEvent = await api.buildUnsignedAuthEvent('/user/sessions/revoke', 'POST', user!.pubkey, body);
-			await authEvent?.sign();
-			authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-		}
-
-		await api.post('/user/sessions/revoke', { bunker_pubkey: bunkerPubkey }, { headers: authHeaders });
+		await api.post('/user/sessions/revoke', { bunker_pubkey: bunkerPubkey });
 		toast.success(`Revoked access for ${appName}`);
 		showRevokeModal = false;
 		sessionToRevoke = null;
@@ -225,7 +202,13 @@ onMount(async () => {
 		}
 
 		// Load dashboard data
-		await Promise.all([loadTeams(), loadSessions()]);
+		// NIP-07 admins don't have personal sessions, only load teams
+		const currentAuth = currentUserCheck.authMethod;
+		if (currentAuth === 'nip07') {
+			await loadTeams();
+		} else {
+			await Promise.all([loadTeams(), loadSessions()]);
+		}
 		isLoadingDashboard = false;
 
 		// Try to fetch user profile for name
@@ -258,9 +241,31 @@ onMount(async () => {
 		{:else}
 			<!-- Your Identity Section -->
 			<section class="identity-section">
-				<h2 class="section-title">Manage Your Identity</h2>
+				<h2 class="section-title">
+					{#if authMethod === 'nip07'}
+						Admin Access
+					{:else}
+						Manage Your Identity
+					{/if}
+				</h2>
 				<div class="identity-card">
-					{#if userEmail}
+					{#if authMethod === 'nip07'}
+						<div class="identity-row">
+							<div class="identity-icon">
+								<PlugsConnected size={20} weight="fill" />
+							</div>
+							<div class="identity-info">
+								<span class="identity-value">Signed in via NIP-07 extension</span>
+								<span class="status-badge admin">Admin</span>
+							</div>
+						</div>
+						<div class="identity-actions">
+							<a href="/admin" class="identity-link">
+								<Key size={16} />
+								<span>Admin Dashboard & API Token</span>
+							</a>
+						</div>
+					{:else if userEmail}
 						<div class="identity-row">
 							<div class="identity-icon">
 								<EnvelopeSimple size={20} weight="fill" />
@@ -313,7 +318,8 @@ onMount(async () => {
 				</div>
 			</section>
 
-			<!-- Learn More Section -->
+			<!-- Learn More Section (not for NIP-07 admins) -->
+			{#if authMethod !== 'nip07'}
 			<section class="learn-section">
 				<button class="learn-toggle" onclick={() => (showLearnMore = !showLearnMore)}>
 					<Question size={18} weight="fill" />
@@ -352,8 +358,10 @@ onMount(async () => {
 					</div>
 				{/if}
 			</section>
+			{/if}
 
-			<!-- App Connections Section -->
+			<!-- App Connections Section (not for NIP-07 admins) -->
+			{#if authMethod !== 'nip07'}
 			<section class="apps-section">
 				<div class="section-header">
 					<h2 class="section-title">App Connections</h2>
@@ -487,6 +495,7 @@ onMount(async () => {
 					</div>
 				{/if}
 			</section>
+			{/if}
 
 			<!-- Teams Section (only if user has teams or is whitelisted) -->
 			{#if teams.length > 0 || isWhitelisted}
@@ -583,6 +592,15 @@ onMount(async () => {
 				<a href="/register" class="button button-primary">Get Started</a>
 				<a href="/login" class="button button-secondary">Sign In</a>
 			</div>
+
+			<!-- NIP-07 Admin Login -->
+			<button
+				class="admin-login-link"
+				onclick={handleNip07Signin}
+				disabled={isNip07Loading}
+			>
+				{isNip07Loading ? 'Connecting...' : 'NIP-07 Admin Login'}
+			</button>
 
 			<!-- Feature sections -->
 			<div class="features-grid">
@@ -721,6 +739,11 @@ onMount(async () => {
 	.status-badge.success {
 		background: color-mix(in srgb, var(--color-divine-green) 20%, transparent);
 		color: var(--color-divine-green);
+	}
+
+	.status-badge.admin {
+		background: color-mix(in srgb, var(--color-divine-purple, #8b5cf6) 20%, transparent);
+		color: var(--color-divine-purple, #8b5cf6);
 	}
 
 	.copy-btn {
@@ -1264,6 +1287,25 @@ onMount(async () => {
 		gap: 1rem;
 		justify-content: center;
 		margin-bottom: 1.5rem;
+	}
+
+	.admin-login-link {
+		background: none;
+		border: none;
+		color: var(--color-divine-text-tertiary);
+		font-size: 0.8rem;
+		cursor: pointer;
+		padding: 0.25rem 0.5rem;
+		transition: color 0.2s;
+	}
+
+	.admin-login-link:hover:not(:disabled) {
+		color: var(--color-divine-green);
+	}
+
+	.admin-login-link:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.features-grid {

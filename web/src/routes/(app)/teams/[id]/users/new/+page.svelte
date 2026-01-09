@@ -3,10 +3,8 @@ import { goto } from "$app/navigation";
 import { page } from "$app/stores";
 import { getCurrentUser } from "$lib/current_user.svelte";
 import { KeycastApi } from "$lib/keycast_api.svelte";
-import ndk from "$lib/ndk.svelte";
 import type { User } from "$lib/types";
 import { userFromPubkeyOrNpub } from "$lib/utils/nostr";
-import { type NDKEvent, NDKNip07Signer } from "@nostr-dev-kit/ndk";
 import { toast } from "svelte-hot-french-toast";
 
 const { id } = $page.params;
@@ -14,7 +12,6 @@ const { id } = $page.params;
 const api = new KeycastApi();
 const user = $derived(getCurrentUser()?.user);
 
-let unsignedAuthEvent: NDKEvent | null = $state(null);
 let pubkeyOrNpub: string = $state("");
 let role: "Admin" | "Member" = $state("Member");
 let errorMessage: string | null = $state(null);
@@ -33,69 +30,21 @@ async function addTeammate() {
         return;
     }
 
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        api.buildUnsignedAuthEvent(
-            `/teams/${id}/users`,
-            "POST",
-            user.pubkey,
-            JSON.stringify({
-                user_pubkey: ndkUser.pubkey,
-                role,
-            }),
-        ).then(async (event) => {
-            unsignedAuthEvent = event;
-            if (unsignedAuthEvent) {
-                if (!ndk.signer) {
-                    ndk.signer = new NDKNip07Signer();
-                }
-                await unsignedAuthEvent.sign();
-                console.log(unsignedAuthEvent);
-                const encodedAuthEvent = `Nostr ${btoa(JSON.stringify(unsignedAuthEvent))}`;
-                authHeaders.Authorization = encodedAuthEvent;
-                api.post<User>(
-                    `/teams/${id}/users`,
-                    {
-                        user_pubkey: ndkUser.pubkey,
-                        role,
-                    },
-                    {
-                        headers: authHeaders,
-                    },
-                )
-                    .then((_newUser) => {
-                        toast.success("Teammate added successfully");
-                        goto(`/teams/${id}`);
-                    })
-                    .catch((error) => {
-                        toast.error("Failed to add teammate");
-                        errorMessage = error.message;
-                    });
-            }
+    api.post<User>(
+        `/teams/${id}/users`,
+        {
+            user_pubkey: ndkUser.pubkey,
+            role,
+        },
+    )
+        .then((_newUser) => {
+            toast.success("Teammate added successfully");
+            goto(`/teams/${id}`);
+        })
+        .catch((error) => {
+            toast.error("Failed to add teammate");
+            errorMessage = error.message;
         });
-    } else {
-        // Cookie auth (sent automatically via credentials: 'include')
-        api.post<User>(
-            `/teams/${id}/users`,
-            {
-                user_pubkey: ndkUser.pubkey,
-                role,
-            },
-            {
-                headers: authHeaders,
-            },
-        )
-            .then((_newUser) => {
-                toast.success("Teammate added successfully");
-                goto(`/teams/${id}`);
-            })
-            .catch((error) => {
-                toast.error("Failed to add teammate");
-                errorMessage = error.message;
-            });
-    }
 }
 </script>
 

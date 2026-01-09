@@ -6,13 +6,11 @@ import PermissionCard from "$lib/components/PermissionCard.svelte";
 import PermissionForm from "$lib/components/PermissionForm.svelte";
 import { getCurrentUser } from "$lib/current_user.svelte";
 import { KeycastApi } from "$lib/keycast_api.svelte";
-import ndk from "$lib/ndk.svelte";
 import type {
     AllowedKindsConfig,
     ContentFilterConfig,
     Permission,
 } from "$lib/types";
-import { NDKNip07Signer } from "@nostr-dev-kit/ndk";
 import { toast } from "svelte-hot-french-toast";
 
 const { id } = $page.params;
@@ -46,29 +44,7 @@ async function createPolicy() {
         permissions,
     };
 
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        const authEvent = await api.buildUnsignedAuthEvent(
-            `/teams/${id}/policies`,
-            "POST",
-            user?.pubkey,
-            JSON.stringify(request),
-        );
-
-        if (!ndk.signer) {
-            ndk.signer = new NDKNip07Signer();
-        }
-
-        await authEvent?.sign();
-        authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-    }
-    // Otherwise cookie auth (sent automatically via credentials: 'include')
-
-    api.post(`/teams/${id}/policies`, request, {
-        headers: authHeaders,
-    })
+    api.post(`/teams/${id}/policies`, request)
         .then((policy) => {
             toast.success("Policy created successfully");
             goto(`/teams/${id}`);

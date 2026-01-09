@@ -3,17 +3,14 @@ import Loader from "$lib/components/Loader.svelte";
 import TeamCard from "$lib/components/TeamCard.svelte";
 import { getCurrentUser } from "$lib/current_user.svelte";
 import { KeycastApi } from "$lib/keycast_api.svelte";
-import ndk from "$lib/ndk.svelte.js";
 import type { TeamWithRelations } from "$lib/types";
-import { type NDKEvent, NDKNip07Signer } from "@nostr-dev-kit/ndk";
 import { PlusCircle } from "phosphor-svelte";
 import { toast } from "svelte-hot-french-toast";
 
 const api = new KeycastApi();
 const user = $derived(getCurrentUser()?.user);
 let isLoading = $state(true);
-let unsignedAuthEvent: NDKEvent | null = $state(null);
-let encodedAuthEvent: string | null = $state(null);
+let hasFetched = $state(false);
 let teams: TeamWithRelations[] | null = $state(null);
 let teamFormVisible = $state(false);
 let newTeamName = $state("");
@@ -25,55 +22,19 @@ let inlineTeamNameInput: HTMLInputElement | null = $state(null);
 let inlineTeamError: string | null = $state(null);
 let inlineTeamName = $state("");
 
-const apiDomain = import.meta.env.VITE_DOMAIN;
-console.log(apiDomain);
-
 $effect(() => {
-    if (user?.pubkey && !unsignedAuthEvent) {
-        const authMethod = getCurrentUser()?.authMethod;
-        let authHeaders: Record<string, string> = {};
-
-        if (authMethod === 'nip07') {
-            api.buildUnsignedAuthEvent("/teams", "GET", user.pubkey).then(
-                async (event) => {
-                    unsignedAuthEvent = event;
-                    if (unsignedAuthEvent) {
-                        if (!ndk.signer) {
-                            ndk.signer = new NDKNip07Signer();
-                        }
-                        await unsignedAuthEvent.sign();
-                        encodedAuthEvent = `Nostr ${btoa(JSON.stringify(unsignedAuthEvent))}`;
-                        authHeaders.Authorization = encodedAuthEvent;
-                        api.get("/teams", {
-                            headers: authHeaders,
-                        })
-                            .then((teamsResponse) => {
-                                teams = teamsResponse as TeamWithRelations[];
-                            })
-                            .catch((error) => {
-                                console.error(error);
-                            })
-                            .finally(() => {
-                                isLoading = false;
-                            });
-                    }
-                },
-            );
-        } else {
-            // Cookie auth (sent automatically via credentials: 'include')
-            api.get("/teams", {
-                headers: authHeaders,
+    if (user?.pubkey && !hasFetched) {
+        hasFetched = true;
+        api.get("/teams")
+            .then((teamsResponse) => {
+                teams = teamsResponse as TeamWithRelations[];
             })
-                .then((teamsResponse) => {
-                    teams = teamsResponse as TeamWithRelations[];
-                })
-                .catch((error) => {
-                    console.error(error);
-                })
-                .finally(() => {
-                    isLoading = false;
-                });
-        }
+            .catch((error) => {
+                console.error(error);
+            })
+            .finally(() => {
+                isLoading = false;
+            });
     }
 });
 
@@ -95,30 +56,10 @@ async function createTeam(inline = false) {
     if (!user?.pubkey) return;
 
     const name = inline ? inlineTeamName : newTeamName;
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        const authEvent = await api.buildUnsignedAuthEvent(
-            "/teams",
-            "POST",
-            user?.pubkey,
-            JSON.stringify({ name }),
-        );
-        if (!ndk.signer) {
-            ndk.signer = new NDKNip07Signer();
-        }
-        await authEvent?.sign();
-        authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-    }
-    // Otherwise cookie auth (sent automatically via credentials: 'include')
 
     api.post<TeamWithRelations>(
         "/teams",
         { name },
-        {
-            headers: authHeaders,
-        },
     )
         .then((newTeam) => {
             teams?.push(newTeam);

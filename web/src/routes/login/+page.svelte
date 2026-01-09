@@ -4,8 +4,23 @@
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { setCurrentUser } from '$lib/current_user.svelte';
 	import { BRAND } from '$lib/brand';
+	import ndk from '$lib/ndk.svelte';
+	import { signin, SigninMethod } from '$lib/utils/auth';
+	import { PlugsConnected } from 'phosphor-svelte';
 
 	const api = new KeycastApi();
+	let isNip07Loading = $state(false);
+
+	async function handleNip07Signin() {
+		isNip07Loading = true;
+		try {
+			await signin(ndk, undefined, SigninMethod.Nip07);
+		} catch (err) {
+			console.error('NIP-07 signin error:', err);
+		} finally {
+			isNip07Loading = false;
+		}
+	}
 
 	let email = $state('');
 	let password = $state('');
@@ -155,8 +170,20 @@
 			Don't have an account? <a href="/register">Create one</a>
 		</p>
 
+		<div class="auth-divider">
+			<span>or</span>
+		</div>
+
+		<button
+			class="btn-extension"
+			onclick={handleNip07Signin}
+			disabled={isNip07Loading}
+		>
+			<PlugsConnected size={18} />
+			{isNip07Loading ? 'Connecting...' : 'Sign in with Extension (NIP-07)'}
+		</button>
 		<p class="auth-note">
-			Team admins: Use <a href="/">NIP-07 browser extension</a> instead
+			Team admins only. Requires whitelisted pubkey and browser extension (Alby, nos2x, etc.)
 		</p>
 	</div>
 </div>
@@ -297,22 +324,58 @@
 		text-decoration: underline;
 	}
 
-	.auth-note {
-		text-align: center;
-		margin-top: 1.5rem;
-		padding-top: 1.25rem;
-		border-top: 1px solid var(--color-divine-border);
+	.auth-divider {
+		display: flex;
+		align-items: center;
+		margin: 1.5rem 0 1rem;
+	}
+
+	.auth-divider::before,
+	.auth-divider::after {
+		content: '';
+		flex: 1;
+		height: 1px;
+		background: var(--color-divine-border);
+	}
+
+	.auth-divider span {
+		padding: 0 1rem;
 		color: var(--color-divine-text-tertiary);
 		font-size: 0.8rem;
 	}
 
-	.auth-note a {
-		color: var(--color-divine-green);
-		text-decoration: none;
+	.btn-extension {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		padding: 0.75rem 1.5rem;
+		background: transparent;
+		border: 1px solid var(--color-divine-border);
+		border-radius: 9999px;
+		color: var(--color-divine-text-secondary);
+		font-size: 0.95rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.2s;
 	}
 
-	.auth-note a:hover {
-		text-decoration: underline;
+	.btn-extension:hover:not(:disabled) {
+		border-color: var(--color-divine-green);
+		color: var(--color-divine-green);
+	}
+
+	.btn-extension:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.auth-note {
+		text-align: center;
+		margin-top: 0.75rem;
+		color: var(--color-divine-text-tertiary);
+		font-size: 0.75rem;
 	}
 
 	.verification-notice {

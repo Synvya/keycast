@@ -3,9 +3,7 @@ import { goto } from "$app/navigation";
 import { page } from "$app/stores";
 import { getCurrentUser } from "$lib/current_user.svelte";
 import { KeycastApi } from "$lib/keycast_api.svelte";
-import ndk from "$lib/ndk.svelte";
 import type { StoredKey } from "$lib/types";
-import { type NDKEvent, NDKNip07Signer } from "@nostr-dev-kit/ndk";
 import { toast } from "svelte-hot-french-toast";
 
 const { id } = $page.params;
@@ -13,7 +11,6 @@ const { id } = $page.params;
 const api = new KeycastApi();
 const user = $derived(getCurrentUser()?.user);
 
-let unsignedAuthEvent: NDKEvent | null = $state(null);
 let keyName: string = $state("");
 let secretKey: string = $state("");
 let keyError: string | null = $state(null);
@@ -29,62 +26,18 @@ async function createKey() {
         return;
     }
 
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        api.buildUnsignedAuthEvent(
-            `/teams/${id}/keys`,
-            "POST",
-            user.pubkey,
-            JSON.stringify({
-                key_name: keyName,
-                secret_key: secretKey,
-            }),
-        ).then(async (event) => {
-            unsignedAuthEvent = event;
-            if (unsignedAuthEvent) {
-                if (!ndk.signer) {
-                    ndk.signer = new NDKNip07Signer();
-                }
-                await unsignedAuthEvent.sign();
-                const encodedAuthEvent = `Nostr ${btoa(JSON.stringify(unsignedAuthEvent))}`;
-                authHeaders.Authorization = encodedAuthEvent;
-                api.post<StoredKey>(
-                    `/teams/${id}/keys`,
-                    { name: keyName, secret_key: secretKey },
-                    {
-                        headers: authHeaders,
-                    },
-                )
-                    .then((newKey) => {
-                        toast.success("Key created successfully");
-                        goto(`/teams/${id}`);
-                    })
-                    .catch((error) => {
-                        toast.error("Failed to create key");
-                        keyError = error.message;
-                    });
-            }
+    api.post<StoredKey>(
+        `/teams/${id}/keys`,
+        { name: keyName, secret_key: secretKey },
+    )
+        .then((newKey) => {
+            toast.success("Key created successfully");
+            goto(`/teams/${id}`);
+        })
+        .catch((error) => {
+            toast.error("Failed to create key");
+            keyError = error.message;
         });
-    } else {
-        // Cookie auth (sent automatically via credentials: 'include')
-        api.post<StoredKey>(
-            `/teams/${id}/keys`,
-            { name: keyName, secret_key: secretKey },
-            {
-                headers: authHeaders,
-            },
-        )
-            .then((newKey) => {
-                toast.success("Key created successfully");
-                goto(`/teams/${id}`);
-            })
-            .catch((error) => {
-                toast.error("Failed to create key");
-                keyError = error.message;
-            });
-    }
 }
 </script>
 

@@ -6,7 +6,7 @@ use keycast_core::authorization_channel::AuthorizationSender;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::api::http::{auth, headless, metrics, nostr_rpc, oauth, policies, teams};
+use crate::api::http::{admin, auth, claim, headless, metrics, nostr_rpc, oauth, policies, teams};
 use crate::state::KeycastState;
 use axum::response::Json as AxumJson;
 use serde_json::Value as JsonValue;
@@ -141,6 +141,22 @@ pub fn api_routes(
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
+    // Admin routes (for preloaded accounts and claim tokens)
+    // Restricted CORS - requires UCAN auth with ALLOWED_PUBKEYS whitelist
+    let admin_routes = Router::new()
+        .route("/admin/status", get(admin::get_admin_status))
+        .route("/admin/token", get(admin::get_admin_token))
+        .route("/admin/preload-user", post(admin::preload_user))
+        .route("/admin/claim-tokens", post(admin::create_claim_token))
+        .layer(auth_cors.clone())
+        .with_state(auth_state.clone());
+
+    // Claim routes (public, accessed via email link)
+    // Users claim preloaded accounts by setting email/password
+    let claim_routes = Router::new()
+        .route("/claim", get(claim::claim_get).post(claim::claim_post))
+        .with_state(auth_state.clone());
+
     // Prometheus metrics endpoint (public, no auth required)
     // Uses in-memory atomic counters - no database access needed
     let metrics_route = Router::new().route("/metrics", get(metrics::metrics));
@@ -194,6 +210,8 @@ pub fn api_routes(
         .merge(discovery_route.layer(public_cors.clone()))
         .merge(policy_routes.layer(public_cors.clone())) // Public - available to third-party OAuth apps
         .merge(headless_routes) // Headless auth for native mobile apps (has auth_cors - accepts passwords)
+        .merge(admin_routes) // Admin routes for preloaded accounts (has auth_cors)
+        .merge(claim_routes.layer(public_cors.clone())) // Public - claim preloaded accounts
         .merge(metrics_route.layer(public_cors.clone())) // Public - Prometheus metrics
         .merge(docs_route.layer(public_cors))
 }

@@ -4,7 +4,6 @@ import { page } from "$app/stores";
 import PageSection from "$lib/components/PageSection.svelte";
 import { getCurrentUser } from "$lib/current_user.svelte";
 import { KeycastApi } from "$lib/keycast_api.svelte";
-import ndk from "$lib/ndk.svelte";
 import type {
     PolicyWithPermissions,
     StoredKey,
@@ -13,7 +12,6 @@ import type {
 } from "$lib/types";
 import { readablePermissionConfig } from "$lib/utils/permissions";
 import { toTitleCase } from "$lib/utils/strings";
-import { type NDKEvent, NDKNip07Signer } from "@nostr-dev-kit/ndk";
 import { CaretRight, X, Copy, Check, Warning } from "phosphor-svelte";
 import { toast } from "svelte-hot-french-toast";
 
@@ -22,8 +20,7 @@ const { id, pubkey } = $page.params;
 const api = new KeycastApi();
 const user = $derived(getCurrentUser()?.user);
 let isLoading = $state(true);
-let unsignedAuthEvent: NDKEvent | null = $state(null);
-let encodedAuthEvent: string | null = $state(null);
+let hasFetched = $state(false);
 
 let maxUses: number | null = $state(0);
 let expiresAt: Date | null = $state(null);
@@ -52,57 +49,21 @@ let readyToSubmit = $derived(
 );
 
 $effect(() => {
-    if (user?.pubkey && !unsignedAuthEvent) {
-        const authMethod = getCurrentUser()?.authMethod;
-        let authHeaders: Record<string, string> = {};
-
-        if (authMethod === 'nip07') {
-            api.buildUnsignedAuthEvent(`/teams/${id}`, "GET", user.pubkey).then(
-                async (event) => {
-                    unsignedAuthEvent = event;
-                    if (unsignedAuthEvent) {
-                        if (!ndk.signer) {
-                            ndk.signer = new NDKNip07Signer();
-                        }
-                        await unsignedAuthEvent.sign();
-                        encodedAuthEvent = `Nostr ${btoa(JSON.stringify(unsignedAuthEvent))}`;
-                        authHeaders.Authorization = encodedAuthEvent;
-                        api.get(`/teams/${id}`, {
-                            headers: authHeaders,
-                        })
-                            .then((teamResponse) => {
-                                teamWithRelations =
-                                    teamResponse as TeamWithRelations;
-                                team = teamWithRelations.team;
-                                key = teamWithRelations.stored_keys.find(
-                                    (key) => key.pubkey === pubkey,
-                                );
-                                policies = teamWithRelations.policies;
-                            })
-                            .finally(() => {
-                                isLoading = false;
-                            });
-                    }
-                },
-            );
-        } else {
-            // Cookie auth (sent automatically via credentials: 'include')
-            api.get(`/teams/${id}`, {
-                headers: authHeaders,
+    if (user?.pubkey && !hasFetched) {
+        hasFetched = true;
+        api.get(`/teams/${id}`)
+            .then((teamResponse) => {
+                teamWithRelations =
+                    teamResponse as TeamWithRelations;
+                team = teamWithRelations.team;
+                key = teamWithRelations.stored_keys.find(
+                    (key) => key.pubkey === pubkey,
+                );
+                policies = teamWithRelations.policies;
             })
-                .then((teamResponse) => {
-                    teamWithRelations =
-                        teamResponse as TeamWithRelations;
-                    team = teamWithRelations.team;
-                    key = teamWithRelations.stored_keys.find(
-                        (key) => key.pubkey === pubkey,
-                    );
-                    policies = teamWithRelations.policies;
-                })
-                .finally(() => {
-                    isLoading = false;
-                });
-        }
+            .finally(() => {
+                isLoading = false;
+            });
     }
 });
 
@@ -132,29 +93,7 @@ async function createAuthorization() {
         label: label.trim() || null,
     };
 
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        const authEvent = await api.buildUnsignedAuthEvent(
-            `/teams/${id}/keys/${pubkey}/authorizations`,
-            "POST",
-            user?.pubkey,
-            JSON.stringify(request),
-        );
-
-        if (!ndk.signer) {
-            ndk.signer = new NDKNip07Signer();
-        }
-
-        await authEvent?.sign();
-        authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-    }
-    // Otherwise cookie auth (sent automatically via credentials: 'include')
-
-    api.post(`/teams/${id}/keys/${pubkey}/authorizations`, request, {
-        headers: authHeaders,
-    })
+    api.post(`/teams/${id}/keys/${pubkey}/authorizations`, request)
         .then((response) => {
             // Show success modal with bunker URL - this is the ONLY time the URL is available
             const authResponse = response as { bunker_url: string };

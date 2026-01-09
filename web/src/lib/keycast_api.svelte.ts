@@ -1,6 +1,4 @@
-import { NDKEvent, NDKKind } from "@nostr-dev-kit/ndk";
 import { getContext, setContext } from "svelte";
-import ndk from "./ndk.svelte";
 
 export class KeycastApi {
     private baseUrl: string;
@@ -98,41 +96,6 @@ export class KeycastApi {
             method: "DELETE",
             headers: options.headers,
         });
-    }
-
-    async buildUnsignedAuthEvent(
-        url: string,
-        method: "GET" | "POST" | "PUT" | "DELETE",
-        pubkey: string,
-        body?: string,
-    ): Promise<NDKEvent | null> {
-        const authEvent: NDKEvent = new NDKEvent(ndk, {
-            content: "",
-            kind: NDKKind.HttpAuth,
-            pubkey,
-            created_at: Math.floor(Date.now() / 1000),
-            tags: [
-                ["u", `${this.baseUrl}${url}`],
-                ["method", `${method}`],
-            ],
-        });
-
-        let hashedPayload: string | undefined = undefined;
-        if (body) {
-            const buffer = await crypto.subtle.digest(
-                "SHA-256",
-                new TextEncoder().encode(body),
-            );
-            hashedPayload = Array.from(new Uint8Array(buffer))
-                .map((b) => b.toString(16).padStart(2, "0"))
-                .join("");
-        }
-
-        if (hashedPayload) {
-            authEvent.tags.push(["payload", hashedPayload]);
-        }
-
-        return authEvent;
     }
 }
 

@@ -10,7 +10,7 @@ use axum::{
 };
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
-    OAuthAuthorizationRepository, PersonalKeysRepository, PolicyRepository,
+    OAuthAuthorizationRepository, PersonalKeysRepository, PolicyRepository, UserRepository,
 };
 use keycast_core::signing_session::{parse_cache_key, CacheKey, SigningSession};
 use keycast_core::traits::CustomPermission;
@@ -119,7 +119,7 @@ impl From<HandlerError> for RpcError {
 /// Uses BLAKE3 token cache - on cache hit, skips UCAN verification entirely.
 /// All operations use cached handler with in-memory permission validation (no DB hits).
 pub async fn nostr_rpc(
-    _tenant: crate::api::tenant::TenantExtractor,
+    tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<AuthState>,
     headers: HeaderMap,
     Json(req): Json<NostrRpcRequest>,
@@ -134,13 +134,14 @@ pub async fn nostr_rpc(
         .ok_or(RpcError::Auth(AuthError::MissingToken))?;
 
     let pool = &auth_state.state.db;
+    let tenant_id = tenant.0.id;
 
     tracing::debug!("RPC request: method={}", req.method);
 
     // Get cached handler using BLAKE3(token) as cache key
     // On cache hit: skips UCAN verification entirely (~25% CPU savings)
     // On cache miss: verifies UCAN, loads from DB, caches result
-    let handler = match get_handler(&auth_state, pool, auth_header).await {
+    let handler = match get_handler(&auth_state, pool, auth_header, tenant_id).await {
         Ok(h) => h,
         Err(e) => {
             METRICS.inc_http_rpc_auth_error();
@@ -332,20 +333,118 @@ fn compute_token_cache_key(auth_header: &str) -> Option<CacheKey> {
     Some(*blake3::hash(token.as_bytes()).as_bytes())
 }
 
+/// Check if issuer matches server pubkey (server-signed UCAN)
+fn is_server_signed(ucan: &ucan::Ucan) -> bool {
+    use crate::ucan_auth::did_to_nostr_pubkey;
+    use once_cell::sync::Lazy;
+    use std::env;
+
+    static SERVER_PUBKEY: Lazy<String> = Lazy::new(|| {
+        env::var("SERVER_NSEC")
+            .ok()
+            .and_then(|nsec| nostr_sdk::Keys::parse(&nsec).ok())
+            .map(|k| k.public_key().to_hex())
+            .expect("SERVER_NSEC must be set and valid")
+    });
+
+    match did_to_nostr_pubkey(ucan.issuer()) {
+        Ok(issuer_pubkey) => issuer_pubkey.to_hex() == *SERVER_PUBKEY,
+        Err(_) => false,
+    }
+}
+
+/// Load handler for preloaded user (server-signed UCAN, no bunker_pubkey)
+/// These are users imported from Vine that haven't claimed their accounts yet.
+/// They have no policy restrictions - full access until account is claimed.
+async fn load_preloaded_user_handler(
+    auth_state: &AuthState,
+    pool: &sqlx::PgPool,
+    user_pubkey_hex: &str,
+    tenant_id: i64,
+) -> Result<Arc<HttpRpcHandler>, RpcError> {
+    let key_manager = auth_state.state.key_manager.as_ref();
+
+    // Verify user exists and is unclaimed (email IS NULL)
+    let user_repo = UserRepository::new(pool.clone());
+    let is_unclaimed = user_repo
+        .is_unclaimed(user_pubkey_hex, tenant_id)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?;
+
+    if is_unclaimed != Some(true) {
+        // User either doesn't exist or has already claimed their account
+        tracing::warn!(
+            "Preloaded user RPC denied: user {} not unclaimed",
+            &user_pubkey_hex[..8]
+        );
+        return Err(RpcError::Auth(AuthError::InvalidToken));
+    }
+
+    // Get user's encrypted secret key directly from personal_keys
+    let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
+    let encrypted_secret: Vec<u8> = personal_keys_repo
+        .find_encrypted_key(user_pubkey_hex)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| {
+            RpcError::Internal("Personal keys not found for preloaded user".to_string())
+        })?;
+
+    // Decrypt the secret key
+    let decrypted_secret = key_manager
+        .decrypt(&encrypted_secret)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Decryption failed: {}", e)))?;
+
+    let secret_key = nostr_sdk::secp256k1::SecretKey::from_slice(&decrypted_secret)
+        .map_err(|e| RpcError::Internal(format!("Invalid secret key bytes: {}", e)))?;
+    let user_keys = Keys::new(secret_key.into());
+
+    // Create a synthetic cache key from user pubkey (for cache storage)
+    let cache_key = parse_cache_key(user_pubkey_hex)
+        .map_err(|e| RpcError::Internal(format!("Invalid user_pubkey: {}", e)))?;
+
+    // Create signing session
+    let session = Arc::new(SigningSession::new(user_keys));
+
+    // Create handler with NO policy restrictions (empty permissions = full access)
+    // Preloaded users get full access until they claim their account
+    let handler = Arc::new(HttpRpcHandler::new(
+        session,
+        0,      // No authorization_id - this is direct access
+        None,   // No expiry (handled by token expiry)
+        None,   // Not revoked
+        vec![], // No permissions = full access
+        false,  // Not OAuth (preloaded user mode)
+        cache_key,
+        cache_key, // Use same key for auth_handle
+    ));
+
+    tracing::info!(
+        "Preloaded user handler created for pubkey: {}",
+        &user_pubkey_hex[..8]
+    );
+
+    Ok(handler)
+}
+
 /// Get the HttpRpcHandler for this request using BLAKE3 token cache
 ///
 /// FAST PATH (cache hit): BLAKE3(token) lookup → return handler (~500ns)
 /// - Skips UCAN parsing and Schnorr signature verification entirely
 ///
 /// SLOW PATH (cache miss): Full UCAN verification → DB load → cache insert
-/// - Requires bunker_pubkey in UCAN (only OAuth access tokens are valid)
-/// - Session UCANs (from /api/auth/login) do not have bunker_pubkey and will be rejected
+/// Three authentication modes are supported:
+/// 1. OAuth tokens: bunker_pubkey in UCAN → load from oauth_authorizations
+/// 2. Preloaded users: server-signed UCAN without bunker_pubkey → load personal key directly
+/// 3. Session UCANs: user-signed without bunker_pubkey → rejected (use OAuth flow)
 ///
 /// All subsequent operations (sign, encrypt, decrypt) use cached data - no DB hits.
 async fn get_handler(
     auth_state: &AuthState,
     pool: &sqlx::PgPool,
     auth_header: &str,
+    tenant_id: i64,
 ) -> Result<Arc<HttpRpcHandler>, RpcError> {
     // Compute BLAKE3 hash for cache lookup (~500ns)
     let blake3_key =
@@ -373,16 +472,38 @@ async fn get_handler(
     METRICS.inc_http_rpc_cache_miss();
 
     // Verify UCAN and extract bunker_pubkey (Schnorr signature verification ~1-2ms)
-    let (_user_pubkey, _redirect_origin, bunker_pubkey, _ucan) =
+    let (user_pubkey, _redirect_origin, bunker_pubkey, ucan) =
         crate::ucan_auth::validate_ucan_token(auth_header, 0)
             .await
             .map_err(|_| RpcError::Auth(AuthError::InvalidToken))?;
 
-    // Require bunker_pubkey - session UCANs are not valid for HTTP RPC
-    let bunker_key_hex = bunker_pubkey.ok_or(RpcError::Auth(AuthError::InvalidToken))?;
-
-    // Load handler from DB using bunker_pubkey
-    let handler = load_handler_on_demand(auth_state, pool, &bunker_key_hex).await?;
+    // Determine which authentication mode to use
+    let handler = if let Some(bunker_key_hex) = bunker_pubkey {
+        // MODE 1: OAuth token with bunker_pubkey - load from oauth_authorizations
+        let h = load_handler_on_demand(auth_state, pool, &bunker_key_hex).await?;
+        tracing::debug!(
+            "RPC: Loaded OAuth handler for bunker {}",
+            &bunker_key_hex[..8]
+        );
+        h
+    } else if is_server_signed(&ucan) {
+        // MODE 2: Preloaded user - server-signed UCAN without bunker_pubkey
+        // These are Vine-imported users who haven't claimed their accounts yet
+        let h = load_preloaded_user_handler(auth_state, pool, &user_pubkey, tenant_id).await?;
+        tracing::debug!(
+            "RPC: Loaded preloaded user handler for pubkey {}",
+            &user_pubkey[..8]
+        );
+        h
+    } else {
+        // MODE 3: Session UCAN (user-signed, no bunker_pubkey) - not valid for RPC
+        // Users must go through OAuth flow to get a bunker_pubkey token
+        tracing::warn!(
+            "RPC: Rejected session UCAN for user {} (no bunker_pubkey, not server-signed)",
+            &user_pubkey[..8]
+        );
+        return Err(RpcError::Auth(AuthError::InvalidToken));
+    };
 
     if !handler.is_valid() {
         return Err(RpcError::Auth(AuthError::InvalidToken));
@@ -397,11 +518,6 @@ async fn get_handler(
 
     // Update cache size metric
     METRICS.set_http_rpc_cache_size(auth_state.state.http_handler_cache.entry_count());
-
-    tracing::debug!(
-        "RPC: Loaded and cached handler for bunker {}",
-        &bunker_key_hex[..8]
-    );
 
     Ok(handler)
 }

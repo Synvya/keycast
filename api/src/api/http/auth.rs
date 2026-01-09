@@ -11,7 +11,9 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration, Utc};
 use secrecy::{ExposeSecret, SecretString};
 
+use super::admin::is_admin_pubkey;
 use crate::bcrypt_queue::{BcryptJob, BcryptQueueError};
+use crate::nip98;
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
     CreateOAuthAuthorizationParams, OAuthAuthorizationRepository, OAuthCodeRepository,
@@ -460,6 +462,118 @@ pub(crate) fn extract_origin_from_headers(headers: &HeaderMap) -> Result<String,
         .ok_or(AuthError::BadRequest("Origin header required".to_string()))
 }
 
+/// Get server keys from SERVER_NSEC environment variable
+fn get_server_keys() -> Result<Keys, AuthError> {
+    let server_nsec = std::env::var("SERVER_NSEC")
+        .map_err(|_| AuthError::Internal("SERVER_NSEC not configured".to_string()))?;
+    Keys::parse(&server_nsec)
+        .map_err(|e| AuthError::Internal(format!("Invalid SERVER_NSEC: {}", e)))
+}
+
+/// Build the expected URL from request parts for NIP-98 validation
+fn build_expected_url(headers: &HeaderMap, path: &str) -> Result<String, AuthError> {
+    // Get the host from headers
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AuthError::BadRequest("Host header required".to_string()))?;
+
+    // Check if using HTTPS (via X-Forwarded-Proto or assume based on port)
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_else(|| {
+            if host.contains(":443") || !host.contains(":") {
+                "https"
+            } else {
+                "http"
+            }
+        });
+
+    Ok(format!("{}://{}{}", proto, host, path))
+}
+
+/// Handle NIP-98 admin login (admin-only, no user record created)
+async fn nostr_auth_login(
+    tenant_id: i64,
+    headers: &HeaderMap,
+    auth_header: &str,
+) -> Result<Response, AuthError> {
+    // Build expected URL for this endpoint
+    let expected_url = build_expected_url(headers, "/api/auth/login")?;
+
+    // Validate NIP-98 event
+    let nip98_auth =
+        nip98::extract_and_validate(auth_header, &expected_url, "POST").map_err(|e| match e {
+            nip98::Nip98Error::InvalidHeaderFormat => {
+                AuthError::BadRequest("Invalid NIP-98 header format".to_string())
+            }
+            nip98::Nip98Error::InvalidSignature => {
+                AuthError::BadRequest("Invalid NIP-98 signature".to_string())
+            }
+            nip98::Nip98Error::EventExpired => AuthError::BadRequest(
+                "NIP-98 event expired (must be within 60 seconds)".to_string(),
+            ),
+            _ => AuthError::BadRequest(format!("NIP-98 validation failed: {}", e)),
+        })?;
+
+    let pubkey_hex = nip98_auth.pubkey.to_hex();
+
+    // Check if pubkey is in ALLOWED_PUBKEYS whitelist
+    if !is_admin_pubkey(&pubkey_hex) {
+        tracing::warn!(
+            "NIP-98 login denied for non-whitelisted pubkey: {}",
+            &pubkey_hex[..8]
+        );
+        return Err(AuthError::Forbidden(
+            "Pubkey not authorized for admin access".to_string(),
+        ));
+    }
+
+    // Get redirect_origin from headers (required for UCAN)
+    let redirect_origin = extract_origin_from_headers(headers)?;
+
+    // Generate server-signed UCAN for admin session
+    let server_keys = get_server_keys()?;
+    let ucan_token = generate_server_signed_ucan(
+        &nip98_auth.pubkey,
+        tenant_id,
+        "admin", // No email for NIP-98 admins
+        &redirect_origin,
+        None, // No bunker_pubkey for admin sessions
+        &server_keys,
+    )
+    .await?;
+
+    // Track successful admin login
+    METRICS.inc_login();
+
+    tracing::info!(
+        event = "nip98_admin_login",
+        tenant_id = tenant_id,
+        pubkey = &pubkey_hex[..8],
+        "Admin logged in via NIP-98"
+    );
+
+    // Create response with UCAN session cookie
+    let cookie = format!(
+        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
+        ucan_token
+    );
+
+    Ok((
+        axum::http::StatusCode::OK,
+        [(axum::http::header::SET_COOKIE, cookie)],
+        axum::Json(AuthResponse {
+            success: true,
+            pubkey: pubkey_hex,
+            verification_required: None,
+            email: None,
+        }),
+    )
+        .into_response())
+}
+
 /// Register a new user with email and password
 /// Note: Does NOT issue UCAN - user must verify email first
 pub async fn register(
@@ -615,17 +729,37 @@ pub async fn register(
     Ok(response)
 }
 
-/// Login with email and password (REST endpoint for main web app)
+/// Login with email/password OR NIP-98 admin authentication
+///
+/// Supports two authentication methods:
+/// 1. Email/Password: POST with JSON body { "email": "...", "password": "..." }
+/// 2. NIP-98 Admin: POST with Authorization: Nostr <base64(kind_27235_event)>
+///    - Admin-only: pubkey must be in ALLOWED_PUBKEYS whitelist
+///    - No user record created - session only
+///
 /// Returns simple JSON response and sets UCAN cookie
-/// To get bunker URL, call GET /user/bunker after login
 pub async fn login(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
     headers: HeaderMap,
-    Json(req): Json<LoginRequest>,
-) -> Result<impl axum::response::IntoResponse, AuthError> {
-    let pool = &auth_state.state.db;
+    body: String,
+) -> Result<Response, AuthError> {
     let tenant_id = tenant.0.id;
+
+    // Check for NIP-98 Authorization header first
+    if let Some(auth_header) = headers.get("Authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str.starts_with("Nostr ") {
+                return nostr_auth_login(tenant_id, &headers, auth_str).await;
+            }
+        }
+    }
+
+    // Parse JSON body for email/password login
+    let req: LoginRequest = serde_json::from_str(&body)
+        .map_err(|e| AuthError::BadRequest(format!("Invalid JSON: {}", e)))?;
+
+    let pool = &auth_state.state.db;
 
     // Extract redirect_origin from HTTP Origin header (required for UCAN)
     let redirect_origin = extract_origin_from_headers(&headers)?;
@@ -722,7 +856,7 @@ pub async fn login(
         ucan_token
     );
 
-    let response = (
+    Ok((
         axum::http::StatusCode::OK,
         [(axum::http::header::SET_COOKIE, cookie)],
         axum::Json(AuthResponse {
@@ -731,9 +865,8 @@ pub async fn login(
             verification_required: None,
             email: None,
         }),
-    );
-
-    Ok(response)
+    )
+        .into_response())
 }
 
 /// Logout endpoint - clears the keycast_session cookie

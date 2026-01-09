@@ -18,7 +18,6 @@ import type {
 } from "$lib/types";
 import { formattedDate } from "$lib/utils/dates";
 import {
-    NDKNip07Signer,
     type NDKUser,
     type NDKUserProfile,
 } from "@nostr-dev-kit/ndk";
@@ -40,50 +39,16 @@ let keyUserProfile: NDKUserProfile | null = $state(null);
 $effect(() => {
     if (user?.pubkey && !hasFetched) {
         hasFetched = true;
-        const authMethod = getCurrentUser()?.authMethod;
-        let authHeaders: Record<string, string> = {};
-
-        if (authMethod === 'nip07') {
-            api.buildUnsignedAuthEvent(
-                `/teams/${id}/keys/${pubkey}`,
-                "GET",
-                user.pubkey,
-            ).then(async (event) => {
-                if (event) {
-                    if (!ndk.signer) {
-                        ndk.signer = new NDKNip07Signer();
-                    }
-                    await event.sign();
-                    authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(event))}`;
-                    api.get(`/teams/${id}/keys/${pubkey}`, {
-                        headers: authHeaders,
-                    })
-                        .then((teamKeyResponse) => {
-                            key = (teamKeyResponse as KeyWithRelations).stored_key;
-                            team = (teamKeyResponse as KeyWithRelations).team;
-                            authorizations = (teamKeyResponse as KeyWithRelations)
-                                .authorizations;
-                        })
-                        .finally(() => {
-                            isLoading = false;
-                        });
-                }
-            });
-        } else {
-            // Cookie auth (sent automatically via credentials: 'include')
-            api.get(`/teams/${id}/keys/${pubkey}`, {
-                headers: authHeaders,
+        api.get(`/teams/${id}/keys/${pubkey}`)
+            .then((teamKeyResponse) => {
+                key = (teamKeyResponse as KeyWithRelations).stored_key;
+                team = (teamKeyResponse as KeyWithRelations).team;
+                authorizations = (teamKeyResponse as KeyWithRelations)
+                    .authorizations;
             })
-                .then((teamKeyResponse) => {
-                    key = (teamKeyResponse as KeyWithRelations).stored_key;
-                    team = (teamKeyResponse as KeyWithRelations).team;
-                    authorizations = (teamKeyResponse as KeyWithRelations)
-                        .authorizations;
-                })
-                .finally(() => {
-                    isLoading = false;
-                });
-        }
+            .finally(() => {
+                isLoading = false;
+            });
     }
 
     if (key && !keyUserProfile) {
@@ -102,26 +67,7 @@ async function removeKey() {
     )
         return;
 
-    const authMethod = getCurrentUser()?.authMethod;
-    let authHeaders: Record<string, string> = {};
-
-    if (authMethod === 'nip07') {
-        const authEvent = await api.buildUnsignedAuthEvent(
-            `/teams/${id}/keys/${pubkey}`,
-            "DELETE",
-            user?.pubkey,
-        );
-        if (!ndk.signer) {
-            ndk.signer = new NDKNip07Signer();
-        }
-        await authEvent?.sign();
-        authHeaders.Authorization = `Nostr ${btoa(JSON.stringify(authEvent))}`;
-    }
-    // Otherwise cookie auth (sent automatically via credentials: 'include')
-
-    api.delete(`/teams/${id}/keys/${pubkey}`, {
-        headers: authHeaders,
-    })
+    api.delete(`/teams/${id}/keys/${pubkey}`)
         .then(() => {
             toast.success("Key removed successfully");
             goto(`/teams/${id}`);

@@ -475,7 +475,8 @@ pub async fn auth_status(
             .ok()
             .flatten();
 
-        // If user doesn't exist in DB, the session is invalid (stale cookie)
+        // Return authenticated with pubkey, optionally with email info if user exists in DB
+        // NIP-07 admins may not have a user record, but their UCAN session is still valid
         if let Some((email, email_verified)) = user_info {
             Ok(Json(AuthStatusResponse {
                 authenticated: true,
@@ -484,10 +485,10 @@ pub async fn auth_status(
                 email_verified,
             }))
         } else {
-            // User was deleted or DB was reset - treat as not authenticated
+            // User not in DB (NIP-07 admin) - still authenticated via UCAN
             Ok(Json(AuthStatusResponse {
-                authenticated: false,
-                pubkey: None,
+                authenticated: true,
+                pubkey: Some(user_pubkey),
                 email: None,
                 email_verified: None,
             }))
