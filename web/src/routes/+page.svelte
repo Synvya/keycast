@@ -202,11 +202,9 @@ onMount(async () => {
 		}
 
 		// Load dashboard data
-		// NIP-07 admins don't have personal sessions, only load teams
+		// NIP-07 admins don't have user records - skip all data loading
 		const currentAuth = currentUserCheck.authMethod;
-		if (currentAuth === 'nip07') {
-			await loadTeams();
-		} else {
+		if (currentAuth !== 'nip07') {
 			await Promise.all([loadTeams(), loadSessions()]);
 		}
 		isLoadingDashboard = false;
