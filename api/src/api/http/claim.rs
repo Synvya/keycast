@@ -311,6 +311,7 @@ pub async fn claim_post(
         "claim",
         None,
         &server_keys,
+        false, // Account claim is not first-party OAuth
     )
     .await
     .map_err(|e| ClaimError::Internal(format!("Failed to generate session: {:?}", e)))?;

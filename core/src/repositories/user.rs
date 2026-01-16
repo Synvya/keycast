@@ -978,6 +978,91 @@ impl UserRepository {
         .await?;
         Ok(result.is_some())
     }
+
+    /// Delete a user account and all associated data.
+    ///
+    /// This performs a complete account deletion:
+    /// 1. Removes user from all teams (team_users)
+    /// 2. Clears pending OAuth codes
+    /// 3. Deletes the user (cascades to personal_keys, oauth_authorizations, etc.)
+    ///
+    /// Returns information about what was deleted for logging.
+    pub async fn delete_account(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<DeleteAccountResult, RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Count teams for logging
+        let teams_removed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM team_users WHERE user_pubkey = $1",
+        )
+        .bind(pubkey)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Count OAuth authorizations for logging
+        let oauth_authorizations_deleted: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM oauth_authorizations WHERE user_pubkey = $1",
+        )
+        .bind(pubkey)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Get bunker pubkeys for signer daemon notification (before deletion)
+        let bunker_pubkeys: Vec<String> = sqlx::query_scalar(
+            "SELECT bunker_public_key FROM oauth_authorizations WHERE user_pubkey = $1",
+        )
+        .bind(pubkey)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // 1. Remove from all teams (no CASCADE, would block user delete)
+        sqlx::query("DELETE FROM team_users WHERE user_pubkey = $1")
+            .bind(pubkey)
+            .execute(&mut *tx)
+            .await?;
+
+        // 2. Clear pending OAuth codes
+        sqlx::query("DELETE FROM oauth_codes WHERE user_pubkey = $1 AND tenant_id = $2")
+            .bind(pubkey)
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // 3. Delete user (cascades to personal_keys, oauth_authorizations -> refresh_tokens,
+        //    email_verification_tokens, password_reset_tokens, signing_activity, user_profiles,
+        //    account_claim_tokens)
+        let result = sqlx::query("DELETE FROM users WHERE pubkey = $1 AND tenant_id = $2")
+            .bind(pubkey)
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(RepositoryError::NotFound("User not found".to_string()));
+        }
+
+        tx.commit().await?;
+
+        Ok(DeleteAccountResult {
+            teams_removed,
+            oauth_authorizations_deleted,
+            bunker_pubkeys,
+        })
+    }
+}
+
+/// Result of account deletion for logging and signer notification.
+#[derive(Debug, Clone)]
+pub struct DeleteAccountResult {
+    /// Number of teams the user was removed from
+    pub teams_removed: i64,
+    /// Number of OAuth authorizations that were deleted
+    pub oauth_authorizations_deleted: i64,
+    /// Bunker public keys for signer daemon notification
+    pub bunker_pubkeys: Vec<String>,
 }
 
 #[cfg(test)]

@@ -45,6 +45,8 @@ pub struct Metrics {
     pub logins_total: AtomicU64,
     /// Total failed login attempts (wrong password)
     pub login_failures_total: AtomicU64,
+    /// Total account deletions
+    pub account_deletions_total: AtomicU64,
 
     // === OAuth Metrics ===
     /// Total OAuth authorizations created
@@ -76,6 +78,7 @@ impl Metrics {
             registrations_total: AtomicU64::new(0),
             logins_total: AtomicU64::new(0),
             login_failures_total: AtomicU64::new(0),
+            account_deletions_total: AtomicU64::new(0),
             // OAuth metrics
             oauth_authorizations_created: AtomicU64::new(0),
             oauth_authorizations_revoked: AtomicU64::new(0),
@@ -156,6 +159,10 @@ impl Metrics {
 
     pub fn inc_login_failure(&self) {
         self.login_failures_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_account_deleted(&self) {
+        self.account_deletions_total.fetch_add(1, Ordering::Relaxed);
     }
 
     // === OAuth metric methods ===
@@ -309,6 +316,13 @@ impl Metrics {
         output.push_str(&format!(
             "keycast_login_failures_total {}\n",
             self.login_failures_total.load(Ordering::Relaxed)
+        ));
+
+        output.push_str("\n# HELP keycast_account_deletions_total Total account deletions\n");
+        output.push_str("# TYPE keycast_account_deletions_total counter\n");
+        output.push_str(&format!(
+            "keycast_account_deletions_total {}\n",
+            self.account_deletions_total.load(Ordering::Relaxed)
         ));
 
         // OAuth metrics

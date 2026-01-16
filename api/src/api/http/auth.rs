@@ -97,6 +97,7 @@ pub(crate) async fn generate_ucan_token(
 /// Used during OAuth registration before keys are created
 /// redirect_origin identifies which app/authorization this token is for
 /// bunker_pubkey uniquely identifies the authorization for direct cache lookup
+/// is_first_party: true for headless flow tokens (allows account deletion)
 pub(crate) async fn generate_server_signed_ucan(
     user_pubkey: &nostr_sdk::PublicKey,
     tenant_id: i64,
@@ -104,6 +105,7 @@ pub(crate) async fn generate_server_signed_ucan(
     redirect_origin: &str,
     bunker_pubkey: Option<&str>,
     server_keys: &Keys,
+    is_first_party: bool,
 ) -> Result<String, AuthError> {
     use crate::ucan_auth::{nostr_pubkey_to_did, NostrKeyMaterial};
     use serde_json::json;
@@ -119,6 +121,9 @@ pub(crate) async fn generate_server_signed_ucan(
     });
     if let Some(bpk) = bunker_pubkey {
         facts["bunker_pubkey"] = json!(bpk);
+    }
+    if is_first_party {
+        facts["first_party"] = json!(true);
     }
 
     let ucan = UcanBuilder::default()
@@ -553,6 +558,7 @@ async fn nostr_auth_login(
         &redirect_origin,
         None, // No bunker_pubkey for admin sessions
         &server_keys,
+        false, // NIP-98 admin login is not first-party OAuth
     )
     .await?;
 
@@ -1255,6 +1261,7 @@ pub async fn verify_email(
             expires_at: code_expires_at,
             previous_auth_id: oauth_data.previous_auth_id,
             state: oauth_data.state.as_deref(),
+            is_headless: oauth_data.is_headless, // Inherit from original registration
         };
         oauth_code_repo.store(store_params).await?;
 
@@ -2863,6 +2870,134 @@ pub async fn change_key(
             oauth_count,
             &old_pubkey[..16]
         ),
+    }))
+}
+
+/// Response for account deletion.
+#[derive(Debug, Serialize)]
+pub struct DeleteAccountResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// DELETE /user/account
+/// Permanently delete the user's account and all associated data.
+///
+/// Authorization: Requires UCAN token that is either:
+/// - User-signed (issuer == audience) - proves nsec possession
+/// - Server-signed with first_party: true fact - issued via headless flow
+///
+/// Third-party OAuth apps cannot delete accounts (no first_party fact).
+pub async fn delete_account(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<super::routes::AuthState>,
+    headers: HeaderMap,
+) -> Result<Json<DeleteAccountResponse>, AuthError> {
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    // Get Authorization header
+    let auth_header = headers
+        .get("Authorization")
+        .ok_or(AuthError::MissingToken)?
+        .to_str()
+        .map_err(|_| AuthError::InvalidToken)?;
+
+    // Validate UCAN token
+    let (user_pubkey, redirect_origin, _, ucan) =
+        crate::ucan_auth::validate_ucan_token(auth_header, tenant_id)
+            .await
+            .map_err(|e| {
+                tracing::warn!("Account deletion UCAN validation failed: {}", e);
+                AuthError::InvalidToken
+            })?;
+
+    // Check authorization: user-signed OR first_party fact
+    let issuer = crate::ucan_auth::did_to_nostr_pubkey(ucan.issuer())
+        .map_err(|_| AuthError::InvalidToken)?
+        .to_hex();
+    let is_user_signed = issuer == user_pubkey;
+
+    let is_first_party = ucan
+        .facts()
+        .iter()
+        .find_map(|f| f.get("first_party").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+
+    if !is_user_signed && !is_first_party {
+        tracing::warn!(
+            event = "account_deletion_denied",
+            tenant_id = tenant_id,
+            user = &user_pubkey[..8],
+            redirect_origin = %redirect_origin,
+            "Denied: not user-signed and not first-party"
+        );
+        return Err(AuthError::Forbidden(
+            "Account deletion requires the Divine app or web login with your private key"
+                .to_string(),
+        ));
+    }
+
+    tracing::info!(
+        event = "account_deletion_started",
+        tenant_id = tenant_id,
+        user = &user_pubkey[..8],
+        is_user_signed = is_user_signed,
+        is_first_party = is_first_party,
+        redirect_origin = %redirect_origin,
+        "Deletion initiated"
+    );
+
+    // Execute account deletion
+    let user_repo = UserRepository::new(pool.clone());
+    let result = user_repo
+        .delete_account(&user_pubkey, tenant_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                event = "account_deletion_failed",
+                tenant_id = tenant_id,
+                user = &user_pubkey[..8],
+                error = %e,
+                "Database error during deletion"
+            );
+            AuthError::Database(sqlx::Error::Protocol(e.to_string()))
+        })?;
+
+    // Signal signer daemon to remove bunker connections
+    if let Some(tx) = &auth_state.auth_tx {
+        use keycast_core::authorization_channel::AuthorizationCommand;
+        for bunker_pubkey in &result.bunker_pubkeys {
+            if let Err(e) = tx
+                .send(AuthorizationCommand::Remove {
+                    bunker_pubkey: bunker_pubkey.clone(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    "Failed to notify signer daemon of bunker removal: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    // Track metric
+    METRICS.inc_account_deleted();
+
+    tracing::info!(
+        event = "account_deletion_completed",
+        tenant_id = tenant_id,
+        user = &user_pubkey[..8],
+        teams_removed = result.teams_removed,
+        oauth_auths_deleted = result.oauth_authorizations_deleted,
+        bunkers_notified = result.bunker_pubkeys.len(),
+        "Account permanently deleted"
+    );
+
+    Ok(Json(DeleteAccountResponse {
+        success: true,
+        message: "Account permanently deleted".to_string(),
     }))
 }
 

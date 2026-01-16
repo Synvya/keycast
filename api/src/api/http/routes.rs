@@ -106,6 +106,7 @@ pub fn api_routes(
     let bunker_routes = Router::new()
         .route("/user/bunker/create", post(auth::create_bunker))
         .route("/user/sessions/revoke", post(auth::revoke_session))
+        .route("/user/account", delete(auth::delete_account))
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 

@@ -141,6 +141,7 @@ async fn store_oauth_code(
         expires_at,
         previous_auth_id,
         state,
+        is_headless: false,
     })
     .await?;
     Ok(())
@@ -184,6 +185,7 @@ async fn store_oauth_code_with_pending_registration(
         pending_encrypted_secret,
         state,
         device_code,
+        is_headless: false,
     })
     .await?;
     Ok(())
@@ -2014,6 +2016,7 @@ async fn handle_refresh_token_grant(
     let bunker_public_key = bunker_keys.public_key();
 
     // Generate new UCAN access token (server-signed)
+    // Note: refresh tokens don't preserve first_party status - users need fresh headless login
     let access_token = super::auth::generate_server_signed_ucan(
         &nostr_sdk::PublicKey::from_hex(&oauth_auth.user_pubkey)
             .map_err(|e| OAuthError::InvalidRequest(format!("Invalid public key: {}", e)))?,
@@ -2022,6 +2025,7 @@ async fn handle_refresh_token_grant(
         &oauth_auth.redirect_origin,
         Some(&bunker_public_key.to_hex()),
         &auth_state.state.server_keys,
+        false, // Refresh tokens are not first-party
     )
     .await
     .map_err(|e| OAuthError::InvalidRequest(format!("UCAN generation failed: {:?}", e)))?;
@@ -2130,6 +2134,7 @@ async fn handle_authorization_code_grant(
     let pending_email_verification_token = auth_code.pending_email_verification_token;
     let pending_encrypted_secret = auth_code.pending_encrypted_secret;
     let previous_auth_id = auth_code.previous_auth_id;
+    let is_headless = auth_code.is_headless;
 
     // Validate redirect_uri matches
     if stored_redirect_uri != *redirect_uri {
@@ -2297,6 +2302,7 @@ async fn handle_authorization_code_grant(
             redirect_uri: &stored_redirect_uri,
             nsec_from_verifier,
             previous_auth_id,
+            is_headless,
         },
         auth_state,
     )
@@ -2315,6 +2321,8 @@ struct CreateAuthorizationParams<'a> {
     redirect_uri: &'a str,
     nsec_from_verifier: Option<String>,
     previous_auth_id: Option<i32>,
+    /// Whether this code was issued via headless flow (for first_party UCAN fact)
+    is_headless: bool,
 }
 
 /// Common function to create OAuth authorization and generate TokenResponse
@@ -2333,6 +2341,7 @@ async fn create_oauth_authorization_and_token(
         redirect_uri,
         nsec_from_verifier,
         previous_auth_id,
+        is_headless,
     } = params;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
@@ -2430,6 +2439,7 @@ async fn create_oauth_authorization_and_token(
     let bunker_public_key = bunker_keys.public_key();
 
     // Generate server-signed UCAN for REST RPC API access (after bunker key derivation)
+    // is_headless enables first_party fact for account deletion authorization
     let access_token = super::auth::generate_server_signed_ucan(
         &nostr_sdk::PublicKey::from_hex(user_pubkey)
             .map_err(|e| OAuthError::InvalidRequest(format!("Invalid public key: {}", e)))?,
@@ -2438,6 +2448,7 @@ async fn create_oauth_authorization_and_token(
         &redirect_origin,
         Some(&bunker_public_key.to_hex()),
         &auth_state.state.server_keys,
+        is_headless, // first_party fact for headless flow tokens
     )
     .await
     .map_err(|e| OAuthError::InvalidRequest(format!("UCAN generation failed: {:?}", e)))?;

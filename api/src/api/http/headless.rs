@@ -198,6 +198,7 @@ pub async fn headless_register(
             pending_encrypted_secret: Some(&encrypted_secret),
             state: req.state.as_deref(),
             device_code: Some(&device_code),
+            is_headless: true,
         })
         .await?;
 
@@ -377,6 +378,7 @@ pub async fn headless_login(
             expires_at,
             previous_auth_id: None,
             state: req.state.as_deref(),
+            is_headless: true,
         })
         .await?;
 
@@ -486,6 +488,7 @@ pub async fn headless_authorize(
             expires_at,
             previous_auth_id: None,
             state: req.state.as_deref(),
+            is_headless: true,
         })
         .await?;
 
