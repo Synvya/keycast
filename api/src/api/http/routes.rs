@@ -1,4 +1,6 @@
 use axum::{
+    http::StatusCode,
+    response::IntoResponse,
     routing::{delete, get, post, put},
     Router,
 };
@@ -216,6 +218,7 @@ pub fn api_routes(
         .merge(claim_routes.layer(public_cors.clone())) // Public - claim preloaded accounts
         .merge(metrics_route.layer(public_cors.clone())) // Public - Prometheus metrics
         .merge(docs_route.layer(public_cors))
+        .fallback(api_not_found) // Return 404 for unmatched API routes
 }
 
 /// Serve OpenAPI specification as JSON
@@ -225,12 +228,18 @@ async fn openapi_spec() -> AxumJson<JsonValue> {
     AxumJson(spec)
 }
 
+/// Fallback handler for unmatched API routes - returns 404
+async fn api_not_found() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "Not found")
+}
+
 /// NIP-05 discovery endpoint for nostr-login integration
 /// This should be mounted at root level in main.rs, not under /api
 pub async fn nostr_discovery_public(
     tenant: crate::api::tenant::TenantExtractor,
     axum::extract::State(pool): axum::extract::State<PgPool>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
 ) -> impl axum::response::IntoResponse {
     use axum::body::Body;
     use axum::http::{header, StatusCode};
@@ -266,11 +275,36 @@ pub async fn nostr_discovery_public(
         }
     }
 
+    // Get relay URL from tenant settings or BUNKER_RELAYS env var
+    let relay_url = tenant.0.relay_url();
+
+    // Get API base URL from headers or APP_URL env var
+    let api_base_url = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get("host"))
+        .and_then(|v| v.to_str().ok())
+        .map(|host| {
+            let proto = headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_else(|| {
+                    if host.contains(":443") || !host.contains(":") {
+                        "https"
+                    } else {
+                        "http"
+                    }
+                });
+            format!("{}://{}", proto, host)
+        })
+        .or_else(|| std::env::var("APP_URL").ok())
+        .or_else(|| std::env::var("VITE_DOMAIN").ok())
+        .unwrap_or_else(|| "http://localhost:3000".to_string());
+
     // Return default nostr-login discovery info if no name or name not found
     let discovery = serde_json::json!({
         "nip46": {
-            "relay": "wss://relay.damus.io",
-            "nostrconnect_url": "http://localhost:3000/api/connect/<nostrconnect>"
+            "relay": relay_url,
+            "nostrconnect_url": format!("{}/api/connect/<nostrconnect>", api_base_url.trim_end_matches('/'))
         }
     });
 

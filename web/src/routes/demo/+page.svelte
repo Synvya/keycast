@@ -18,15 +18,16 @@
 
   // Import keycast-login library
   import { createKeycastClient, KeycastRpc, generatePkce } from "keycast-login";
+  import { getViteDomain } from "$lib/utils/env";
 
   // Configuration
-  const SERVER_URL = import.meta.env.VITE_DOMAIN || "http://localhost:3000";
+  const SERVER_URL = getViteDomain();
   const CLIENT_ID = "diVine Login Demo";
   console.log(
     "SERVER_URL:",
     SERVER_URL,
     "VITE_DOMAIN:",
-    import.meta.env.VITE_DOMAIN,
+    getViteDomain(),
   );
 
   // Create Keycast client (initialized in onMount for SSR safety)
@@ -442,7 +443,7 @@
 
       {#if credentials?.bunkerUrl}
         <div class="credential-display">
-          <label>Bunker URL</label>
+          <div class="credential-label">Bunker URL</div>
           <div class="credential-value">
             <code>{credentials.bunkerUrl.substring(0, 60)}...</code>
             <Copy value={credentials.bunkerUrl} size="16" />
@@ -656,7 +657,7 @@
             >import {"{"} createKeycastClient {"}"} from 'keycast-login';
 
 const client = createKeycastClient({"{"}
-  serverUrl: 'https://login.divine.video',
+  serverUrl: '${SERVER_URL}',
   clientId: 'your-app',
   redirectUri: window.location.origin + '/callback',
 {"}"});
@@ -695,7 +696,7 @@ const rpc = client.createRpc(tokens);
 // Or create directly
 import {"{"} KeycastRpc {"}"} from 'keycast-login';
 const rpc = new KeycastRpc({"{"}
-  nostrApi: 'https://login.divine.video/api/nostr',
+  nostrApi: '${SERVER_URL}/api/nostr',
   accessToken: tokens.access_token,
 {"}"});
 
@@ -793,16 +794,6 @@ const signed = await signer.signEvent(unsignedEvent);</code
     border-color: var(--color-divine-text-tertiary);
   }
 
-  .btn-outline {
-    background: transparent;
-    color: var(--color-divine-text);
-    border-color: var(--color-divine-border);
-  }
-
-  .btn-outline:hover:not(:disabled) {
-    background: var(--color-divine-muted);
-    border-color: var(--color-divine-green);
-  }
 
   .btn-ghost {
     background: transparent;
@@ -852,7 +843,7 @@ const signed = await signer.signEvent(unsignedEvent);</code
     margin-top: 1rem;
   }
 
-  .credential-display label {
+  .credential-display .credential-label {
     display: block;
     font-size: 0.75rem;
     font-weight: 500;
