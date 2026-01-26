@@ -48,7 +48,9 @@ pub struct DevEmailSender {
 
 impl DevEmailSender {
     pub fn new() -> Self {
-        let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+        let base_url = env::var("BASE_URL")
+            .or_else(|_| env::var("APP_URL"))
+            .unwrap_or_else(|_| "http://localhost:5173".to_string());
 
         tracing::info!("===========================================");
         tracing::info!("  EMAIL SERVICE: Development Mode");
@@ -210,7 +212,9 @@ impl SendGridEmailSender {
         let from_email =
             env::var("FROM_EMAIL").unwrap_or_else(|_| "noreply@keycast.app".to_string());
         let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "diVine".to_string());
-        let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
+        let base_url = env::var("BASE_URL")
+            .or_else(|_| env::var("APP_URL"))
+            .unwrap_or_else(|_| "http://localhost:5173".to_string());
 
         tracing::info!("Email service initialized with SendGrid");
 
