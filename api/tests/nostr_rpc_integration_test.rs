@@ -10,6 +10,7 @@ use keycast_core::encryption::KeyManager;
 use keycast_core::signing_session::{parse_cache_key, SigningSession};
 use nostr_sdk::prelude::*;
 use serde_json::json;
+use serial_test::serial;
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -42,6 +43,7 @@ async fn create_test_tenant(pool: &PgPool) -> i64 {
     sqlx::query_scalar::<_, i64>(
         "INSERT INTO tenants (domain, name, created_at, updated_at)
          VALUES ($1, $2, NOW(), NOW())
+         ON CONFLICT (domain) DO UPDATE SET updated_at = NOW()
          RETURNING id",
     )
     .bind(&domain)
@@ -245,6 +247,7 @@ async fn load_handler_from_db(
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_sign_event_returns_valid_signature() {
     let pool = setup_db().await;
     let tenant_id = create_test_tenant(&pool).await;
@@ -302,6 +305,7 @@ async fn test_sign_event_returns_valid_signature() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_expired_authorization_handler_not_valid() {
     let pool = setup_db().await;
     let tenant_id = create_test_tenant(&pool).await;
@@ -353,6 +357,7 @@ async fn test_expired_authorization_handler_not_valid() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_revoked_authorization_handler_not_valid() {
     let pool = setup_db().await;
     let tenant_id = create_test_tenant(&pool).await;
@@ -404,6 +409,7 @@ async fn test_revoked_authorization_handler_not_valid() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_handler_cache_stores_and_retrieves() {
     let pool = setup_db().await;
     let tenant_id = create_test_tenant(&pool).await;
@@ -453,6 +459,7 @@ async fn test_handler_cache_stores_and_retrieves() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_sign_event_blocked_by_policy() {
     let pool = setup_db().await;
     let tenant_id = create_test_tenant(&pool).await;
