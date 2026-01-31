@@ -35,6 +35,30 @@ async fn setup_db() -> PgPool {
         .await
         .expect("Failed to run migrations");
 
+    // Clean up test data from previous runs (preserve tenant ID 1 which is seeded)
+    sqlx::query("DELETE FROM oauth_authorizations WHERE tenant_id > 1")
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM personal_keys WHERE tenant_id > 1")
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM users WHERE tenant_id > 1")
+        .execute(&pool)
+        .await
+        .ok();
+    sqlx::query("DELETE FROM tenants WHERE id > 1")
+        .execute(&pool)
+        .await
+        .ok();
+
+    // Reset tenant sequence to ensure no conflicts
+    sqlx::query("SELECT setval('tenants_id_seq', (SELECT COALESCE(MAX(id), 1) FROM tenants), true)")
+        .execute(&pool)
+        .await
+        .ok();
+
     pool
 }
 
