@@ -1,228 +1,419 @@
-// ABOUTME: Migrate vine-imported users from openvine-co to dv-platform-prod
-// ABOUTME: Re-encrypts personal keys with target KMS key
+// ABOUTME: Full user migration from openvine-co to target environment
+// ABOUTME: Re-encrypts personal keys with target GCP KMS key
 // ABOUTME: Run with: cargo run --example migrate-vine-users
 //
-// Phase 1: KMS round-trip test (current) - validates KMS access
-// Phase 2: Single user migration - adds DB connectivity
-// Phase 3: Full migration - batch process all vine users
+// Migrates ALL users (vine and non-vine) and their personal keys.
+// Non-vine users keep email, password_hash, email_verified for login.
+// Authorizations are NOT migrated - only users and personal_keys.
+//
+// Environment variables:
+//   SOURCE_GCP_PROJECT_ID, SOURCE_GCP_KMS_LOCATION, SOURCE_GCP_KMS_KEY_RING, SOURCE_GCP_KMS_KEY_NAME
+//   TARGET_GCP_PROJECT_ID, TARGET_GCP_KMS_LOCATION, TARGET_GCP_KMS_KEY_RING, TARGET_GCP_KMS_KEY_NAME
+//   SOURCE_DATABASE_URL, TARGET_DATABASE_URL
+//   TENANT_ID (default: 1)
+//   DRY_RUN (default: true)
+//   CONCURRENCY (default: 20) - number of parallel KMS operations
 
-use google_cloud_kms::client::{Client, ClientConfig};
-use google_cloud_kms::grpc::kms::v1::{DecryptRequest, EncryptRequest};
+use keycast_core::encryption::gcp_key_manager::GcpKeyManager;
+use keycast_core::encryption::KeyManager;
+use nostr_sdk::SecretKey;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::types::chrono::{DateTime, Utc};
+use sqlx::Row;
+use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use zeroize::Zeroizing;
 
-// Source: Cloud Run (openvine-co)
-const SOURCE_PROJECT: &str = "openvine-co";
-const SOURCE_LOCATION: &str = "global";
-const SOURCE_KEYRING: &str = "keycast-keys";
-const SOURCE_KEY: &str = "master-key";
-
-// Target: GKE (dv-platform-prod)
-const TARGET_PROJECT: &str = "dv-platform-prod";
-const TARGET_LOCATION: &str = "us-central1";
-const TARGET_KEYRING: &str = "app-keys-production";
-const TARGET_KEY: &str = "keycast-master-key";
-
-fn key_path(project: &str, location: &str, keyring: &str, key: &str) -> String {
-    format!(
-        "projects/{}/locations/{}/keyRings/{}/cryptoKeys/{}",
-        project, location, keyring, key
-    )
+fn required_env(name: &str) -> String {
+    env::var(name).unwrap_or_else(|_| panic!("{} is required", name))
 }
 
-async fn test_encrypt_decrypt(client: &Client, key_path: &str) -> Result<(), String> {
-    let test_data = format!(
-        "migration-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    );
-
-    // Test encrypt
-    println!("  🔒 Testing encrypt...");
-    let encrypt_request = EncryptRequest {
-        name: key_path.to_string(),
-        plaintext: test_data.as_bytes().to_vec(),
-        additional_authenticated_data: vec![],
-        plaintext_crc32c: None,
-        additional_authenticated_data_crc32c: None,
-    };
-
-    let encrypted = client
-        .encrypt(encrypt_request, None)
-        .await
-        .map_err(|e| format!("Encrypt failed: {}", e))?;
-
-    println!("  ✅ Encrypt OK ({} bytes)", encrypted.ciphertext.len());
-
-    // Test decrypt
-    println!("  🔓 Testing decrypt...");
-    let decrypt_request = DecryptRequest {
-        name: key_path.to_string(),
-        ciphertext: encrypted.ciphertext,
-        additional_authenticated_data: vec![],
-        ciphertext_crc32c: None,
-        additional_authenticated_data_crc32c: None,
-    };
-
-    let decrypted = client
-        .decrypt(decrypt_request, None)
-        .await
-        .map_err(|e| format!("Decrypt failed: {}", e))?;
-
-    if decrypted.plaintext == test_data.as_bytes() {
-        println!("  ✅ Decrypt OK (verified)");
-        Ok(())
-    } else {
-        Err("Decrypt succeeded but data mismatch".to_string())
-    }
-}
-
-/// Test decrypt only (for source - we only need to read existing secrets)
-async fn test_decrypt_with_sample(
-    client: &Client,
-    source_key: &str,
-    target_key: &str,
-) -> Result<(), String> {
-    // First encrypt something with target key (which we have full access to)
-    let test_data = format!(
-        "migration-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    );
-
-    println!("  🔒 Creating test ciphertext with target key...");
-    let encrypt_request = EncryptRequest {
-        name: target_key.to_string(),
-        plaintext: test_data.as_bytes().to_vec(),
-        additional_authenticated_data: vec![],
-        plaintext_crc32c: None,
-        additional_authenticated_data_crc32c: None,
-    };
-
-    let encrypted = client
-        .encrypt(encrypt_request, None)
-        .await
-        .map_err(|e| format!("Encrypt with target key failed: {}", e))?;
-
-    // Now test that we can decrypt with source key
-    // NOTE: This will fail because data encrypted with target key can't be decrypted with source key
-    // Instead, we just test that we have decrypt permission by trying to decrypt garbage
-    // (it will fail with decryption error, not permission error)
-
-    println!("  🔓 Testing decrypt permission on source key...");
-    let decrypt_request = DecryptRequest {
-        name: source_key.to_string(),
-        ciphertext: encrypted.ciphertext, // This is encrypted with wrong key, but tests permission
-        additional_authenticated_data: vec![],
-        ciphertext_crc32c: None,
-        additional_authenticated_data_crc32c: None,
-    };
-
-    match client.decrypt(decrypt_request, None).await {
-        Ok(_) => {
-            // Unexpected success (shouldn't happen with wrong key)
-            println!("  ✅ Decrypt OK (unexpected but good)");
-            Ok(())
-        }
-        Err(e) => {
-            let err_str = e.to_string();
-            if err_str.contains("PermissionDenied") || err_str.contains("permission") {
-                Err(format!("Decrypt permission denied: {}", e))
-            } else {
-                // Decryption failed for other reason (e.g., wrong key) - but we have permission!
-                println!(
-                    "  ✅ Decrypt permission OK (decryption failed as expected - different key)"
-                );
-                Ok(())
-            }
-        }
-    }
+struct SourceUser {
+    pubkey: String,
+    tenant_id: i64,
+    email: Option<String>,
+    password_hash: Option<String>,
+    email_verified: Option<bool>,
+    username: Option<String>,
+    display_name: Option<String>,
+    vine_id: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    encrypted_secret_key: Vec<u8>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔑 Migration KMS Access Test");
-    println!("============================");
-    println!();
-    println!("This tests if the current credentials can access BOTH KMS keys");
-    println!("needed for cross-project migration.");
+    println!("=== User Migration ===");
     println!();
 
-    // Initialize KMS client (uses Application Default Credentials)
-    println!("📡 Initializing GCP KMS client...");
-    let config = ClientConfig::default()
-        .with_auth()
-        .await
-        .map_err(|e| format!("Auth failed: {}", e))?;
+    let dry_run = env::var("DRY_RUN").unwrap_or_else(|_| "true".to_string()) == "true";
+    let tenant_id: i64 = env::var("TENANT_ID")
+        .unwrap_or_else(|_| "1".to_string())
+        .parse()
+        .expect("TENANT_ID must be a number");
+    let concurrency: usize = env::var("CONCURRENCY")
+        .unwrap_or_else(|_| "20".to_string())
+        .parse()
+        .expect("CONCURRENCY must be a number");
 
-    let client = Client::new(config)
-        .await
-        .map_err(|e| format!("Client creation failed: {}", e))?;
-
-    println!("✅ KMS client initialized");
-    println!();
-
-    // Test target KMS first (dv-platform-prod) - we need full access here
-    let target_path = key_path(TARGET_PROJECT, TARGET_LOCATION, TARGET_KEYRING, TARGET_KEY);
-    println!("=== TARGET: dv-platform-prod (GKE) ===");
-    println!("Key: {}", target_path);
-    println!("Required: encrypt + decrypt (to store migrated secrets)");
-
-    let target_result = test_encrypt_decrypt(&client, &target_path).await;
-    let target_ok = target_result.is_ok();
-    if let Err(e) = &target_result {
-        println!("  ❌ FAILED: {}", e);
+    if dry_run {
+        println!("** DRY RUN MODE - no writes will be made **");
+        println!();
     }
-    println!();
+    println!("Concurrency: {}", concurrency);
 
-    // Test source KMS (openvine-co) - only need decrypt permission
-    let source_path = key_path(SOURCE_PROJECT, SOURCE_LOCATION, SOURCE_KEYRING, SOURCE_KEY);
-    println!("=== SOURCE: openvine-co (Cloud Run) ===");
-    println!("Key: {}", source_path);
-    println!("Required: decrypt only (to read existing secrets)");
-
-    let source_result = if target_ok {
-        test_decrypt_with_sample(&client, &source_path, &target_path).await
-    } else {
-        Err("Skipped - target test failed".to_string())
-    };
-    let source_ok = source_result.is_ok();
-    if let Err(e) = source_result {
-        println!("  ❌ FAILED: {}", e);
-    }
-    println!();
-
-    // Summary
-    println!("============================");
-    println!("SUMMARY:");
-    println!(
-        "  Source (openvine-co):     {}",
-        if source_ok { "✅ OK" } else { "❌ FAILED" }
+    // Initialize source KMS
+    println!("Initializing source KMS...");
+    let source_kms = Arc::new(
+        GcpKeyManager::from_config(
+            &required_env("SOURCE_GCP_PROJECT_ID"),
+            &required_env("SOURCE_GCP_KMS_LOCATION"),
+            &required_env("SOURCE_GCP_KMS_KEY_RING"),
+            &required_env("SOURCE_GCP_KMS_KEY_NAME"),
+        )
+        .await?,
     );
-    println!(
-        "  Target (dv-platform-prod): {}",
-        if target_ok { "✅ OK" } else { "❌ FAILED" }
+    println!("Source KMS ready");
+
+    // Initialize target KMS
+    println!("Initializing target KMS...");
+    let target_kms = Arc::new(
+        GcpKeyManager::from_config(
+            &required_env("TARGET_GCP_PROJECT_ID"),
+            &required_env("TARGET_GCP_KMS_LOCATION"),
+            &required_env("TARGET_GCP_KMS_KEY_RING"),
+            &required_env("TARGET_GCP_KMS_KEY_NAME"),
+        )
+        .await?,
     );
+    println!("Target KMS ready");
+
+    // Connect to source database
+    println!("Connecting to source database...");
+    let source_pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&required_env("SOURCE_DATABASE_URL"))
+        .await?;
+    println!("Source DB connected");
+
+    // Connect to target database
+    println!("Connecting to target database...");
+    let target_pool = Arc::new(
+        PgPoolOptions::new()
+            .max_connections(concurrency as u32 + 5)
+            .connect(&required_env("TARGET_DATABASE_URL"))
+            .await?,
+    );
+    println!("Target DB connected");
     println!();
 
-    if source_ok && target_ok {
-        println!("🎉 Both KMS keys accessible!");
-        println!("   You can use the cross-project migration approach.");
-        println!("   A single job can decrypt from source and re-encrypt to target.");
-    } else if source_ok && !target_ok {
-        println!("⚠️  Only source accessible.");
-        println!("   You'll need the HTTPS endpoint approach:");
-        println!("   - Source decrypts and sends to target over HTTPS");
-        println!("   - Target encrypts with its own KMS");
-    } else if !source_ok && target_ok {
-        println!("⚠️  Only target accessible.");
-        println!("   You may need to run the migration from the source environment.");
-    } else {
-        println!("❌ Neither KMS key accessible.");
-        println!("   Check your GCP authentication and IAM permissions.");
+    // Query all users with personal keys from source
+    println!("Querying source users (tenant_id={})...", tenant_id);
+    let rows = sqlx::query(
+        "SELECT u.pubkey, u.tenant_id, u.email, u.password_hash, u.email_verified,
+                u.username, u.display_name, u.vine_id, u.created_at, u.updated_at,
+                pk.encrypted_secret_key
+         FROM users u
+         JOIN personal_keys pk ON u.pubkey = pk.user_pubkey AND u.tenant_id = pk.tenant_id
+         WHERE u.tenant_id = $1
+         ORDER BY u.created_at",
+    )
+    .bind(tenant_id)
+    .fetch_all(&source_pool)
+    .await?;
+
+    let users: Vec<SourceUser> = rows
+        .iter()
+        .map(|row| SourceUser {
+            pubkey: row.get("pubkey"),
+            tenant_id: row.get("tenant_id"),
+            email: row.get("email"),
+            password_hash: row.get("password_hash"),
+            email_verified: row.get("email_verified"),
+            username: row.get("username"),
+            display_name: row.get("display_name"),
+            vine_id: row.get("vine_id"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            encrypted_secret_key: row.get("encrypted_secret_key"),
+        })
+        .collect();
+
+    let total = users.len();
+    println!("Found {} users with personal keys", total);
+    println!();
+
+    let migrated = Arc::new(AtomicU64::new(0));
+    let skipped = Arc::new(AtomicU64::new(0));
+    let failed = Arc::new(AtomicU64::new(0));
+    let processed = Arc::new(AtomicU64::new(0));
+    let sem = Arc::new(Semaphore::new(concurrency));
+
+    // Migration pass
+    println!("--- Migration Pass ---");
+    let mut handles = Vec::with_capacity(total);
+
+    for user in users {
+        let permit = sem.clone().acquire_owned().await?;
+        let source_kms = source_kms.clone();
+        let target_kms = target_kms.clone();
+        let target_pool = target_pool.clone();
+        let migrated = migrated.clone();
+        let skipped = skipped.clone();
+        let failed = failed.clone();
+        let processed = processed.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = permit;
+            let label = user
+                .username
+                .as_deref()
+                .or(user.email.as_deref())
+                .unwrap_or(&user.pubkey[..8]);
+
+            // Check if user already exists in target (idempotent)
+            let exists: bool = match sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE pubkey = $1 AND tenant_id = $2)",
+            )
+            .bind(&user.pubkey)
+            .bind(user.tenant_id)
+            .fetch_one(target_pool.as_ref())
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    println!("[{}/{}] {} ... FAIL (db check: {})", n, total, label, e);
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+
+            if exists {
+                let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                println!("[{}/{}] {} ... SKIP", n, total, label);
+                skipped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
+            // Decrypt with source KMS
+            let plaintext: Zeroizing<Vec<u8>> =
+                match source_kms.decrypt(&user.encrypted_secret_key).await {
+                    Ok(pt) => pt,
+                    Err(e) => {
+                        let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                        println!(
+                            "[{}/{}] {} ... FAIL (source decrypt: {})",
+                            n, total, label, e
+                        );
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+            if dry_run {
+                let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                println!("[{}/{}] {} ... OK (dry run)", n, total, label);
+                migrated.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
+            // Re-encrypt with target KMS
+            let target_ciphertext = match target_kms.encrypt(&plaintext).await {
+                Ok(ct) => ct,
+                Err(e) => {
+                    let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    println!(
+                        "[{}/{}] {} ... FAIL (target encrypt: {})",
+                        n, total, label, e
+                    );
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+
+            // Atomic insert: user + personal_key in a transaction
+            let tx = match target_pool.begin().await {
+                Ok(tx) => tx,
+                Err(e) => {
+                    let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    println!("[{}/{}] {} ... FAIL (begin tx: {})", n, total, label, e);
+                    failed.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+            let mut tx = tx;
+
+            if let Err(e) = sqlx::query(
+                "INSERT INTO users (pubkey, tenant_id, email, password_hash, email_verified,
+                                    username, display_name, vine_id, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            )
+            .bind(&user.pubkey)
+            .bind(user.tenant_id)
+            .bind(&user.email)
+            .bind(&user.password_hash)
+            .bind(user.email_verified)
+            .bind(&user.username)
+            .bind(&user.display_name)
+            .bind(&user.vine_id)
+            .bind(user.created_at)
+            .bind(user.updated_at)
+            .execute(&mut *tx)
+            .await
+            {
+                let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                println!("[{}/{}] {} ... FAIL (insert user: {})", n, total, label, e);
+                let _ = tx.rollback().await;
+                failed.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
+            if let Err(e) = sqlx::query(
+                "INSERT INTO personal_keys (user_pubkey, encrypted_secret_key, tenant_id, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(&user.pubkey)
+            .bind(&target_ciphertext)
+            .bind(user.tenant_id)
+            .bind(user.created_at)
+            .bind(user.updated_at)
+            .execute(&mut *tx)
+            .await
+            {
+                let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                println!(
+                    "[{}/{}] {} ... FAIL (insert key: {})",
+                    n, total, label, e
+                );
+                let _ = tx.rollback().await;
+                failed.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
+            if let Err(e) = tx.commit().await {
+                let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                println!("[{}/{}] {} ... FAIL (commit: {})", n, total, label, e);
+                failed.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+
+            let n = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            println!("[{}/{}] {} ... OK", n, total, label);
+            migrated.fetch_add(1, Ordering::Relaxed);
+        });
+        handles.push(handle);
     }
+
+    for h in handles {
+        let _ = h.await;
+    }
+
+    let migrated_val = migrated.load(Ordering::Relaxed);
+    let skipped_val = skipped.load(Ordering::Relaxed);
+    let failed_val = failed.load(Ordering::Relaxed);
+
+    println!();
+    println!("--- Migration Summary ---");
+    println!("Total:    {}", total);
+    println!("Migrated: {}", migrated_val);
+    println!("Skipped:  {}", skipped_val);
+    println!("Failed:   {}", failed_val);
+
+    if dry_run {
+        println!();
+        println!("** DRY RUN - set DRY_RUN=false to perform actual migration **");
+        return Ok(());
+    }
+
+    // Verification pass (parallel)
+    if migrated_val > 0 {
+        println!();
+        println!("--- Verification Pass ---");
+
+        let target_rows = sqlx::query(
+            "SELECT u.pubkey, pk.encrypted_secret_key
+             FROM users u
+             JOIN personal_keys pk ON u.pubkey = pk.user_pubkey AND u.tenant_id = pk.tenant_id
+             WHERE u.tenant_id = $1
+             ORDER BY u.created_at",
+        )
+        .bind(tenant_id)
+        .fetch_all(target_pool.as_ref())
+        .await?;
+
+        let verify_total = target_rows.len();
+        let verified = Arc::new(AtomicU64::new(0));
+        let verify_failed = Arc::new(AtomicU64::new(0));
+        let verify_done = Arc::new(AtomicU64::new(0));
+
+        let mut vhandles = Vec::with_capacity(verify_total);
+
+        for row in target_rows {
+            let permit = sem.clone().acquire_owned().await?;
+            let target_kms = target_kms.clone();
+            let verified = verified.clone();
+            let verify_failed = verify_failed.clone();
+            let verify_done = verify_done.clone();
+
+            let pubkey: String = row.get("pubkey");
+            let encrypted: Vec<u8> = row.get("encrypted_secret_key");
+
+            let handle = tokio::spawn(async move {
+                let _permit = permit;
+                match target_kms.decrypt(&encrypted).await {
+                    Ok(plaintext) => match SecretKey::from_slice(&plaintext) {
+                        Ok(sk) => {
+                            let derived = nostr_sdk::Keys::new(sk).public_key().to_hex();
+                            if derived == pubkey {
+                                verified.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                println!("VERIFY FAIL: pubkey mismatch for {}", &pubkey[..8]);
+                                verify_failed.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        Err(e) => {
+                            println!(
+                                "VERIFY FAIL: invalid secret key for {} ({})",
+                                &pubkey[..8],
+                                e
+                            );
+                            verify_failed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    },
+                    Err(e) => {
+                        println!("VERIFY FAIL: decrypt failed for {} ({})", &pubkey[..8], e);
+                        verify_failed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                let done = verify_done.fetch_add(1, Ordering::Relaxed) + 1;
+                if done.is_multiple_of(100) || done == verify_total as u64 {
+                    println!("  verified {}/{}", done, verify_total);
+                }
+            });
+            vhandles.push(handle);
+        }
+
+        for h in vhandles {
+            let _ = h.await;
+        }
+
+        let v = verified.load(Ordering::Relaxed);
+        let vf = verify_failed.load(Ordering::Relaxed);
+        println!("Verified: {}/{} (failed: {})", v, verify_total, vf);
+
+        if vf > 0 {
+            println!();
+            println!("WARNING: Some verifications failed!");
+            std::process::exit(1);
+        }
+    }
+
+    println!();
+    println!("Migration complete.");
 
     Ok(())
 }
