@@ -51,16 +51,13 @@ steps:
         echo "✅ Migrations complete!"
         kill $$PROXY_PID 2>/dev/null || true
 
-  # Build the Docker image with correct build args
+  # Build the Docker image
+  # Note: VITE_DOMAIN and VITE_ALLOWED_PUBKEYS are injected at runtime via APP_URL and ALLOWED_PUBKEYS env vars
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
       - '--build-arg'
       - 'BUILD_VERSION=${BUILD_ID}'
-      - '--build-arg'
-      - 'VITE_DOMAIN=https://login.divine.video'
-      - '--build-arg'
-      - 'VITE_ALLOWED_PUBKEYS=89ef92b9ebe6dc1e4ea398f6477f227e95429627b0a33dc89b640e137b256be5,76c71aae3a491f1d9eec47cba17e229cda4113a0bbb6e6ae1776d7643e29cafa'
       - '-t'
       - 'us-central1-docker.pkg.dev/${PROJECT_ID}/docker/keycast:latest'
       - '.'

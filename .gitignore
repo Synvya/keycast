@@ -47,5 +47,8 @@ loadtest-users.json
 scale-test-results/
 
 
+# Local k8s test manifests (Kind clusters, target postgres, etc.)
+k8s_local_tests/
+
 # MCP cache
 .repo-cache/
