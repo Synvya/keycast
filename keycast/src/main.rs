@@ -89,14 +89,9 @@ fn inject_runtime_env(html: &str) -> String {
         env_obj["ALLOWED_PUBKEYS"] = json!(pubkeys);
     }
 
-    // VITE_NDK_EXPLICIT_RELAYS - comma-separated relay URLs for reading/subscribing (optional)
-    if let Ok(relays) = env::var("VITE_NDK_EXPLICIT_RELAYS") {
-        env_obj["VITE_NDK_EXPLICIT_RELAYS"] = json!(relays);
-    }
-
-    // VITE_NDK_BUNKER_RELAYS - comma-separated relay URLs for bunker NDK (optional)
-    if let Ok(relays) = env::var("VITE_NDK_BUNKER_RELAYS") {
-        env_obj["VITE_NDK_BUNKER_RELAYS"] = json!(relays);
+    // SHOW_TEAMS_FUNCTIONALITY - enable teams UI (optional, default: hidden)
+    if let Ok(val) = env::var("SHOW_TEAMS_FUNCTIONALITY") {
+        env_obj["SHOW_TEAMS_FUNCTIONALITY"] = json!(val);
     }
 
     // If no env vars to inject, return original HTML
@@ -549,7 +544,10 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
     let public_cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any)
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
         .allow_credentials(false);
 
     // Get pure API routes (JSON endpoints only) - pass authorization sender
@@ -713,8 +711,10 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
     // Add Cache-Control headers for browser caching
     let app = app.layer(middleware::from_fn(cache_control_middleware));
 
-    let api_addr = std::net::SocketAddr::from(([0, 0, 0, 0], api_port));
-    tracing::info!("✔︎ API server ready on {}", api_addr);
+    // Try dual-stack [::] first (accepts both IPv4 and IPv6), fall back to 0.0.0.0
+    let dual_stack_addr = std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, api_port));
+    let ipv4_addr = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, api_port));
+    tracing::info!("✔︎ API server ready on port {}", api_port);
 
     // Setup graceful shutdown with TaskTracker for background tasks
     let shutdown_signal = Arc::new(Notify::new());
@@ -725,8 +725,24 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
 
     // Spawn API server with graceful shutdown
     let api_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(api_addr).await.unwrap();
-        tracing::info!("🌐 API server listening on {}", api_addr);
+        let listener = match tokio::net::TcpListener::bind(dual_stack_addr).await {
+            Ok(l) => {
+                tracing::info!(
+                    "🌐 API server listening on {} (dual-stack)",
+                    dual_stack_addr
+                );
+                l
+            }
+            Err(_) => {
+                tracing::info!(
+                    "🌐 API server listening on {} (IPv4-only, IPv6 unavailable)",
+                    ipv4_addr
+                );
+                tokio::net::TcpListener::bind(ipv4_addr)
+                    .await
+                    .expect("Failed to bind API server")
+            }
+        };
         axum::serve(listener, app)
             .tcp_nodelay(true)
             .with_graceful_shutdown(async move {
@@ -907,8 +923,7 @@ mod tests {
         // Clear all env vars that might be set from other tests
         std::env::remove_var("APP_URL");
         std::env::remove_var("ALLOWED_PUBKEYS");
-        std::env::remove_var("VITE_NDK_EXPLICIT_RELAYS");
-        std::env::remove_var("VITE_NDK_BUNKER_RELAYS");
+        std::env::remove_var("SHOW_TEAMS_FUNCTIONALITY");
 
         let result = inject_runtime_env(html);
 
@@ -932,22 +947,16 @@ mod tests {
 
         std::env::set_var("APP_URL", "https://example.com");
         std::env::set_var("ALLOWED_PUBKEYS", "key1,key2");
-        std::env::set_var(
-            "VITE_NDK_EXPLICIT_RELAYS",
-            "wss://relay1.com,wss://relay2.com",
-        );
-        std::env::set_var("VITE_NDK_BUNKER_RELAYS", "wss://bunker1.com");
+        std::env::set_var("SHOW_TEAMS_FUNCTIONALITY", "true");
 
         let result = inject_runtime_env(html);
 
         assert!(result.contains("VITE_DOMAIN"));
         assert!(result.contains("ALLOWED_PUBKEYS"));
-        assert!(result.contains("VITE_NDK_EXPLICIT_RELAYS"));
-        assert!(result.contains("VITE_NDK_BUNKER_RELAYS"));
+        assert!(result.contains("SHOW_TEAMS_FUNCTIONALITY"));
 
         std::env::remove_var("APP_URL");
         std::env::remove_var("ALLOWED_PUBKEYS");
-        std::env::remove_var("VITE_NDK_EXPLICIT_RELAYS");
-        std::env::remove_var("VITE_NDK_BUNKER_RELAYS");
+        std::env::remove_var("SHOW_TEAMS_FUNCTIONALITY");
     }
 }

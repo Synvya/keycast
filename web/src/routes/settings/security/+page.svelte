@@ -8,7 +8,7 @@
 
 	const api = new KeycastApi();
 	const currentUser = $derived(getCurrentUser());
-	const user = $derived(currentUser?.user);
+	const user = $derived(currentUser);
 	const authMethod = $derived(currentUser?.authMethod);
 	const accountStatus = $derived(getAccountStatus());
 	const emailVerified = $derived(isEmailVerified());
@@ -205,7 +205,7 @@
 <div class="security-page">
 	<div class="header">
 		<h1>Security Settings</h1>
-		<p class="subtitle">Manage your private key and account security</p>
+		<p class="subtitle">Manage your account security and Nostr keys</p>
 	</div>
 
 	{#if !emailVerified}
@@ -370,7 +370,7 @@
 						placeholder="nsec1... or 64-char hex"
 						disabled={isChanging}
 					/>
-					<small style="color: #999; font-size: 0.85rem;">
+					<small style="color: var(--color-divine-text-tertiary); font-size: 0.85rem;">
 						Import an existing Nostr private key. You must provide your own key.
 					</small>
 				</div>

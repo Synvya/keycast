@@ -556,28 +556,29 @@ pub async fn authorize_get(
     let has_byok_pubkey = params.byok_pubkey.is_some();
 
     // Validate that the user actually exists in the database
-    let (user_pubkey, clear_cookie) = if let Some(ref pubkey) = user_pubkey {
+    let (user_pubkey, clear_cookie, user_email) = if let Some(ref pubkey) = user_pubkey {
         // If prompt=login or byok_pubkey present, ignore existing session and force fresh registration
         if force_login {
             tracing::info!("prompt=login: forcing fresh login, clearing cookie");
-            (None, true)
+            (None, true, None)
         } else if has_byok_pubkey {
             tracing::info!("byok_pubkey present: forcing registration, clearing cookie");
-            (None, true)
+            (None, true, None)
         } else {
-            // Check if user exists
+            // Check if user exists and get their email
             let user_repo = UserRepository::new(pool.clone());
-            let user_exists = user_repo.exists(pubkey, tenant_id).await?;
+            let account_status = user_repo.get_account_status(pubkey, tenant_id).await?;
 
-            if !user_exists {
-                tracing::warn!("UCAN cookie has pubkey {} but user doesn't exist in tenant {}, clearing stale cookie", pubkey, tenant_id);
-                (None, true) // User was deleted, clear the cookie
-            } else {
-                (user_pubkey, false)
+            match account_status {
+                None => {
+                    tracing::warn!("UCAN cookie has pubkey {} but user doesn't exist in tenant {}, clearing stale cookie", pubkey, tenant_id);
+                    (None, true, None) // User was deleted, clear the cookie
+                }
+                Some((email, _verified)) => (user_pubkey, false, email),
             }
         }
     } else {
-        (None, false)
+        (None, false, None)
     };
 
     // Check for silent re-authentication via authorization_handle (primary mechanism)
@@ -772,11 +773,14 @@ pub async fn authorize_get(
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Authorize {}</title>
     <script src="https://unpkg.com/nostr-tools@2.10.0/lib/nostr.bundle.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {{
-            --divine-green: #00B488;
-            --divine-green-dark: #009A72;
-            --bg: hsl(0 0% 100%);
+            --divine-green: #27C58B;
+            --divine-green-dark: #1AA575;
+            --bg: #F9F7F6;
             --surface: hsl(0 0% 100%);
             --border: hsl(214.3 31.8% 91.4%);
             --text: hsl(222.2 84% 4.9%);
@@ -785,12 +789,12 @@ pub async fn authorize_get(
         }}
         @media (prefers-color-scheme: dark) {{
             :root {{
-                --bg: hsl(222.2 84% 4.9%);
-                --surface: hsl(222.2 84% 4.9%);
-                --border: hsl(217.2 32.6% 17.5%);
+                --bg: #072218;
+                --surface: #0F2E23;
+                --border: #1C4033;
                 --text: hsl(210 40% 98%);
                 --text-secondary: hsl(215 20.2% 65.1%);
-                --muted: hsl(217.2 32.6% 17.5%);
+                --muted: #0F2E23;
             }}
         }}
         * {{
@@ -818,18 +822,25 @@ pub async fn authorize_get(
         }}
         .logo {{
             display: inline-flex;
+            flex-direction: column;
             align-items: center;
-            gap: 0.5rem;
-            color: var(--divine-green);
-            font-size: 1.5rem;
-            font-weight: 700;
+            gap: 2px;
             margin-bottom: 1rem;
         }}
-        .logo svg {{
-            width: 32px;
-            height: 32px;
+        .logo img {{
+            height: 28px;
+        }}
+        .logo .logo-sub {{
+            font-family: 'Inter', system-ui, sans-serif;
+            font-weight: 500;
+            font-size: 11px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--divine-green);
+            opacity: 0.6;
         }}
         .header h1 {{
+            font-family: 'Bricolage Grotesque', system-ui, sans-serif;
             font-size: 1.5rem;
             font-weight: 600;
             color: var(--text);
@@ -838,6 +849,19 @@ pub async fn authorize_get(
         .header p {{
             color: var(--text-secondary);
             font-size: 0.9rem;
+        }}
+        .user-identity {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }}
+        .user-avatar {{
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            object-fit: cover;
         }}
         .card {{
             background: var(--surface);
@@ -989,13 +1013,11 @@ pub async fn authorize_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor">
-                    <path d="M216.57,39.43A80,80,0,0,0,83.91,120.78L28.69,176A15.86,15.86,0,0,0,24,187.31V216a16,16,0,0,0,16,16H72a8,8,0,0,0,8-8V208H96a8,8,0,0,0,8-8V184h16a8,8,0,0,0,5.66-2.34l9.56-9.57A79.73,79.73,0,0,0,160,176h.1A80,80,0,0,0,216.57,39.43ZM180,92a16,16,0,1,1,16-16A16,16,0,0,1,180,92Z"></path>
-                </svg>
-                diVine Login
+                <img src="/divine-logo.svg" alt="diVine" />
+                <span class="logo-sub">Login</span>
             </div>
             <h1>Authorize App</h1>
-            <p>Grant access to <span id="display_name">your account</span></p>
+            <p>Grant access to <span class="user-identity"><img id="user_avatar" class="user-avatar" style="display:none" /><span id="display_name">your account</span></span></p>
         </div>
 
         <div class="card">
@@ -1034,6 +1056,7 @@ pub async fn authorize_get(
         const codeChallengeMethod = '{}';
         const oauthState = '{}';
         const userPubkey = '{}';
+        const userEmail = '{}';
         const userRelays = {};
         const policyInfo = {};
 
@@ -1088,24 +1111,71 @@ pub async fn authorize_get(
             }}
         }}
 
-        // Load profile from Nostr relays
-        // Shows display_name if available, otherwise just "your account" (hides npub for newcomers)
+        function setIdentity(name, pictureUrl) {{
+            if (name) {{
+                document.getElementById('display_name').textContent = name;
+            }}
+            const avatar = document.getElementById('user_avatar');
+            if (pictureUrl) {{
+                avatar.src = pictureUrl;
+                avatar.style.display = '';
+                avatar.onerror = function() {{
+                    this.src = 'https://robohash.org/' + userPubkey + '?set=set4&size=48x48';
+                }};
+            }} else {{
+                avatar.src = 'https://robohash.org/' + userPubkey + '?set=set4&size=48x48';
+                avatar.style.display = '';
+            }}
+        }}
+
+        function getCachedProfile() {{
+            try {{
+                const raw = localStorage.getItem('nostr_profile_' + userPubkey);
+                if (!raw) return null;
+                const cached = JSON.parse(raw);
+                if (Date.now() - cached.fetched_at < 24 * 60 * 60 * 1000) return cached;
+            }} catch (e) {{}}
+            return null;
+        }}
+
+        function cacheProfile(profile) {{
+            try {{
+                localStorage.setItem('nostr_profile_' + userPubkey, JSON.stringify({{
+                    name: profile.name || null,
+                    display_name: profile.display_name || null,
+                    picture: profile.picture || null,
+                    fetched_at: Date.now()
+                }}));
+            }} catch (e) {{}}
+        }}
+
+        // Load profile: cached > relay > email > "your account"
         async function loadProfile() {{
-            // Log npub for power users who want to verify their identity
             const npub = document.getElementById('npub_fallback').textContent;
             console.log('Authorizing as:', npub);
 
+            // 1. Check localStorage cache
+            const cached = getCachedProfile();
+            if (cached) {{
+                const name = cached.display_name || cached.name;
+                setIdentity(name || userEmail || 'your account', cached.picture);
+                if (name) return; // Fresh cache with a name, done
+            }}
+
+            // 2. Show email immediately as fallback while fetching
+            if (userEmail) {{
+                setIdentity(userEmail, null);
+            }}
+
+            // 3. Fetch from relays
             try {{
                 if (!window.NostrTools) {{
                     console.warn('nostr-tools not loaded, skipping profile fetch');
-                    document.getElementById('display_name').textContent = 'your account';
                     return;
                 }}
 
                 const {{ SimplePool }} = window.NostrTools;
                 const pool = new SimplePool();
-
-                console.log('Fetching profile for', userPubkey, 'from', userRelays);
 
                 const events = await Promise.race([
                     pool.querySync(userRelays, {{
@@ -1120,23 +1190,17 @@ pub async fn authorize_get(
 
                 if (events && events.length > 0) {{
                     const profile = JSON.parse(events[0].content);
-                    console.log('Profile loaded:', profile);
-
+                    cacheProfile(profile);
                     const displayName = profile.display_name || profile.name;
-                    if (displayName) {{
-                        document.getElementById('display_name').textContent = displayName;
-                    }} else {{
-                        // No name in profile - show friendly fallback (npub logged above)
-                        document.getElementById('display_name').textContent = 'your account';
+                    if (displayName || profile.picture) {{
+                        setIdentity(displayName || userEmail || 'your account', profile.picture);
                     }}
                 }} else {{
-                    // No profile found - show friendly fallback (npub logged above)
-                    document.getElementById('display_name').textContent = 'your account';
+                    // Cache empty result to avoid re-fetching
+                    cacheProfile({{}});
                 }}
             }} catch (e) {{
                 console.warn('Could not load profile:', e);
-                // Error fetching profile - show friendly fallback (npub logged above)
-                document.getElementById('display_name').textContent = 'your account';
             }}
         }}
 
@@ -1204,6 +1268,7 @@ pub async fn authorize_get(
             params.code_challenge_method.as_deref().unwrap_or(""), // JS codeChallengeMethod
             params.state.as_deref().unwrap_or(""), // JS oauthState
             pubkey,           // JS userPubkey (hex)
+            user_email.as_deref().unwrap_or(""), // JS userEmail
             relays_json,      // JS userRelays (JSON array)
             policy_info_json, // JS policyInfo (JSON object)
         )
@@ -1223,28 +1288,28 @@ pub async fn authorize_get(
     <script src="https://unpkg.com/nostr-tools@2.10.0/lib/nostr.bundle.js"></script>
     <style>
         :root {{
-            --divine-green: #00B488;
-            --divine-green-dark: #009A72;
-            --divine-green-light: #33C49F;
+            --divine-green: #27C58B;
+            --divine-green-dark: #1AA575;
+            --divine-green-light: #D0FBCB;
             --divine-purple: #8B5CF6;
-            --bg: hsl(0 0% 100%);
+            --bg: #F9F7F6;
             --surface: hsl(0 0% 100%);
             --border: hsl(214.3 31.8% 91.4%);
             --text: hsl(222.2 84% 4.9%);
             --text-secondary: hsl(215.4 16.3% 46.9%);
             --muted: hsl(210 40% 96.1%);
             --error: #EF4444;
-            --shadow-sm: 0 2px 8px rgba(0, 180, 136, 0.08);
-            --shadow-md: 0 4px 16px rgba(0, 180, 136, 0.12);
+            --shadow-sm: 0 2px 8px rgba(39, 197, 139, 0.08);
+            --shadow-md: 0 4px 16px rgba(39, 197, 139, 0.12);
         }}
         @media (prefers-color-scheme: dark) {{
             :root {{
-                --bg: hsl(222.2 84% 4.9%);
-                --surface: hsl(222.2 84% 4.9%);
-                --border: hsl(217.2 32.6% 17.5%);
+                --bg: #072218;
+                --surface: #0F2E23;
+                --border: #1C4033;
                 --text: hsl(210 40% 98%);
                 --text-secondary: hsl(215 20.2% 65.1%);
-                --muted: hsl(217.2 32.6% 17.5%);
+                --muted: #0F2E23;
             }}
         }}
         * {{
@@ -1273,20 +1338,23 @@ pub async fn authorize_get(
         }}
         .logo {{
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 0.5rem;
+            gap: 2px;
             margin-bottom: 1.5rem;
         }}
-        .logo svg {{
-            width: 32px;
-            height: 32px;
+        .logo img {{
+            height: 28px;
         }}
-        .logo span {{
-            font-family: 'Bricolage Grotesque', system-ui, sans-serif;
-            font-size: 1.5rem;
-            font-weight: 700;
+        .logo .logo-sub {{
+            font-family: 'Inter', system-ui, sans-serif;
+            font-weight: 500;
+            font-size: 11px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
             color: var(--divine-green);
+            opacity: 0.6;
         }}
         .header h1 {{
             font-family: 'Bricolage Grotesque', system-ui, sans-serif;
@@ -1362,7 +1430,7 @@ pub async fn authorize_get(
         input:focus {{
             outline: none;
             border-color: var(--divine-green);
-            box-shadow: 0 0 0 2px rgba(0, 180, 136, 0.2);
+            box-shadow: 0 0 0 2px rgba(39, 197, 139, 0.2);
         }}
         input::placeholder {{
             color: var(--text-secondary);
@@ -1524,10 +1592,8 @@ pub async fn authorize_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--divine-green)">
-                    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
-                </svg>
-                <span>diVine Login</span>
+                <img src="/divine-logo.svg" alt="diVine" />
+                <span class="logo-sub">Login</span>
             </div>
             <h1>Sign in</h1>
             <p>to continue to <strong id="app_name_display">{}</strong></p>
@@ -3115,18 +3181,18 @@ pub async fn connect_get(
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
     <style>
         :root {{
-            --divine-green: #00B488;
-            --divine-green-dark: #009A72;
-            --bg: hsl(222.2 84% 4.9%);
-            --surface: hsl(222.2 84% 4.9%);
-            --border: hsl(217.2 32.6% 17.5%);
+            --divine-green: #27C58B;
+            --divine-green-dark: #1AA575;
+            --bg: #072218;
+            --surface: #0F2E23;
+            --border: #1C4033;
             --text: hsl(210 40% 98%);
             --text-secondary: hsl(215 20.2% 65.1%);
-            --muted: hsl(217.2 32.6% 17.5%);
+            --muted: #0F2E23;
         }}
         @media (prefers-color-scheme: light) {{
             :root {{
-                --bg: hsl(0 0% 100%);
+                --bg: #F9F7F6;
                 --surface: hsl(0 0% 100%);
                 --border: hsl(214.3 31.8% 91.4%);
                 --text: hsl(222.2 84% 4.9%);
@@ -3161,21 +3227,23 @@ pub async fn connect_get(
         }}
         .logo {{
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 0.5rem;
+            gap: 2px;
             margin-bottom: 1.25rem;
         }}
-        .logo svg {{
-            width: 32px;
-            height: 32px;
-            color: var(--divine-green);
+        .logo img {{
+            height: 28px;
         }}
-        .logo span {{
-            font-family: 'Bricolage Grotesque', system-ui, sans-serif;
-            font-size: 1.5rem;
-            font-weight: 700;
+        .logo .logo-sub {{
+            font-family: 'Inter', system-ui, sans-serif;
+            font-weight: 500;
+            font-size: 11px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
             color: var(--divine-green);
+            opacity: 0.6;
         }}
         h1 {{
             font-family: 'Bricolage Grotesque', system-ui, sans-serif;
@@ -3329,10 +3397,8 @@ pub async fn connect_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <svg viewBox="0 0 256 256" fill="currentColor">
-                    <path d="M216.57,39.43A80,80,0,0,0,83.91,120.78L28.69,176A15.86,15.86,0,0,0,24,187.31V216a16,16,0,0,0,16,16H72a8,8,0,0,0,8-8V208H96a8,8,0,0,0,8-8V184h16a8,8,0,0,0,5.66-2.34l9.56-9.57A79.73,79.73,0,0,0,160,176h.1A80,80,0,0,0,216.57,39.43ZM180,92a16,16,0,1,1,16-16A16,16,0,0,1,180,92Z"></path>
-                </svg>
-                <span>diVine Login</span>
+                <img src="/divine-logo.svg" alt="diVine" />
+                <span class="logo-sub">Login</span>
             </div>
             <h1>Authorize Connection</h1>
             <p class="subtitle">An app wants to connect to your account</p>

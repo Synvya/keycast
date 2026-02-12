@@ -38,10 +38,8 @@
 <div class="auth-page">
 	<div class="auth-container">
 		<a href="/" class="auth-branding">
-			<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" viewBox="0 0 256 256">
-				<path d="M216.57,39.43A80,80,0,0,0,83.91,120.78L28.69,176A15.86,15.86,0,0,0,24,187.31V216a16,16,0,0,0,16,16H72a8,8,0,0,0,8-8V208H96a8,8,0,0,0,8-8V184h16a8,8,0,0,0,5.66-2.34l9.56-9.57A79.73,79.73,0,0,0,160,176h.1A80,80,0,0,0,216.57,39.43ZM180,92a16,16,0,1,1,16-16A16,16,0,0,1,180,92Z"></path>
-			</svg>
-			<span>{BRAND.name}</span>
+			<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
+			<span class="auth-logo-sub">Login</span>
 		</a>
 
 		<h1>Forgot Password</h1>
@@ -96,25 +94,35 @@
 		padding: 2rem;
 		max-width: 420px;
 		width: 100%;
-		box-shadow: 0 2px 8px rgba(0, 180, 136, 0.08);
+		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.08);
 	}
 
 	.auth-branding {
 		display: flex;
-		flex-direction: row;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		gap: 0.5rem;
-		font-family: var(--font-heading);
-		font-size: 1.5rem;
-		font-weight: 700;
-		color: var(--color-divine-green);
+		gap: 2px;
 		text-decoration: none;
 		margin-bottom: 1.5rem;
 	}
 
 	.auth-branding:hover {
-		color: var(--color-divine-green-dark);
+		opacity: 0.85;
+	}
+
+	.auth-logo-img {
+		height: 28px;
+	}
+
+	.auth-logo-sub {
+		font-family: 'Inter', sans-serif;
+		font-weight: 500;
+		font-size: 11px;
+		letter-spacing: 3px;
+		text-transform: uppercase;
+		color: var(--color-divine-green);
+		opacity: 0.6;
 	}
 
 	h1 {
@@ -161,7 +169,7 @@
 	input:focus {
 		outline: none;
 		border-color: var(--color-divine-green);
-		box-shadow: 0 0 0 2px rgba(0, 180, 136, 0.2);
+		box-shadow: 0 0 0 2px rgba(39, 197, 139, 0.2);
 	}
 
 	input::placeholder {
@@ -193,7 +201,7 @@
 
 	.btn-primary:hover:not(:disabled) {
 		background: var(--color-divine-green-dark);
-		box-shadow: 0 2px 8px rgba(0, 180, 136, 0.16);
+		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.16);
 	}
 
 	.btn-primary:disabled {
@@ -219,8 +227,8 @@
 	}
 
 	.success-message {
-		background: rgba(0, 180, 136, 0.1);
-		border: 1px solid rgba(0, 180, 136, 0.3);
+		background: rgba(39, 197, 139, 0.1);
+		border: 1px solid rgba(39, 197, 139, 0.3);
 		border-radius: 0.75rem;
 		padding: 1rem;
 		margin-bottom: 1.5rem;
