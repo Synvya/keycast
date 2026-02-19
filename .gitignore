@@ -52,6 +52,7 @@ k8s_local_tests/
 
 # E2E test artifacts
 e2e/test-results/
+web/test-results/
 e2e/playwright-report/
 .playwright-mcp/
 

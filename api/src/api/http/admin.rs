@@ -239,13 +239,9 @@ pub async fn preload_user(
         let existing_user_pubkey = nostr_sdk::PublicKey::from_hex(&existing_pubkey)
             .map_err(|e| ApiError::Internal(format!("Invalid stored pubkey: {}", e)))?;
 
-        let token = generate_preload_ucan(
-            &existing_user_pubkey,
-            tenant_id,
-            &server_keys,
-            &auth.pubkey,
-        )
-        .await?;
+        let token =
+            generate_preload_ucan(&existing_user_pubkey, tenant_id, &server_keys, &auth.pubkey)
+                .await?;
 
         tracing::info!(
             "Returning existing preloaded user for vine_id '{}': {}",
@@ -314,13 +310,7 @@ pub async fn preload_user(
         }
     }
 
-    let token = generate_preload_ucan(
-        &pubkey,
-        tenant_id,
-        &server_keys,
-        &auth.pubkey,
-    )
-    .await?;
+    let token = generate_preload_ucan(&pubkey, tenant_id, &server_keys, &auth.pubkey).await?;
 
     tracing::info!(
         "Preloaded user created: vine_id={}, username={}, pubkey={}",
@@ -391,13 +381,7 @@ pub async fn get_user_token(
     }
 
     let server_keys = get_server_keys()?;
-    let token = generate_preload_ucan(
-        &user_pubkey,
-        tenant_id,
-        &server_keys,
-        &auth.pubkey,
-    )
-    .await?;
+    let token = generate_preload_ucan(&user_pubkey, tenant_id, &server_keys, &auth.pubkey).await?;
 
     tracing::info!(
         "User token generated for pubkey: {} by admin: {}",

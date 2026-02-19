@@ -1005,13 +1005,12 @@ impl UserRepository {
 
     /// Check if email is already in use.
     pub async fn email_exists(&self, email: &str, tenant_id: i64) -> Result<bool, RepositoryError> {
-        let result: Option<(String,)> = sqlx::query_as(
-            "SELECT pubkey FROM users WHERE email = $1 AND tenant_id = $2",
-        )
-        .bind(email)
-        .bind(tenant_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let result: Option<(String,)> =
+            sqlx::query_as("SELECT pubkey FROM users WHERE email = $1 AND tenant_id = $2")
+                .bind(email)
+                .bind(tenant_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(result.is_some())
     }
 
@@ -1024,13 +1023,12 @@ impl UserRepository {
     ) -> Result<Option<AdminUserDetails>, RepositoryError> {
         let pubkey_hex = if query.contains('@') {
             // Search by email, resolve to pubkey first
-            let result: Option<(String,)> = sqlx::query_as(
-                "SELECT pubkey FROM users WHERE email = $1 AND tenant_id = $2",
-            )
-            .bind(query.to_lowercase())
-            .bind(tenant_id)
-            .fetch_optional(&self.pool)
-            .await?;
+            let result: Option<(String,)> =
+                sqlx::query_as("SELECT pubkey FROM users WHERE email = $1 AND tenant_id = $2")
+                    .bind(query.to_lowercase())
+                    .bind(tenant_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
             match result {
                 Some((pk,)) => pk,
                 None => return Ok(None),
