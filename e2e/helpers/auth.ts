@@ -19,27 +19,34 @@ export async function registerAndVerify(
     throw new Error(`Registration failed (${registerRes.status()}): ${body}`);
   }
 
-  // Wait for bcrypt worker to hash password
-  await new Promise((r) => setTimeout(r, 1000));
-
-  // Extract verification token from DB
+  // Extract verification token from DB (polls until ready)
   const token = await getVerificationToken(email);
 
-  // Verify email - this sets the session cookie
-  const verifyRes = await request.post("/api/auth/verify-email", {
-    data: { token },
-  });
-  if (!verifyRes.ok()) {
-    const body = await verifyRes.text();
-    throw new Error(`Email verification failed (${verifyRes.status()}): ${body}`);
+  // Verify email - retry until bcrypt finishes hashing the password
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const verifyRes = await request.post("/api/auth/verify-email", {
+      data: { token },
+    });
+    if (!verifyRes.ok()) {
+      const body = await verifyRes.text();
+      throw new Error(`Email verification failed (${verifyRes.status()}): ${body}`);
+    }
+
+    const body = await verifyRes.json();
+    if (body.status === "processing") {
+      await new Promise((r) => setTimeout(r, 500));
+      continue;
+    }
+
+    const setCookie = verifyRes.headers()["set-cookie"];
+    if (!setCookie || !setCookie.includes("keycast_session=")) {
+      throw new Error("No keycast_session cookie in verify-email response");
+    }
+
+    return { cookie: setCookie };
   }
 
-  const setCookie = verifyRes.headers()["set-cookie"];
-  if (!setCookie || !setCookie.includes("keycast_session=")) {
-    throw new Error("No keycast_session cookie in verify-email response");
-  }
-
-  return { cookie: setCookie };
+  throw new Error("Email verification timed out (password hash not ready)");
 }
 
 export function parseCookieValue(setCookie: string): string {

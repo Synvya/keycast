@@ -1,0 +1,197 @@
+import { test, expect } from "@playwright/test";
+import { registerAndVerify, parseCookieValue } from "../helpers/auth";
+import { registerAdmin } from "../helpers/admin";
+import {
+  addSupportAdmin,
+  removeSupportAdmin,
+  clearSupportAdmins,
+} from "../helpers/redis";
+
+test.describe("Support admin management", () => {
+  test.afterEach(async () => {
+    await clearSupportAdmins();
+  });
+
+  test("non-admin gets is_admin: false", async ({ request }) => {
+    const email = `e2e-nonadmin-${Date.now()}@test.local`;
+    const { cookie } = await registerAndVerify(request, email, "TestPass123!");
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    const res = await request.get("/api/admin/status", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(res.status()).toBe(200);
+
+    const body = await res.json();
+    expect(body.is_admin).toBe(false);
+    expect(body.role).toBeNull();
+  });
+
+  test("full admin gets role: full", async ({ request }) => {
+    const { cookie } = await registerAdmin(request);
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    const res = await request.get("/api/admin/status", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(res.status()).toBe(200);
+
+    const body = await res.json();
+    expect(body.is_admin).toBe(true);
+    expect(body.role).toBe("full");
+  });
+
+  test("full admin can list support admins", async ({ request }) => {
+    const { cookie } = await registerAdmin(request);
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    const res = await request.get("/api/admin/support-admins", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(res.status()).toBe(200);
+
+    const body = await res.json();
+    expect(body.pubkeys).toEqual([]);
+  });
+
+  test("full admin can add and remove support admins", async ({ request }) => {
+    const { cookie } = await registerAdmin(request);
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    const targetPubkey =
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    // Add support admin
+    const addRes = await request.post("/api/admin/support-admins", {
+      headers: { Cookie: sessionCookie },
+      data: { identifier: targetPubkey },
+    });
+    expect(addRes.status()).toBe(200);
+    const addBody = await addRes.json();
+    expect(addBody.pubkey).toBe(targetPubkey);
+    expect(addBody.added).toBe(true);
+
+    // Verify it appears in the list
+    const listRes = await request.get("/api/admin/support-admins", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(listRes.status()).toBe(200);
+    const listBody = await listRes.json();
+    expect(listBody.pubkeys).toContain(targetPubkey);
+
+    // Remove support admin
+    const removeRes = await request.delete(
+      `/api/admin/support-admins/${targetPubkey}`,
+      {
+        headers: { Cookie: sessionCookie },
+      },
+    );
+    expect(removeRes.status()).toBe(200);
+    const removeBody = await removeRes.json();
+    expect(removeBody.removed).toBe(true);
+
+    // Verify list is empty again
+    const listRes2 = await request.get("/api/admin/support-admins", {
+      headers: { Cookie: sessionCookie },
+    });
+    const listBody2 = await listRes2.json();
+    expect(listBody2.pubkeys).toEqual([]);
+  });
+
+  test("support admin via Redis gets role: support", async ({ request }) => {
+    const email = `e2e-support-${Date.now()}@test.local`;
+    const { cookie } = await registerAndVerify(request, email, "TestPass123!");
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    // Get this user's pubkey
+    const accountRes = await request.get("/api/user/account", {
+      headers: { Cookie: sessionCookie },
+    });
+    const account = await accountRes.json();
+    const pubkey = account.public_key;
+
+    // Add to Redis support_admins set
+    await addSupportAdmin(pubkey);
+
+    const res = await request.get("/api/admin/status", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(res.status()).toBe(200);
+
+    const body = await res.json();
+    expect(body.is_admin).toBe(true);
+    expect(body.role).toBe("support");
+  });
+
+  test("support admin can access user-lookup", async ({ request }) => {
+    // Register a target user to look up
+    const targetEmail = `e2e-target-${Date.now()}@test.local`;
+    await registerAndVerify(request, targetEmail, "TestPass123!");
+
+    // Register a support admin
+    const email = `e2e-supadmin-${Date.now()}@test.local`;
+    const { cookie } = await registerAndVerify(request, email, "TestPass123!");
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    // Get pubkey and add to Redis
+    const accountRes = await request.get("/api/user/account", {
+      headers: { Cookie: sessionCookie },
+    });
+    const account = await accountRes.json();
+    await addSupportAdmin(account.public_key);
+
+    // Look up the target user by email
+    const lookupRes = await request.get(
+      `/api/admin/user-lookup?q=${encodeURIComponent(targetEmail)}`,
+      {
+        headers: { Cookie: sessionCookie },
+      },
+    );
+    expect(lookupRes.status()).toBe(200);
+
+    const lookupBody = await lookupRes.json();
+    expect(lookupBody.found).toBe(true);
+    expect(lookupBody.user.email).toBe(targetEmail);
+  });
+
+  test("support admin cannot access full admin endpoints", async ({
+    request,
+  }) => {
+    const email = `e2e-supnoaccess-${Date.now()}@test.local`;
+    const { cookie } = await registerAndVerify(request, email, "TestPass123!");
+    const sessionCookie = `keycast_session=${parseCookieValue(cookie)}`;
+
+    // Get pubkey and make support admin
+    const accountRes = await request.get("/api/user/account", {
+      headers: { Cookie: sessionCookie },
+    });
+    const account = await accountRes.json();
+    await addSupportAdmin(account.public_key);
+
+    // Verify support role
+    const statusRes = await request.get("/api/admin/status", {
+      headers: { Cookie: sessionCookie },
+    });
+    const statusBody = await statusRes.json();
+    expect(statusBody.role).toBe("support");
+
+    // GET /admin/support-admins → 403
+    const listRes = await request.get("/api/admin/support-admins", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(listRes.status()).toBe(403);
+
+    // GET /admin/token → 403
+    const tokenRes = await request.get("/api/admin/token", {
+      headers: { Cookie: sessionCookie },
+    });
+    expect(tokenRes.status()).toBe(403);
+  });
+
+  test("support-admin page redirects unauthenticated", async ({ page }) => {
+    await page.goto("http://localhost:3000/support-admin");
+
+    // Should redirect to /login (unauthenticated users can't access admin pages)
+    await page.waitForURL("http://localhost:3000/login");
+  });
+});

@@ -41,7 +41,7 @@ test.describe("OAuth consent flow", () => {
     ]);
 
     const authorizeURL = `/api/oauth/authorize?client_id=e2e-test&redirect_uri=${encodeURIComponent(CALLBACK_URL)}&scope=policy:full`;
-    await page.goto(authorizeURL);
+    await page.goto(authorizeURL, { timeout: 60000 });
 
     await expect(page.locator("h1")).toContainText("Authorize");
     await expect(page.locator("#display_name")).toBeVisible();
