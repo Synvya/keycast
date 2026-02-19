@@ -4,7 +4,7 @@
 	import { BRAND } from '$lib/brand';
 	import { toast } from 'svelte-hot-french-toast';
 	import { goto } from '$app/navigation';
-	import { Copy, Check, Key, Terminal, Users, Link, Warning, ArrowSquareOut } from 'phosphor-svelte';
+	import { Copy, Check, Key, Terminal, Users, Link, Warning, ArrowSquareOut, ShieldCheck, Trash, Plus } from 'phosphor-svelte';
 	import { getViteDomain } from '$lib/utils/env';
 
 	const api = new KeycastApi();
@@ -126,6 +126,70 @@
   -H "Authorization: Bearer \$ADMIN_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{"vine_id": "12345678"}'`;
+
+	// Support admins state
+	let supportAdmins = $state<string[]>([]);
+	let isLoadingSupportAdmins = $state(false);
+	let newSupportAdminId = $state('');
+	let isAddingSupportAdmin = $state(false);
+	let supportAdminError = $state('');
+
+	async function loadSupportAdmins() {
+		isLoadingSupportAdmins = true;
+		supportAdminError = '';
+		try {
+			const response = await api.get<{ pubkeys: string[] }>('/admin/support-admins');
+			supportAdmins = response.pubkeys;
+		} catch (err: any) {
+			supportAdminError = err.message || 'Failed to load support admins';
+		} finally {
+			isLoadingSupportAdmins = false;
+		}
+	}
+
+	async function addSupportAdmin() {
+		const id = newSupportAdminId.trim();
+		if (!id) return;
+
+		isAddingSupportAdmin = true;
+		supportAdminError = '';
+		try {
+			const response = await api.post<{ pubkey: string; added: boolean }>('/admin/support-admins', { identifier: id });
+			if (response.added) {
+				toast.success('Support admin added');
+			} else {
+				toast.success('Already a support admin');
+			}
+			newSupportAdminId = '';
+			await loadSupportAdmins();
+		} catch (err: any) {
+			supportAdminError = err.message || 'Failed to add support admin';
+		} finally {
+			isAddingSupportAdmin = false;
+		}
+	}
+
+	async function removeSupportAdmin(pubkey: string) {
+		try {
+			await api.delete(`/admin/support-admins/${pubkey}`);
+			toast.success('Support admin removed');
+			supportAdmins = supportAdmins.filter(pk => pk !== pubkey);
+		} catch (err: any) {
+			toast.error(err.message || 'Failed to remove support admin');
+		}
+	}
+
+	function truncatePubkey(pk: string): string {
+		if (pk.length <= 16) return pk;
+		return pk.slice(0, 8) + '...' + pk.slice(-8);
+	}
+
+	// Load support admins when admin status confirmed
+	$effect(() => {
+		if (isAdmin && adminRole === 'full') {
+			loadSupportAdmins();
+		}
+	});
 </script>
 
 <svelte:head>
@@ -339,6 +403,55 @@
 					</div>
 				{/if}
 			</div>
+		</div>
+
+		<!-- Support Admins Section -->
+		<div class="section">
+			<div class="section-header">
+				<div class="section-icon"><ShieldCheck size={24} weight="duotone" /></div>
+				<div>
+					<h2>Support Admins</h2>
+					<p>Manage users who can access the support admin tools (user lookup)</p>
+				</div>
+			</div>
+
+			{#if supportAdminError}
+				<div class="support-admin-error">
+					<Warning size={16} />
+					<span>{supportAdminError}</span>
+				</div>
+			{/if}
+
+			<form class="add-admin-form" onsubmit={(e) => { e.preventDefault(); addSupportAdmin(); }}>
+				<input
+					type="text"
+					bind:value={newSupportAdminId}
+					placeholder="npub, hex pubkey, or email..."
+					class="add-admin-input"
+					disabled={isAddingSupportAdmin}
+				/>
+				<button type="submit" class="btn-add-admin" disabled={isAddingSupportAdmin || !newSupportAdminId.trim()}>
+					<Plus size={16} />
+					{isAddingSupportAdmin ? 'Adding...' : 'Add'}
+				</button>
+			</form>
+
+			{#if isLoadingSupportAdmins}
+				<p class="loading-text">Loading support admins...</p>
+			{:else if supportAdmins.length === 0}
+				<p class="empty-text">No support admins configured.</p>
+			{:else}
+				<div class="admin-list">
+					{#each supportAdmins as pubkey}
+						<div class="admin-list-item">
+							<span class="admin-pubkey" title={pubkey}>{truncatePubkey(pubkey)}</span>
+							<button class="btn-remove" onclick={() => removeSupportAdmin(pubkey)} title="Remove">
+								<Trash size={16} />
+							</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 
 		<!-- Future Features Placeholder -->
@@ -665,6 +778,124 @@
 		border-radius: 4px;
 		font-family: var(--font-mono);
 		font-size: 0.85em;
+	}
+
+	/* Support admins */
+	.support-admin-error {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.75rem 1rem;
+		background: color-mix(in srgb, var(--color-divine-error) 10%, var(--color-divine-bg));
+		border: 1px solid color-mix(in srgb, var(--color-divine-error) 30%, transparent);
+		border-radius: 8px;
+		color: var(--color-divine-error);
+		font-size: 0.85rem;
+		margin-bottom: 1rem;
+	}
+
+	.add-admin-form {
+		display: flex;
+		gap: 0.5rem;
+		margin-bottom: 1rem;
+	}
+
+	.add-admin-input {
+		flex: 1;
+		padding: 0.625rem 0.75rem;
+		background: var(--color-divine-bg);
+		border: 1px solid var(--color-divine-border);
+		border-radius: 8px;
+		color: var(--color-divine-text);
+		font-size: 0.85rem;
+		outline: none;
+		transition: border-color 0.2s;
+	}
+
+	.add-admin-input:focus {
+		border-color: var(--color-divine-green);
+	}
+
+	.add-admin-input::placeholder {
+		color: var(--color-divine-text-tertiary);
+	}
+
+	.btn-add-admin {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.375rem;
+		padding: 0.625rem 1rem;
+		background: var(--color-divine-green);
+		color: #fff;
+		border: none;
+		border-radius: 8px;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: opacity 0.2s;
+		white-space: nowrap;
+	}
+
+	.btn-add-admin:hover:not(:disabled) {
+		opacity: 0.9;
+	}
+
+	.btn-add-admin:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.loading-text, .empty-text {
+		color: var(--color-divine-text-secondary);
+		font-size: 0.875rem;
+		margin: 0;
+	}
+
+	.admin-list {
+		border: 1px solid var(--color-divine-border);
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	.admin-list-item {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0.625rem 1rem;
+		border-bottom: 1px solid var(--color-divine-border);
+	}
+
+	.admin-list-item:last-child {
+		border-bottom: none;
+	}
+
+	.admin-list-item:hover {
+		background: var(--color-divine-bg);
+	}
+
+	.admin-pubkey {
+		font-family: var(--font-mono);
+		font-size: 0.825rem;
+		color: var(--color-divine-text);
+	}
+
+	.btn-remove {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.375rem;
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: 6px;
+		color: var(--color-divine-text-tertiary);
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.btn-remove:hover {
+		border-color: var(--color-divine-error);
+		color: var(--color-divine-error);
+		background: color-mix(in srgb, var(--color-divine-error) 10%, transparent);
 	}
 
 	/* Future features */

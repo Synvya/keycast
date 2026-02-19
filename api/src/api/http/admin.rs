@@ -1,9 +1,10 @@
-// ABOUTME: Admin endpoints for preloaded accounts and claim token generation
+// ABOUTME: Admin endpoints for preloaded accounts, claim token generation, and support admin management
 // ABOUTME: Used for Vine import and support workflows
 
-use axum::{extract::State, Json};
+use axum::extract::{Path, State};
+use axum::Json;
 use chrono::{Duration, Utc};
-use nostr_sdk::Keys;
+use nostr_sdk::{FromBech32, Keys};
 use serde::{Deserialize, Serialize};
 
 use super::routes::AuthState;
@@ -19,6 +20,9 @@ const ADMIN_TOKEN_EXPIRY_DAYS: i64 = 30;
 
 /// Preloaded user signing token expiry in days
 const PRELOAD_TOKEN_EXPIRY_DAYS: i64 = 30;
+
+/// Redis key for the support admins set
+const SUPPORT_ADMINS_KEY: &str = "support_admins";
 
 /// Full admin: has admin_role == "full" in UCAN, or pubkey in ALLOWED_PUBKEYS whitelist.
 /// Full admins can access all admin endpoints including token generation and user preloading.
@@ -38,17 +42,40 @@ pub fn is_full_admin(auth: &UcanAuth) -> bool {
     false
 }
 
-/// Support admin or above: any admin_role present, or a full admin.
+/// Support admin or above: pubkey is in Redis support_admins set, or a full admin.
 /// Support admins can access user lookup and read-only support tools.
-pub fn is_support_admin(auth: &UcanAuth) -> bool {
-    auth.admin_role.is_some() || is_full_admin(auth)
+pub async fn is_support_admin(auth: &UcanAuth) -> bool {
+    if is_full_admin(auth) {
+        return true;
+    }
+    if auth.admin_role.as_deref() == Some("support") {
+        return true;
+    }
+    // Check Redis
+    if let Ok(state) = crate::state::get_keycast_state() {
+        if let Some(redis) = &state.redis {
+            match redis::cmd("SISMEMBER")
+                .arg(SUPPORT_ADMINS_KEY)
+                .arg(&auth.pubkey)
+                .query_async::<bool>(&mut redis.clone())
+                .await
+            {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!("Redis SISMEMBER failed for support admin check: {}", e);
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Determine the admin role string for a user (for status response).
-fn admin_role_for(auth: &UcanAuth) -> Option<&str> {
+async fn admin_role_for(auth: &UcanAuth) -> Option<&str> {
     if is_full_admin(auth) {
         Some("full")
-    } else if is_support_admin(auth) {
+    } else if is_support_admin(auth).await {
         Some("support")
     } else {
         None
@@ -79,7 +106,7 @@ pub async fn get_admin_status(
     _tenant: crate::api::tenant::TenantExtractor,
     auth: UcanAuth,
 ) -> ApiResult<Json<AdminStatusResponse>> {
-    let role = admin_role_for(&auth);
+    let role = admin_role_for(&auth).await;
     Ok(Json(AdminStatusResponse {
         is_admin: role.is_some(),
         role: role.map(String::from),
@@ -217,7 +244,6 @@ pub async fn preload_user(
             tenant_id,
             &server_keys,
             &auth.pubkey,
-            auth.cf_admin_email.as_deref(),
         )
         .await?;
 
@@ -293,7 +319,6 @@ pub async fn preload_user(
         tenant_id,
         &server_keys,
         &auth.pubkey,
-        auth.cf_admin_email.as_deref(),
     )
     .await?;
 
@@ -371,7 +396,6 @@ pub async fn get_user_token(
         tenant_id,
         &server_keys,
         &auth.pubkey,
-        auth.cf_admin_email.as_deref(),
     )
     .await?;
 
@@ -390,7 +414,6 @@ async fn generate_preload_ucan(
     tenant_id: i64,
     server_keys: &Keys,
     admin_pubkey_hex: &str,
-    admin_email: Option<&str>,
 ) -> Result<String, ApiError> {
     use crate::ucan_auth::{nostr_pubkey_to_did, NostrKeyMaterial};
     use serde_json::json;
@@ -400,16 +423,11 @@ async fn generate_preload_ucan(
     let user_did = nostr_pubkey_to_did(user_pubkey);
 
     // No bunker_pubkey = preloaded user mode (detected in nostr_rpc.rs)
-    let mut facts = json!({
+    let facts = json!({
         "tenant_id": tenant_id,
         "redirect_origin": "preload",
         "issued_by_admin": admin_pubkey_hex,
     });
-
-    // Include email if the issuing admin authenticated via Cloudflare Access
-    if let Some(email) = admin_email {
-        facts["issued_by_admin_email"] = json!(email);
-    }
 
     let expiry_seconds = PRELOAD_TOKEN_EXPIRY_DAYS * 24 * 3600;
 
@@ -540,7 +558,7 @@ pub async fn get_user_lookup(
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
 
-    if !is_support_admin(&auth) {
+    if !is_support_admin(&auth).await {
         return Err(ApiError::forbidden("Admin access required"));
     }
 
@@ -582,4 +600,172 @@ pub async fn get_user_lookup(
             }))
         }
     }
+}
+
+// ============================================================================
+// Support Admin Management (Redis-backed)
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct SupportAdminsResponse {
+    pub pubkeys: Vec<String>,
+}
+
+/// List all support admin pubkeys. Full admin only.
+pub async fn list_support_admins(
+    _tenant: crate::api::tenant::TenantExtractor,
+    auth: UcanAuth,
+) -> ApiResult<Json<SupportAdminsResponse>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Full admin access required"));
+    }
+
+    let state = crate::state::get_keycast_state()
+        .map_err(|_| ApiError::Internal("State not initialized".to_string()))?;
+
+    let redis = state
+        .redis
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Redis not available".to_string()))?;
+
+    let pubkeys: Vec<String> = redis::cmd("SMEMBERS")
+        .arg(SUPPORT_ADMINS_KEY)
+        .query_async(&mut redis.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis error: {}", e)))?;
+
+    Ok(Json(SupportAdminsResponse { pubkeys }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddSupportAdminRequest {
+    /// npub1..., 64-char hex pubkey, or email address
+    pub identifier: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddSupportAdminResponse {
+    pub pubkey: String,
+    pub added: bool,
+}
+
+/// Add a support admin by pubkey, npub, or email. Full admin only.
+pub async fn add_support_admin(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Json(req): Json<AddSupportAdminRequest>,
+) -> ApiResult<Json<AddSupportAdminResponse>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Full admin access required"));
+    }
+
+    let identifier = req.identifier.trim();
+    if identifier.is_empty() {
+        return Err(ApiError::bad_request("Identifier is required"));
+    }
+
+    // Resolve identifier to hex pubkey
+    let pubkey_hex = resolve_identifier(identifier, &auth_state, tenant.0.id).await?;
+
+    let state = crate::state::get_keycast_state()
+        .map_err(|_| ApiError::Internal("State not initialized".to_string()))?;
+
+    let redis = state
+        .redis
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Redis not available".to_string()))?;
+
+    let added: i64 = redis::cmd("SADD")
+        .arg(SUPPORT_ADMINS_KEY)
+        .arg(&pubkey_hex)
+        .query_async(&mut redis.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis error: {}", e)))?;
+
+    tracing::info!(
+        "Support admin added: {} (by admin {})",
+        &pubkey_hex[..8],
+        &auth.pubkey[..8]
+    );
+
+    Ok(Json(AddSupportAdminResponse {
+        pubkey: pubkey_hex,
+        added: added > 0,
+    }))
+}
+
+/// Remove a support admin by pubkey. Full admin only.
+pub async fn remove_support_admin(
+    _tenant: crate::api::tenant::TenantExtractor,
+    auth: UcanAuth,
+    Path(pubkey): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Full admin access required"));
+    }
+
+    let state = crate::state::get_keycast_state()
+        .map_err(|_| ApiError::Internal("State not initialized".to_string()))?;
+
+    let redis = state
+        .redis
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Redis not available".to_string()))?;
+
+    let removed: i64 = redis::cmd("SREM")
+        .arg(SUPPORT_ADMINS_KEY)
+        .arg(&pubkey)
+        .query_async(&mut redis.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis error: {}", e)))?;
+
+    tracing::info!(
+        "Support admin removed: {} (by admin {})",
+        &pubkey[..std::cmp::min(8, pubkey.len())],
+        &auth.pubkey[..8]
+    );
+
+    Ok(Json(serde_json::json!({
+        "removed": removed > 0,
+    })))
+}
+
+/// Resolve an identifier (npub, hex pubkey, or email) to a hex pubkey.
+async fn resolve_identifier(
+    identifier: &str,
+    auth_state: &AuthState,
+    tenant_id: i64,
+) -> Result<String, ApiError> {
+    // npub1... -> decode bech32
+    if identifier.starts_with("npub1") {
+        let pubkey = nostr_sdk::PublicKey::from_bech32(identifier)
+            .map_err(|e| ApiError::bad_request(format!("Invalid npub: {}", e)))?;
+        return Ok(pubkey.to_hex());
+    }
+
+    // 64-char hex -> validate as pubkey
+    if identifier.len() == 64 && identifier.chars().all(|c| c.is_ascii_hexdigit()) {
+        nostr_sdk::PublicKey::from_hex(identifier)
+            .map_err(|e| ApiError::bad_request(format!("Invalid hex pubkey: {}", e)))?;
+        return Ok(identifier.to_string());
+    }
+
+    // Contains @ -> email lookup
+    if identifier.contains('@') {
+        let pool = &auth_state.state.db;
+        let user_repo = UserRepository::new(pool.clone());
+        let pubkey = user_repo
+            .find_pubkey_by_email(identifier, tenant_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+            .ok_or_else(|| {
+                ApiError::not_found(format!("No user found with email: {}", identifier))
+            })?;
+        return Ok(pubkey);
+    }
+
+    Err(ApiError::bad_request(
+        "Identifier must be an npub, 64-char hex pubkey, or email address",
+    ))
 }

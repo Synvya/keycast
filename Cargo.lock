@@ -2728,7 +2728,6 @@ dependencies = [
  "hkdf 0.12.4",
  "http-body-util",
  "hyper",
- "jsonwebtoken",
  "keycast_core",
  "md5",
  "moka",

@@ -2740,12 +2740,14 @@ pub struct OAuthLoginRequest {
 pub async fn oauth_login(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
-    Json(req): Json<OAuthLoginRequest>,
+    Json(mut req): Json<OAuthLoginRequest>,
 ) -> Result<impl IntoResponse, OAuthError> {
     use super::auth::generate_ucan_token;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
     let tenant_id = tenant.0.id;
+
+    req.email = req.email.to_lowercase();
 
     tracing::info!(
         "OAuth popup login for email: {} in tenant: {}",
@@ -2848,10 +2850,12 @@ pub struct OAuthRegisterRequest {
 pub async fn oauth_register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
-    Json(req): Json<OAuthRegisterRequest>,
+    Json(mut req): Json<OAuthRegisterRequest>,
 ) -> Result<impl IntoResponse, OAuthError> {
     let pool = &auth_state.state.db;
     let tenant_id = tenant.0.id;
+
+    req.email = req.email.to_lowercase();
 
     tracing::info!(
         "OAuth popup registration for email: {} in tenant: {}, nsec: {}, pubkey: {}, client_id: {}",

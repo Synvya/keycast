@@ -232,10 +232,12 @@ pub async fn claim_get(
 pub async fn claim_post(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<AuthState>,
-    Form(form): Form<ClaimForm>,
+    Form(mut form): Form<ClaimForm>,
 ) -> Result<Response, ClaimError> {
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
+
+    form.email = form.email.to_lowercase();
 
     // Validate token
     let claim_token_repo = ClaimTokenRepository::new(pool.clone());

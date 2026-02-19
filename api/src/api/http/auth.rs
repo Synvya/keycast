@@ -545,7 +545,6 @@ async fn nostr_auth_login(
     // Check if pubkey is in ALLOWED_PUBKEYS whitelist
     let nip98_auth_check = UcanAuth {
         pubkey: pubkey_hex.clone(),
-        cf_admin_email: None,
         admin_role: None,
     };
     if !is_full_admin(&nip98_auth_check) {
@@ -604,106 +603,19 @@ async fn nostr_auth_login(
         .into_response())
 }
 
-/// Handle Cloudflare Access admin login
-async fn cf_access_login(tenant_id: i64, token: &str) -> Result<Response, AuthError> {
-    let claims = crate::cloudflare_access::validate_cf_jwt(token)
-        .await
-        .map_err(|e| {
-            tracing::warn!("CF Access JWT validation failed: {}", e);
-            AuthError::Forbidden("Invalid Cloudflare Access token".to_string())
-        })?;
-
-    let email = claims.email;
-
-    // Derive synthetic keypair from email
-    let synthetic_keys = crate::cloudflare_access::derive_synthetic_keys(&email)
-        .map_err(|e| AuthError::Internal(format!("Failed to derive synthetic keys: {}", e)))?;
-
-    let synthetic_pubkey = synthetic_keys.public_key();
-    let synthetic_hex = synthetic_pubkey.to_hex();
-
-    // Generate server-signed UCAN with cf_admin_email fact
-    let server_keys = get_server_keys()?;
-    let ucan_token =
-        generate_cf_admin_ucan(&synthetic_pubkey, tenant_id, &email, &server_keys).await?;
-
-    // Track login
-    keycast_core::metrics::METRICS.inc_login();
-
-    tracing::info!(
-        event = "cf_access_login",
-        tenant_id = tenant_id,
-        email = %email,
-        pubkey = &synthetic_hex[..8],
-        "Admin logged in via Cloudflare Access"
-    );
-
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
-
-    Ok((
-        axum::http::StatusCode::OK,
-        [(axum::http::header::SET_COOKIE, cookie)],
-        axum::Json(AuthResponse {
-            success: true,
-            pubkey: synthetic_hex,
-            verification_required: None,
-            email: Some(email),
-        }),
-    )
-        .into_response())
-}
-
-/// Generate server-signed UCAN for Cloudflare Access admin
-async fn generate_cf_admin_ucan(
-    admin_pubkey: &nostr_sdk::PublicKey,
-    tenant_id: i64,
-    email: &str,
-    server_keys: &Keys,
-) -> Result<String, AuthError> {
-    use crate::ucan_auth::{nostr_pubkey_to_did, NostrKeyMaterial};
-    use serde_json::json;
-    use ucan::builder::UcanBuilder;
-
-    let server_key_material = NostrKeyMaterial::from_keys(server_keys.clone());
-    let admin_did = nostr_pubkey_to_did(admin_pubkey);
-
-    let facts = json!({
-        "tenant_id": tenant_id,
-        "email": email,
-        "redirect_origin": "admin",
-        "cf_admin_email": email,
-        "admin_role": "support",
-    });
-
-    let ucan = UcanBuilder::default()
-        .issued_by(&server_key_material)
-        .for_audience(&admin_did)
-        .with_lifetime(token_expiry_seconds() as u64)
-        .with_fact(facts)
-        .build()
-        .map_err(|e| AuthError::Internal(format!("Failed to build UCAN: {}", e)))?
-        .sign()
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to sign UCAN: {}", e)))?;
-
-    ucan.encode()
-        .map_err(|e| AuthError::Internal(format!("Failed to encode UCAN: {}", e)))
-}
-
 /// Register a new user with email and password
 /// Note: Does NOT issue UCAN - user must verify email first
 pub async fn register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
     _headers: HeaderMap,
-    Json(req): Json<RegisterRequest>,
+    Json(mut req): Json<RegisterRequest>,
 ) -> Result<impl axum::response::IntoResponse, AuthError> {
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
     let tenant_id = tenant.0.id;
+
+    req.email = req.email.to_lowercase();
 
     let instance_id = keycast_core::instance::instance_id();
 
@@ -848,12 +760,11 @@ pub async fn register(
     Ok(response)
 }
 
-/// Login with email/password, NIP-98, or Cloudflare Access
+/// Login with email/password or NIP-98
 ///
-/// Supports three authentication methods:
+/// Supports two authentication methods:
 /// 1. NIP-98 Admin: POST with Authorization: Nostr <base64(kind_27235_event)>
-/// 2. Cloudflare Access: POST with Cf-Access-Jwt-Assertion header
-/// 3. Email/Password: POST with JSON body { "email": "...", "password": "..." }
+/// 2. Email/Password: POST with JSON body { "email": "...", "password": "..." }
 ///
 /// Returns simple JSON response and sets UCAN cookie
 pub async fn login(
@@ -873,18 +784,10 @@ pub async fn login(
         }
     }
 
-    // Check for Cloudflare Access JWT
-    if let Some(cf_jwt) = headers.get("Cf-Access-Jwt-Assertion") {
-        if let Ok(token) = cf_jwt.to_str() {
-            if crate::cloudflare_access::is_configured() {
-                return cf_access_login(tenant_id, token).await;
-            }
-        }
-    }
-
     // Parse JSON body for email/password login
-    let req: LoginRequest = serde_json::from_str(&body)
+    let mut req: LoginRequest = serde_json::from_str(&body)
         .map_err(|e| AuthError::BadRequest(format!("Invalid JSON: {}", e)))?;
+    req.email = req.email.to_lowercase();
 
     let pool = &auth_state.state.db;
 
@@ -1618,9 +1521,12 @@ pub async fn resend_verification(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
     headers: HeaderMap,
-    Json(req): Json<ResendVerificationRequest>,
+    Json(mut req): Json<ResendVerificationRequest>,
 ) -> Json<ResendVerificationResponse> {
     let tenant_id = tenant.0.id;
+    if let Some(ref mut email) = req.email {
+        *email = email.to_lowercase();
+    }
 
     // Try to get user identity from token first, then fall back to email
     let lookup_result: Option<(String, String, bool, Option<chrono::DateTime<chrono::Utc>>)> =
@@ -1735,9 +1641,10 @@ pub async fn resend_verification(
 pub async fn forgot_password(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
-    Json(req): Json<ForgotPasswordRequest>,
+    Json(mut req): Json<ForgotPasswordRequest>,
 ) -> Result<Json<ForgotPasswordResponse>, AuthError> {
     let tenant_id = tenant.0.id;
+    req.email = req.email.to_lowercase();
     tracing::info!(
         "Password reset requested for email: {} in tenant: {}",
         req.email,

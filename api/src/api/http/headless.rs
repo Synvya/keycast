@@ -71,11 +71,13 @@ pub struct HeadlessRegisterResponse {
 pub async fn headless_register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
-    Json(req): Json<HeadlessRegisterRequest>,
+    Json(mut req): Json<HeadlessRegisterRequest>,
 ) -> Result<impl IntoResponse, HeadlessError> {
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
     let tenant_id = tenant.0.id;
+
+    req.email = req.email.to_lowercase();
 
     tracing::info!(
         event = "headless_registration_attempt",
@@ -287,10 +289,12 @@ pub struct HeadlessLoginResponse {
 pub async fn headless_login(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
-    Json(req): Json<HeadlessLoginRequest>,
+    Json(mut req): Json<HeadlessLoginRequest>,
 ) -> Result<impl IntoResponse, HeadlessError> {
     let pool = &auth_state.state.db;
     let tenant_id = tenant.0.id;
+
+    req.email = req.email.to_lowercase();
 
     tracing::info!(
         event = "headless_login_attempt",

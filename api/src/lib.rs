@@ -1,6 +1,5 @@
 pub mod api;
 pub mod bcrypt_queue;
-pub mod cloudflare_access;
 pub mod divine_names;
 pub mod email_service;
 pub mod handlers;
