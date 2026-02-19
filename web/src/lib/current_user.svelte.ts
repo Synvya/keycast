@@ -24,13 +24,17 @@ export function setCurrentUser(
 ): CurrentUser | null {
     if (pubkey) {
         currentUser = new CurrentUser(pubkey, authMethod);
-        if (typeof window !== 'undefined' && authMethod) {
-            localStorage.setItem('keycast_auth_method', authMethod);
+        if (typeof window !== 'undefined') {
+            if (authMethod) {
+                localStorage.setItem('keycast_auth_method', authMethod);
+            }
+            document.cookie = `keycastUserPubkey=${pubkey}; max-age=1209600; SameSite=Lax; Secure; path=/`;
         }
     } else {
         currentUser = null;
         if (typeof window !== 'undefined') {
             localStorage.removeItem('keycast_auth_method');
+            document.cookie = "keycastUserPubkey=; max-age=0; path=/; SameSite=Lax; Secure";
         }
     }
     return currentUser;

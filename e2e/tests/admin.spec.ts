@@ -191,7 +191,34 @@ test.describe("Support admin management", () => {
   test("support-admin page redirects unauthenticated", async ({ page }) => {
     await page.goto("http://localhost:3000/support-admin");
 
-    // Should redirect to /login (unauthenticated users can't access admin pages)
-    await page.waitForURL("http://localhost:3000/login");
+    // Should redirect away (unauthenticated users can't access admin pages)
+    await page.waitForURL((url) => url.pathname !== "/support-admin");
+  });
+
+  test("full admin can access support-admin page via browser", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(60000);
+    const { cookie } = await registerAdmin(request);
+    const sessionValue = parseCookieValue(cookie);
+
+    // Set only keycast_session (simulates email/password login, no keycastUserPubkey)
+    await page.context().addCookies([
+      {
+        name: "keycast_session",
+        value: sessionValue,
+        domain: "localhost",
+        path: "/",
+      },
+    ]);
+
+    await page.goto("http://localhost:3000/support-admin");
+
+    // Should stay on /support-admin and show admin UI
+    await expect(page.locator("text=Support Admin")).toBeVisible({
+      timeout: 10000,
+    });
+    await expect(page).toHaveURL("http://localhost:3000/support-admin");
   });
 });

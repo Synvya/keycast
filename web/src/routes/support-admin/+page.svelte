@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 	import { BRAND } from '$lib/brand';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
-	import { getCurrentUser } from '$lib/current_user.svelte';
 	import { goto } from '$app/navigation';
 	import Loader from '$lib/components/Loader.svelte';
 	import { ShieldCheck, Warning, MagnifyingGlass, User, Key, Envelope, Calendar, Globe } from 'phosphor-svelte';
@@ -32,13 +31,7 @@
 	}
 
 	onMount(async () => {
-		const user = getCurrentUser();
-		if (!user) {
-			goto('/login', { replaceState: true });
-			return;
-		}
-
-		// Verify admin status
+		// Verify admin status via API (uses keycast_session cookie directly)
 		try {
 			const response = await api.get<{ is_admin: boolean; role: string | null }>('/admin/status');
 			if (!response.is_admin) {
@@ -47,7 +40,7 @@
 			}
 			adminRole = response.role;
 		} catch {
-			status = 'not-admin';
+			goto('/login', { replaceState: true });
 			return;
 		}
 

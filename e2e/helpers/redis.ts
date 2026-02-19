@@ -1,6 +1,7 @@
 import Redis from "ioredis";
 
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+// Hardcoded to local test instance — never use env vars to avoid leaking production credentials
+const REDIS_URL = "redis://localhost:16379";
 
 export async function withRedis<T>(
   fn: (redis: Redis) => Promise<T>,

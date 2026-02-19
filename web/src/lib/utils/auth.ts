@@ -73,7 +73,6 @@ async function nip07Login(): Promise<string | null> {
         if (response.ok) {
             const data = await response.json();
             setCurrentUser(data.pubkey, 'nip07');
-            document.cookie = `keycastUserPubkey=${data.pubkey}; max-age=1209600; SameSite=Lax; Secure; path=/`;
             return data.pubkey;
         } else if (response.status === 403) {
             toast.error("Your pubkey is not authorized for admin access");
@@ -104,7 +103,6 @@ export async function signout() {
     }
 
     setCurrentUser(null);
-    document.cookie = "keycastUserPubkey=; max-age=0; path=/; SameSite=Lax; Secure";
     toast.success("Signed out");
     goto("/");
 }

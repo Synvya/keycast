@@ -1,15 +1,13 @@
 <script lang="ts">
-	import { getCurrentUser } from '$lib/current_user.svelte';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { BRAND } from '$lib/brand';
 	import { toast } from 'svelte-hot-french-toast';
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { Copy, Check, Key, Terminal, Users, Link, Warning, ArrowSquareOut, ShieldCheck, Trash, Plus } from 'phosphor-svelte';
 	import { getViteDomain } from '$lib/utils/env';
 
 	const api = new KeycastApi();
-	const currentUser = $derived(getCurrentUser());
-	const user = $derived(currentUser);
 	const serverUrl = getViteDomain();
 
 	// Admin status from API (single source of truth)
@@ -17,11 +15,9 @@
 	let adminRole = $state<string | null>(null);
 	let isCheckingAdmin = $state(true);
 
-	// Check admin status when user is available
-	$effect(() => {
-		if (user?.pubkey && isAdmin === null) {
-			checkAdminStatus();
-		}
+	// Check admin status on mount via API (uses keycast_session cookie directly)
+	onMount(() => {
+		checkAdminStatus();
 	});
 
 	async function checkAdminStatus() {
@@ -41,7 +37,7 @@
 		} catch (err) {
 			console.error('Failed to check admin status:', err);
 			isAdmin = false;
-			goto('/', { replaceState: true });
+			goto('/login', { replaceState: true });
 		} finally {
 			isCheckingAdmin = false;
 		}
@@ -196,7 +192,7 @@
 	<title>Admin Dashboard - {BRAND.name}</title>
 </svelte:head>
 
-{#if !user || isCheckingAdmin}
+{#if isCheckingAdmin}
 	<div class="admin-page">
 		<div class="loading">Loading...</div>
 	</div>
