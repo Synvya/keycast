@@ -26,9 +26,17 @@ pub struct CfAccessClaims {
     pub exp: u64,
 }
 
-/// Check if CF Access is configured (both env vars set)
+const DEFAULT_CF_ACCESS_TEAM: &str = "divinevideo";
+const DEFAULT_CF_ACCESS_AUD: &str =
+    "a56250422deda102972d7ab6537603ca4f4e9385382bce421aa3a3240c17763f";
+
+/// Check if CF Access is configured.
+/// Returns true always since we have built-in defaults.
+/// Can be disabled by setting CF_ACCESS_TEAM="" explicitly.
 pub fn is_configured() -> bool {
-    std::env::var("CF_ACCESS_TEAM").is_ok() && std::env::var("CF_ACCESS_AUD").is_ok()
+    let team =
+        std::env::var("CF_ACCESS_TEAM").unwrap_or_else(|_| DEFAULT_CF_ACCESS_TEAM.to_string());
+    !team.is_empty()
 }
 
 /// Validate a Cloudflare Access JWT token.
@@ -36,8 +44,10 @@ pub fn is_configured() -> bool {
 /// Fetches JWKS from the CF Access certs endpoint, validates the RS256 signature,
 /// checks the audience tag matches CF_ACCESS_AUD, and verifies expiry.
 pub async fn validate_cf_jwt(token: &str) -> Result<CfAccessClaims> {
-    let team = std::env::var("CF_ACCESS_TEAM").context("CF_ACCESS_TEAM not configured")?;
-    let expected_aud = std::env::var("CF_ACCESS_AUD").context("CF_ACCESS_AUD not configured")?;
+    let team =
+        std::env::var("CF_ACCESS_TEAM").unwrap_or_else(|_| DEFAULT_CF_ACCESS_TEAM.to_string());
+    let expected_aud =
+        std::env::var("CF_ACCESS_AUD").unwrap_or_else(|_| DEFAULT_CF_ACCESS_AUD.to_string());
 
     let certs_url = format!("https://{}.cloudflareaccess.com/cdn-cgi/access/certs", team);
 

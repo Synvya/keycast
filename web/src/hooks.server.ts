@@ -1,7 +1,7 @@
 import type { Handle } from "@sveltejs/kit";
 import { redirect } from "@sveltejs/kit";
 
-const protectedRoutes: string[] = ["/teams", "/keys"];
+const protectedRoutes: string[] = ["/teams", "/keys", "/admin"];
 
 export const handle: Handle = async ({ event, resolve }) => {
     const sessionCookie = event.cookies.get("keycastUserPubkey");
