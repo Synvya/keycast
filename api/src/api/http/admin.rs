@@ -863,7 +863,9 @@ pub async fn get_user_lookup(
         && crate::divine_names::is_enabled()
     {
         if let Ok(Some(hex_pubkey)) = crate::divine_names::lookup_by_name(q).await {
-            users = user_repo.find_users_for_admin(&hex_pubkey, tenant_id).await?;
+            users = user_repo
+                .find_users_for_admin(&hex_pubkey, tenant_id)
+                .await?;
         }
     }
 
