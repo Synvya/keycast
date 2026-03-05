@@ -27,24 +27,24 @@ async fn setup_test_db() -> PgPool {
 }
 
 /// Helper to create policy with specified permissions
+/// Returns (policy_id, team_id).
 async fn create_policy_with_permissions(
     pool: &PgPool,
     tenant_id: i64,
-    team_id: i32,
     permission_configs: Vec<(&str, serde_json::Value)>,
-) -> i32 {
-    // Ensure team exists (ON CONFLICT to handle parallel test execution)
-    sqlx::query(
-        "INSERT INTO teams (id, name, tenant_id, created_at, updated_at)
-         VALUES ($1, $2, $3, NOW(), NOW())
-         ON CONFLICT (id) DO NOTHING",
+) -> (i32, i32) {
+    // Create team with auto-generated ID to avoid conflicts with parallel tests
+    let team_id: (i32,) = sqlx::query_as(
+        "INSERT INTO teams (name, tenant_id, created_at, updated_at)
+         VALUES ($1, $2, NOW(), NOW())
+         RETURNING id",
     )
-    .bind(team_id)
     .bind("Test Team")
     .bind(tenant_id)
-    .execute(pool)
+    .fetch_one(pool)
     .await
     .expect("Failed to create team");
+    let team_id = team_id.0;
 
     // Create policy (policies table doesn't have tenant_id)
     let policy_id: i32 = sqlx::query_scalar(
@@ -83,7 +83,7 @@ async fn create_policy_with_permissions(
         .expect("Failed to link permission to policy");
     }
 
-    policy_id
+    (policy_id, team_id)
 }
 
 /// Helper to create test authorization with policy
@@ -230,10 +230,10 @@ async fn test_1_no_policy_allows_all() {
     let key_manager = FileKeyManager::new().expect("Failed to create key manager");
 
     // Create empty policy (no permissions)
-    let policy_id = create_policy_with_permissions(&pool, 1, 1, vec![]).await;
+    let (policy_id, team_id) = create_policy_with_permissions(&pool, 1, vec![]).await;
 
     let (auth, bunker_keys, user_keys) =
-        create_test_authorization(&pool, 1, 1, policy_id, &key_manager).await;
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
@@ -264,11 +264,11 @@ async fn test_2_allowed_kinds_permits_matching_kind() {
 
     // Create policy allowing only kind 1
     let config = json!({ "allowed_kinds": [1] });
-    let policy_id =
-        create_policy_with_permissions(&pool, 1, 1, vec![("allowed_kinds", config)]).await;
+    let (policy_id, team_id) =
+        create_policy_with_permissions(&pool, 1, vec![("allowed_kinds", config)]).await;
 
     let (auth, bunker_keys, user_keys) =
-        create_test_authorization(&pool, 1, 1, policy_id, &key_manager).await;
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
@@ -299,11 +299,11 @@ async fn test_3_allowed_kinds_denies_non_matching_kind() {
 
     // Create policy allowing only kind 1
     let config = json!({ "allowed_kinds": [1] });
-    let policy_id =
-        create_policy_with_permissions(&pool, 1, 1, vec![("allowed_kinds", config)]).await;
+    let (policy_id, team_id) =
+        create_policy_with_permissions(&pool, 1, vec![("allowed_kinds", config)]).await;
 
     let (auth, bunker_keys, user_keys) =
-        create_test_authorization(&pool, 1, 1, policy_id, &key_manager).await;
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
@@ -340,11 +340,11 @@ async fn test_4_content_filter_allows_clean_content() {
 
     // Block words containing "spam"
     let config = json!({ "blocked_words": ["spam", "scam"] });
-    let policy_id =
-        create_policy_with_permissions(&pool, 1, 1, vec![("content_filter", config)]).await;
+    let (policy_id, team_id) =
+        create_policy_with_permissions(&pool, 1, vec![("content_filter", config)]).await;
 
     let (auth, bunker_keys, user_keys) =
-        create_test_authorization(&pool, 1, 1, policy_id, &key_manager).await;
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
@@ -373,11 +373,11 @@ async fn test_5_content_filter_denies_blocked_words() {
 
     // Block words containing "spam"
     let config = json!({ "blocked_words": ["spam", "scam"] });
-    let policy_id =
-        create_policy_with_permissions(&pool, 1, 1, vec![("content_filter", config)]).await;
+    let (policy_id, team_id) =
+        create_policy_with_permissions(&pool, 1, vec![("content_filter", config)]).await;
 
     let (auth, bunker_keys, user_keys) =
-        create_test_authorization(&pool, 1, 1, policy_id, &key_manager).await;
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
@@ -410,9 +410,8 @@ async fn test_6_multiple_permissions_all_must_pass() {
     // Policy with TWO permissions (AND logic):
     // 1. Only allow kind 1
     // 2. Block word "spam"
-    let policy_id = create_policy_with_permissions(
+    let (policy_id, team_id) = create_policy_with_permissions(
         &pool,
-        1,
         1,
         vec![
             ("allowed_kinds", json!({ "allowed_kinds": [1] })),
@@ -422,7 +421,7 @@ async fn test_6_multiple_permissions_all_must_pass() {
     .await;
 
     let (auth, bunker_keys, user_keys) =
-        create_test_authorization(&pool, 1, 1, policy_id, &key_manager).await;
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
 
     let handler = Nip46Handler::new_for_test(
         bunker_keys,
@@ -498,8 +497,8 @@ async fn test_8_oauth_with_policy_enforces_restrictions() {
 
     // Create policy only allowing kind 1
     let config = json!({ "allowed_kinds": [1] });
-    let policy_id =
-        create_policy_with_permissions(&pool, 1, 1, vec![("allowed_kinds", config)]).await;
+    let (policy_id, _team_id) =
+        create_policy_with_permissions(&pool, 1, vec![("allowed_kinds", config)]).await;
 
     // OAuth auth WITH policy_id
     let (oauth_auth, user_keys) =
@@ -739,22 +738,21 @@ async fn test_12_revoked_oauth_authorization_not_loaded() {
 async fn create_team_authorization_with_expiry(
     pool: &PgPool,
     tenant_id: i64,
-    team_id: i32,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     key_manager: &dyn KeyManager,
 ) -> (String, Keys, Keys) {
-    // Ensure team exists (ON CONFLICT to handle parallel test execution)
-    sqlx::query(
-        "INSERT INTO teams (id, name, tenant_id, created_at, updated_at)
-         VALUES ($1, $2, $3, NOW(), NOW())
-         ON CONFLICT (id) DO NOTHING",
+    // Create team with auto-generated ID to avoid conflicts with parallel tests
+    let team_id: (i32,) = sqlx::query_as(
+        "INSERT INTO teams (name, tenant_id, created_at, updated_at)
+         VALUES ($1, $2, NOW(), NOW())
+         RETURNING id",
     )
-    .bind(team_id)
     .bind("Test Team for Expiry")
     .bind(tenant_id)
-    .execute(pool)
+    .fetch_one(pool)
     .await
     .expect("Failed to create team");
+    let team_id = team_id.0;
 
     // Generate bunker and user keys
     let bunker_keys = Keys::generate();
@@ -813,7 +811,7 @@ async fn test_13_expired_team_authorization_not_loaded() {
     // Create team authorization that expired 1 hour ago
     let expired_at = Utc::now() - Duration::hours(1);
     let (bunker_pubkey, _bunker_keys, _user_keys) =
-        create_team_authorization_with_expiry(&pool, 1, 1, Some(expired_at), &key_manager).await;
+        create_team_authorization_with_expiry(&pool, 1, Some(expired_at), &key_manager).await;
 
     // Query using the same SQL the signer uses
     let auth_opt: Option<(i32, String, i32, i64)> = sqlx::query_as(
@@ -842,7 +840,7 @@ async fn test_14_non_expired_team_authorization_loads() {
     // Create team authorization that expires in 1 hour (still valid)
     let expires_at = Utc::now() + Duration::hours(1);
     let (bunker_pubkey, _bunker_keys, _user_keys) =
-        create_team_authorization_with_expiry(&pool, 1, 1, Some(expires_at), &key_manager).await;
+        create_team_authorization_with_expiry(&pool, 1, Some(expires_at), &key_manager).await;
 
     // Query using the same SQL the signer uses
     let auth_opt: Option<(i32, String, i32, i64)> = sqlx::query_as(
@@ -870,7 +868,7 @@ async fn test_15_null_expiry_team_authorization_loads() {
 
     // Create team authorization with NULL expires_at (never expires)
     let (bunker_pubkey, _bunker_keys, _user_keys) =
-        create_team_authorization_with_expiry(&pool, 1, 1, None, &key_manager).await;
+        create_team_authorization_with_expiry(&pool, 1, None, &key_manager).await;
 
     // Query using the same SQL the signer uses
     let auth_opt: Option<(i32, String, i32, i64)> = sqlx::query_as(
