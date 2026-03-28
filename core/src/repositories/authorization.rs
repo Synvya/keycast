@@ -144,7 +144,7 @@ impl AuthorizationRepository {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
     use crate::repositories::{PolicyRepository, StoredKeyRepository, TeamRepository};

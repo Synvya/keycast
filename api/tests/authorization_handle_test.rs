@@ -1,17 +1,24 @@
 // ABOUTME: Tests for authorization_handle feature (TDD)
 // ABOUTME: Implements silent re-authentication for OAuth public clients
 
+#[cfg(feature = "integration-tests")]
+use nostr_sdk::Keys;
+#[cfg(feature = "integration-tests")]
+use uuid::Uuid;
+
+#[cfg(feature = "integration-tests")]
 mod common;
 
+#[cfg(feature = "integration-tests")]
 use chrono::{Duration, Utc};
-use nostr_sdk::Keys;
+#[cfg(feature = "integration-tests")]
 use sqlx::PgPool;
-use uuid::Uuid;
 
 // ============================================================================
 // Test Helpers
 // ============================================================================
 
+#[cfg(feature = "integration-tests")]
 async fn setup_db() -> PgPool {
     common::assert_test_database_url();
     let database_url = std::env::var("DATABASE_URL")
@@ -22,6 +29,7 @@ async fn setup_db() -> PgPool {
 }
 
 /// Create a test user and return pubkey
+#[cfg(feature = "integration-tests")]
 async fn create_test_user(pool: &PgPool, tenant_id: i64) -> String {
     let user_keys = Keys::generate();
     let user_pubkey = user_keys.public_key().to_hex();
@@ -44,6 +52,7 @@ async fn create_test_user(pool: &PgPool, tenant_id: i64) -> String {
 // Phase 1: Schema Tests
 // ============================================================================
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_schema_has_authorization_handle_column() {
     let pool = setup_db().await;
@@ -60,6 +69,7 @@ async fn test_schema_has_authorization_handle_column() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_schema_has_previous_auth_id_column() {
     let pool = setup_db().await;
@@ -76,6 +86,7 @@ async fn test_schema_has_previous_auth_id_column() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_authorization_handle_can_be_stored_and_retrieved() {
     let pool = setup_db().await;
@@ -116,6 +127,7 @@ async fn test_authorization_handle_can_be_stored_and_retrieved() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_authorization_handle_unique_index_on_active() {
     let pool = setup_db().await;
@@ -160,6 +172,7 @@ async fn test_authorization_handle_unique_index_on_active() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_authorization_handle_allows_duplicate_if_revoked() {
     let pool = setup_db().await;
@@ -212,6 +225,7 @@ async fn test_authorization_handle_allows_duplicate_if_revoked() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_previous_auth_id_can_be_stored_in_oauth_codes() {
     let pool = setup_db().await;
@@ -318,6 +332,7 @@ async fn test_token_response_includes_authorization_handle() {
 
 /// Helper function that mimics the authorization handle lookup query
 /// Returns the authorization ID if the handle is valid, active, not expired, and handle not past absolute expiration
+#[cfg(feature = "integration-tests")]
 async fn lookup_authorization_by_handle(pool: &PgPool, handle: &str) -> Option<i32> {
     sqlx::query_scalar(
         "SELECT id FROM oauth_authorizations
@@ -332,6 +347,7 @@ async fn lookup_authorization_by_handle(pool: &PgPool, handle: &str) -> Option<i
     .expect("Query should not fail")
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_valid_handle_enables_auto_approve() {
     let pool = setup_db().await;
@@ -365,6 +381,7 @@ async fn test_valid_handle_enables_auto_approve() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_revoked_handle_requires_consent() {
     let pool = setup_db().await;
@@ -404,6 +421,7 @@ async fn test_revoked_handle_requires_consent() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_expired_handle_requires_consent() {
     let pool = setup_db().await;
@@ -437,6 +455,7 @@ async fn test_expired_handle_requires_consent() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_invalid_handle_requires_consent() {
     let pool = setup_db().await;
@@ -450,6 +469,7 @@ async fn test_invalid_handle_requires_consent() {
     );
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_handle_lookup_ignores_null_handles() {
     let pool = setup_db().await;
@@ -483,6 +503,7 @@ async fn test_handle_lookup_ignores_null_handles() {
 // Phase 4: Cleanup Tests
 // ============================================================================
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_previous_auth_id_passed_through_oauth_code() {
     let pool = setup_db().await;
@@ -532,6 +553,7 @@ async fn test_previous_auth_id_passed_through_oauth_code() {
         .expect("Failed to cleanup");
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_revoke_old_authorization_query() {
     let pool = setup_db().await;

@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Tests for multi-device OAuth authorization support
 // ABOUTME: Verifies that multiple authorizations can exist per app and revoked_at filtering works
 

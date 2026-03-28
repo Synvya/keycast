@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Tests for tenant auto-provisioning race condition fix
 // ABOUTME: Verifies that concurrent get_or_create_tenant calls don't fail
 

@@ -147,7 +147,7 @@ mod tests {
     use std::time::Duration;
 
     fn get_redis_url() -> String {
-        std::env::var("TEST_REDIS_URL").expect("TEST_REDIS_URL must be set to run Redis tests")
+        std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://localhost:16379".to_string())
     }
 
     /// Generate unique test prefix to isolate test data
@@ -156,6 +156,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_registry_register_creates_instance() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -172,6 +173,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_registry_deregister_removes_instance() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -191,6 +193,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_registry_heartbeat_updates_timestamp() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -211,6 +214,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_registry_multiple_instances_unique_ids() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -238,6 +242,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_registry_prefix_isolation() {
         let redis_url = get_redis_url();
         let prefix1 = test_prefix();

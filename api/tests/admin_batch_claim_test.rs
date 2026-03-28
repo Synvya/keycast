@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Integration tests for batch claim token generation and stats
 // ABOUTME: Tests batch logic, skip behavior for claimed/missing users, and stats aggregation
 

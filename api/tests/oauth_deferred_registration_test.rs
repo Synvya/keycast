@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Tests for deferred OAuth registration
 // ABOUTME: Verifies that user creation is deferred to token exchange, preventing orphaned state
 

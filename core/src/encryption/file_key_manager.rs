@@ -81,7 +81,7 @@ impl KeyManager for FileKeyManager {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
     use nostr::Keys;

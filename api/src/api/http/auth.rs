@@ -1199,9 +1199,14 @@ pub async fn verify_email(
 
         // Create user with email_verified=true (they just verified!)
         let user_repo = UserRepository::new(pool.clone());
+        let user_already_exists = user_repo.exists(&oauth_data.user_pubkey, tenant_id).await?;
 
-        // Check if keys were generated (pending_encrypted_secret) or BYOK flow
-        if let Some(ref encrypted_secret) = oauth_data.pending_encrypted_secret {
+        if user_already_exists {
+            tracing::info!(
+                "Retrying OAuth email verification for existing user: {}",
+                oauth_data.user_pubkey
+            );
+        } else if let Some(ref encrypted_secret) = oauth_data.pending_encrypted_secret {
             // Auto-generated or direct nsec: create user + personal_keys
             // Use a transaction to ensure atomicity
             let now = Utc::now();
@@ -1259,6 +1264,40 @@ pub async fn verify_email(
             );
         }
 
+        let headless_retry_error = || AuthError::ServiceUnavailable {
+            message: "Email verified, but app sign-in is still finishing. Please retry shortly."
+                .to_string(),
+            retry_after: Some(5),
+        };
+
+        let required_device_code = if oauth_data.is_headless {
+            Some(oauth_data.device_code.as_ref().ok_or_else(|| {
+                tracing::error!(
+                    event = "headless_poll_delivery_failed",
+                    tenant_id = tenant_id,
+                    user_pubkey = %oauth_data.user_pubkey,
+                    "Headless verification is missing device_code"
+                );
+                headless_retry_error()
+            })?)
+        } else {
+            None
+        };
+
+        let required_redis = if oauth_data.is_headless {
+            Some(auth_state.state.redis.as_ref().ok_or_else(|| {
+                tracing::error!(
+                    event = "headless_poll_delivery_failed",
+                    tenant_id = tenant_id,
+                    user_pubkey = %oauth_data.user_pubkey,
+                    "Headless verification requires Redis, but Redis is unavailable"
+                );
+                headless_retry_error()
+            })?)
+        } else {
+            None
+        };
+
         // Generate new authorization code for the redirect
         let new_code: String = rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
@@ -1284,10 +1323,41 @@ pub async fn verify_email(
         };
         oauth_code_repo.store(store_params).await?;
 
-        // Store code in Redis for multi-device polling (RFC 8628 pattern)
-        // Use device_code (secret, from response body) not state (public, in URL)
-        // See: https://datatracker.ietf.org/doc/html/rfc8628
-        if let Some(ref device_code) = oauth_data.device_code {
+        if let Some(device_code) = required_device_code {
+            let redis =
+                required_redis.expect("headless flow must validate Redis before storing code");
+            let key = format!("oauth_poll:{}", device_code);
+            if let Err(e) = redis::cmd("SETEX")
+                .arg(&key)
+                .arg(600) // 10 minute TTL
+                .arg(&new_code)
+                .query_async::<()>(&mut redis.clone())
+                .await
+            {
+                tracing::error!(
+                    event = "headless_poll_delivery_failed",
+                    tenant_id = tenant_id,
+                    user_pubkey = %oauth_data.user_pubkey,
+                    device_code = %device_code,
+                    error = %e,
+                    "Failed to store headless OAuth code in Redis for polling"
+                );
+                if let Err(cleanup_err) = oauth_code_repo.delete(tenant_id, &new_code).await {
+                    tracing::error!(
+                        tenant_id = tenant_id,
+                        user_pubkey = %oauth_data.user_pubkey,
+                        code = %new_code,
+                        error = %cleanup_err,
+                        "Failed to clean up OAuth code after Redis polling write failed"
+                    );
+                }
+                return Err(headless_retry_error());
+            }
+            tracing::debug!(
+                "Stored OAuth code in Redis for headless polling: device_code={}",
+                device_code
+            );
+        } else if let Some(ref device_code) = oauth_data.device_code {
             if let Some(redis) = &auth_state.state.redis {
                 let key = format!("oauth_poll:{}", device_code);
                 if let Err(e) = redis::cmd("SETEX")
@@ -3185,14 +3255,50 @@ pub async fn delete_account(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "integration-tests")]
+    use super::{verify_email, VerifyEmailRequest};
+    #[cfg(feature = "integration-tests")]
+    use crate::api::http::routes::AuthState;
+    #[cfg(feature = "integration-tests")]
+    use crate::api::tenant::{Tenant, TenantExtractor};
+    #[cfg(feature = "integration-tests")]
+    use crate::bcrypt_queue::BcryptQueue;
+    #[cfg(feature = "integration-tests")]
+    use crate::handlers::http_rpc_handler::new_http_handler_cache;
+    #[cfg(feature = "integration-tests")]
+    use crate::state::KeycastState;
+    #[cfg(feature = "integration-tests")]
+    use axum::{
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        Json,
+    };
+    #[cfg(feature = "integration-tests")]
+    use chrono::{Duration, Utc};
+    #[cfg(feature = "integration-tests")]
     use keycast_core::encryption::file_key_manager::FileKeyManager;
-    use keycast_core::encryption::KeyManager;
+    #[cfg(feature = "integration-tests")]
+    use keycast_core::encryption::{KeyManager, KeyManagerError};
+    #[cfg(feature = "integration-tests")]
+    use keycast_core::secret_pool::SecretPool;
+    #[cfg(feature = "integration-tests")]
     use keycast_core::signing_handler::SigningHandler;
+    #[cfg(feature = "integration-tests")]
+    use moka::future::Cache;
     use nostr_sdk::{Keys, Kind, Timestamp, UnsignedEvent};
+    #[cfg(feature = "integration-tests")]
     use sqlx::PgPool;
+    #[cfg(feature = "integration-tests")]
+    use std::sync::Arc;
+    #[cfg(feature = "integration-tests")]
+    use uuid::Uuid;
+    #[cfg(feature = "integration-tests")]
+    use zeroize::Zeroizing;
 
     /// Helper to create test database connection
     /// Uses DATABASE_URL env var or defaults to localhost
+    #[cfg(feature = "integration-tests")]
     async fn create_test_db() -> PgPool {
         let database_url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:password@localhost/keycast_test".to_string());
@@ -3219,6 +3325,174 @@ mod tests {
         pool
     }
 
+    #[cfg(feature = "integration-tests")]
+    async fn cleanup_verify_email_test_data(pool: &PgPool, pubkey: &str, token: &str) {
+        let _ = sqlx::query("DELETE FROM oauth_codes WHERE user_pubkey = $1 OR pending_email_verification_token = $2")
+            .bind(pubkey)
+            .bind(token)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM personal_keys WHERE user_pubkey = $1")
+            .bind(pubkey)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE pubkey = $1")
+            .bind(pubkey)
+            .execute(pool)
+            .await;
+    }
+
+    #[cfg(feature = "integration-tests")]
+    struct TestKeyManager;
+
+    #[cfg(feature = "integration-tests")]
+    #[async_trait::async_trait]
+    impl KeyManager for TestKeyManager {
+        async fn encrypt(&self, plaintext_bytes: &[u8]) -> Result<Vec<u8>, KeyManagerError> {
+            Ok(plaintext_bytes.to_vec())
+        }
+
+        async fn decrypt(
+            &self,
+            ciphertext_bytes: &[u8],
+        ) -> Result<Zeroizing<Vec<u8>>, KeyManagerError> {
+            Ok(Zeroizing::new(ciphertext_bytes.to_vec()))
+        }
+    }
+
+    #[cfg(feature = "integration-tests")]
+    fn create_test_auth_state(pool: PgPool) -> AuthState {
+        let bcrypt_queue = BcryptQueue::new();
+        let secret_pool = SecretPool::new(1);
+        let tenant_cache = Cache::builder().max_capacity(10).build();
+        let key_manager: Arc<Box<dyn KeyManager>> = Arc::new(Box::new(TestKeyManager));
+
+        AuthState {
+            state: Arc::new(KeycastState {
+                db: pool,
+                key_manager,
+                signer_handlers: None,
+                http_handler_cache: new_http_handler_cache(),
+                server_keys: Keys::generate(),
+                tenant_cache,
+                bcrypt_sender: bcrypt_queue.sender(),
+                redis: None,
+                secret_pool: secret_pool.receiver(),
+            }),
+            auth_tx: None,
+        }
+    }
+
+    #[cfg(feature = "integration-tests")]
+    fn create_test_tenant() -> TenantExtractor {
+        TenantExtractor(Arc::new(Tenant {
+            id: 1,
+            domain: "example.test".to_string(),
+            name: "Test Tenant".to_string(),
+            settings: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }))
+    }
+
+    #[cfg(feature = "integration-tests")]
+    #[tokio::test]
+    async fn test_headless_verify_email_requires_redis_and_keeps_pending_registration_for_retry() {
+        let pool = create_test_db().await;
+        let auth_state = create_test_auth_state(pool.clone());
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let test_email = format!("verify-email-{}@example.com", Uuid::new_v4());
+        let verification_token = format!("verify_{}", Uuid::new_v4());
+        let device_code = format!("device_{}", Uuid::new_v4());
+        let placeholder_code = format!("placeholder_{}", Uuid::new_v4());
+        let password_hash = bcrypt::hash("testpassword123", bcrypt::DEFAULT_COST).unwrap();
+        let expires_at = Utc::now() + Duration::hours(24);
+
+        cleanup_verify_email_test_data(&pool, &pubkey, &verification_token).await;
+
+        sqlx::query(
+            "INSERT INTO oauth_codes (
+                tenant_id, code, user_pubkey, client_id, redirect_uri, scope,
+                expires_at, created_at, pending_email, pending_password_hash,
+                pending_email_verification_token, device_code, is_headless
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11, $12)",
+        )
+        .bind(1_i64)
+        .bind(&placeholder_code)
+        .bind(&pubkey)
+        .bind("TestMobileApp")
+        .bind("https://test.example.com/callback")
+        .bind("policy:social")
+        .bind(expires_at)
+        .bind(&test_email)
+        .bind(&password_hash)
+        .bind(&verification_token)
+        .bind(&device_code)
+        .bind(true)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let response = match verify_email(
+                create_test_tenant(),
+                State(auth_state.clone()),
+                HeaderMap::new(),
+                Json(VerifyEmailRequest {
+                    token: verification_token.clone(),
+                }),
+            )
+            .await
+            {
+                Ok(response) => response.into_response(),
+                Err(err) => err.into_response(),
+            };
+
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+
+        let pending_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM oauth_codes
+             WHERE tenant_id = 1 AND pending_email_verification_token = $1",
+        )
+        .bind(&verification_token)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pending_count.0, 1,
+            "pending registration should remain retryable"
+        );
+
+        let usable_code_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM oauth_codes
+             WHERE tenant_id = 1 AND user_pubkey = $1 AND pending_email IS NULL",
+        )
+        .bind(&pubkey)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            usable_code_count.0, 0,
+            "should not mint a pollable code before Redis succeeds"
+        );
+
+        let user_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM users WHERE tenant_id = 1 AND pubkey = $1")
+                .bind(&pubkey)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            user_count.0, 1,
+            "retry should reuse the created user instead of duplicating it"
+        );
+
+        cleanup_verify_email_test_data(&pool, &pubkey, &verification_token).await;
+    }
+
+    #[cfg(feature = "integration-tests")]
     /// Mock signing handler for testing
     #[derive(Clone)]
     struct MockSigningHandler {
@@ -3226,6 +3500,7 @@ mod tests {
         auth_id: i64,
     }
 
+    #[cfg(feature = "integration-tests")]
     #[async_trait::async_trait]
     impl SigningHandler for MockSigningHandler {
         async fn sign_event_direct(
@@ -3252,6 +3527,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "integration-tests")]
     #[tokio::test]
     async fn test_fast_path_components() {
         // Test that all fast path components work correctly
@@ -3324,6 +3600,7 @@ mod tests {
         println!("✅ Fast path components test passed");
     }
 
+    #[cfg(feature = "integration-tests")]
     #[tokio::test]
     async fn test_slow_path_components() {
         // Test that slow path (DB + KMS) works correctly
@@ -3388,6 +3665,7 @@ mod tests {
         println!("✅ Slow path components test passed");
     }
 
+    #[cfg(feature = "integration-tests")]
     #[tokio::test]
     async fn test_fallback_when_handler_not_cached() {
         // Test that system falls back to slow path when handler not in cache

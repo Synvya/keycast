@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Integration tests for admin preload-user endpoint
 // ABOUTME: Tests idempotency - same vine_id should return same pubkey
 

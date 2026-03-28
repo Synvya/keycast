@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Tests for RPC permission validation edge cases
 // ABOUTME: Covers UCAN validation, authorization lookup, and policy enforcement
 

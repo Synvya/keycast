@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Integration tests for nostr_rpc signing endpoint
 // ABOUTME: Tests the full sign_event code path including handler loading
 

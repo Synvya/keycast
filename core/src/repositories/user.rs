@@ -1233,7 +1233,7 @@ pub struct DeleteAccountResult {
     pub bunker_pubkeys: Vec<String>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
     use nostr_sdk::{Keys, ToBech32};

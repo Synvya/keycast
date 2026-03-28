@@ -485,7 +485,7 @@ mod tests {
     use uuid::Uuid;
 
     fn get_redis_url() -> String {
-        std::env::var("TEST_REDIS_URL").expect("TEST_REDIS_URL must be set to run Redis tests")
+        std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://localhost:16379".to_string())
     }
 
     /// Generate unique test prefix to isolate test data
@@ -502,6 +502,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_coordinator_starts_and_handles_keys() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -519,6 +520,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_two_coordinators_split_keys() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -574,6 +576,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_pubsub_detects_join() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();
@@ -608,6 +611,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
     async fn test_graceful_shutdown_redistributes_keys() {
         let redis_url = get_redis_url();
         let prefix = test_prefix();

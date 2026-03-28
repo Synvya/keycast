@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Tests for the change_key handler
 // ABOUTME: Verifies that key change transaction correctly migrates user identity
 
