@@ -50,6 +50,8 @@ hkdf = "0.12"
 blake3 = "1.5"
 moka = { version = "0.12", features = ["future"] }
 reqwest = { version = "0.12", features = ["json"] }
+jwt-simple = { version = "0.12.9", default-features = false, features = ["pure-rust"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
 # Async bcrypt queue dependencies
 crossbeam-channel = "0.5"
 num_cpus = "1.16"

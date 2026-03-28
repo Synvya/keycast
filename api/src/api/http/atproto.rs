@@ -3,7 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use keycast_core::repositories::{RepositoryError, UserRepository};
+use keycast_core::repositories::{AtprotoOAuthSessionRepository, RepositoryError, UserRepository};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::future::Future;
@@ -213,8 +213,20 @@ pub async fn disable_user_atproto(
     Ok(map_state_to_response(username, state))
 }
 
+pub async fn disable_user_atproto_and_revoke_sessions(
+    user_repo: &UserRepository,
+    session_repo: &AtprotoOAuthSessionRepository,
+    tenant_id: i64,
+    user_pubkey: &str,
+) -> Result<AtprotoStatusResponse, AtprotoControlError> {
+    let response = disable_user_atproto(user_repo, tenant_id, user_pubkey).await?;
+    session_repo.revoke_sessions_for_pubkey(user_pubkey).await?;
+    Ok(response)
+}
+
 pub async fn disable_user_atproto_with_trigger<F, Fut>(
-    repo: &UserRepository,
+    user_repo: &UserRepository,
+    session_repo: &AtprotoOAuthSessionRepository,
     tenant_id: i64,
     user_pubkey: &str,
     trigger: F,
@@ -223,7 +235,7 @@ where
     F: FnOnce(String) -> Fut,
     Fut: Future<Output = Result<(), crate::atproto_provisioning::AtprotoProvisioningError>>,
 {
-    let _username = repo
+    let _username = user_repo
         .get_username(user_pubkey, tenant_id)
         .await?
         .ok_or(AtprotoControlError::UserNotFound)?;
@@ -232,7 +244,7 @@ where
         .await
         .map_err(|error| AtprotoControlError::ProvisioningTrigger(error.to_string()))?;
 
-    disable_user_atproto(repo, tenant_id, user_pubkey).await
+    disable_user_atproto_and_revoke_sessions(user_repo, session_repo, tenant_id, user_pubkey).await
 }
 
 fn map_control_error(error: AtprotoControlError) -> AuthError {
@@ -298,7 +310,8 @@ pub async fn internal_sync_atproto(
     authorize_internal_sync(&headers)?;
     validate_atproto_state(request.state.as_deref())?;
 
-    let repo = UserRepository::new(pool);
+    let repo = UserRepository::new(pool.clone());
+    let session_repo = AtprotoOAuthSessionRepository::new(pool);
     let response = sync_user_atproto_state_by_pubkey(
         &repo,
         &request.nostr_pubkey,
@@ -310,6 +323,13 @@ pub async fn internal_sync_atproto(
     .await
     .map_err(map_control_error)?;
 
+    if !request.enabled || request.state.as_deref() == Some("disabled") {
+        session_repo
+            .revoke_sessions_for_pubkey(&request.nostr_pubkey)
+            .await
+            .map_err(|error| AuthError::Internal(error.to_string()))?;
+    }
+
     Ok(Json(response))
 }
 
@@ -320,14 +340,18 @@ pub async fn disable_atproto(
 ) -> Result<Json<AtprotoStatusResponse>, AuthError> {
     let user_pubkey = extract_user_from_token(&headers).await?;
     let tenant_id = tenant.0.id;
-    let repo = UserRepository::new(pool);
+    let user_repo = UserRepository::new(pool.clone());
+    let session_repo = AtprotoOAuthSessionRepository::new(pool);
 
-    let response =
-        disable_user_atproto_with_trigger(&repo, tenant_id, &user_pubkey, |pubkey| async move {
-            crate::atproto_provisioning::request_disable(&pubkey).await
-        })
-        .await
-        .map_err(map_control_error)?;
+    let response = disable_user_atproto_with_trigger(
+        &user_repo,
+        &session_repo,
+        tenant_id,
+        &user_pubkey,
+        |pubkey| async move { crate::atproto_provisioning::request_disable(&pubkey).await },
+    )
+    .await
+    .map_err(map_control_error)?;
 
     Ok(Json(response))
 }

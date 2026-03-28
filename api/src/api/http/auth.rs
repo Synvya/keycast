@@ -101,7 +101,7 @@ pub(crate) async fn generate_ucan_token(
 /// is_first_party: true for headless flow tokens (allows account deletion)
 /// admin_role: "full" for NIP-07 admins, "support" for CF Access admins
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn generate_server_signed_ucan(
+pub async fn generate_server_signed_ucan(
     user_pubkey: &nostr_sdk::PublicKey,
     tenant_id: i64,
     email: &str,

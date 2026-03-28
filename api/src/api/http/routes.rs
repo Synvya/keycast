@@ -9,7 +9,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::api::http::{
-    admin, atproto, auth, claim, headless, metrics, nostr_rpc, oauth, policies, teams,
+    admin, atproto, atproto_oauth, auth, claim, headless, metrics, nostr_rpc, oauth, policies,
+    teams,
 };
 use crate::state::KeycastState;
 use axum::response::Json as AxumJson;
@@ -73,6 +74,13 @@ pub fn api_routes(
         .route("/oauth/connect", post(oauth::connect_post))
         .layer(public_cors.clone())
         .with_state(auth_state.clone());
+
+    let atproto_oauth_routes = Router::new()
+        .route("/atproto/oauth/par", post(atproto_oauth::par))
+        .route("/atproto/oauth/authorize", get(atproto_oauth::authorize))
+        .route("/atproto/oauth/token", post(atproto_oauth::token))
+        .layer(public_cors.clone())
+        .with_state(pool.clone());
 
     // nostr-login connect routes (wildcard path to capture nostrconnect:// URI)
     let connect_routes = Router::new()
@@ -254,6 +262,7 @@ pub fn api_routes(
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer
         .merge(email_routes.layer(public_cors.clone()))
         .merge(oauth_routes) // Has public_cors (third-party safe)
+        .merge(atproto_oauth_routes)
         .merge(connect_routes.layer(public_cors.clone()))
         .merge(signing_routes.layer(public_cors.clone()))
         .merge(nostr_rpc_routes.layer(public_cors.clone())) // NIP-46 RPC for OAuth apps

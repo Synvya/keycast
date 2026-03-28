@@ -572,6 +572,10 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
             get(apple_app_site_association),
         )
         .route("/assetlinks.json", get(assetlinks_json))
+        .route(
+            "/oauth-authorization-server",
+            get(keycast_api::api::http::atproto_oauth_metadata::authorization_server_metadata),
+        )
         .with_state(web_build_dir.clone());
 
     let mut app = Router::new()
