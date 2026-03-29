@@ -10,6 +10,9 @@ edition = "2021"
 name = "keycast_signer"
 path = "src/lib.rs"
 
+[features]
+integration-tests = []
+
 [dependencies]
 keycast_core = { path = "../core" }
 cluster-hashring = { path = "../cluster-hashring" }

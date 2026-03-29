@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Tests for team relations batch queries
 // ABOUTME: Verifies N+1 query optimizations work correctly
 

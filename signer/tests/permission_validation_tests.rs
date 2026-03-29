@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // Permission validation tests for signer daemon
 // Tests that the signer properly enforces policy permissions before signing/encrypting/decrypting
 

@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Integration tests for headless authentication endpoints
 // ABOUTME: Tests the pure JSON API flow for native mobile apps (Flutter, etc.)
 

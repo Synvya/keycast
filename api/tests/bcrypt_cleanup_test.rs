@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // ABOUTME: Integration tests for bcrypt cleanup task
 // ABOUTME: Verifies that cleanup only removes stale signups, not preloaded users
 

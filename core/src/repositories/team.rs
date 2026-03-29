@@ -457,7 +457,7 @@ struct PermissionWithPolicyId {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "integration-tests"))]
 mod tests {
     use super::*;
     use crate::repositories::UserRepository;

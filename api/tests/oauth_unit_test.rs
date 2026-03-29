@@ -60,13 +60,18 @@ fn test_bunker_url_format() {
 // Database Integration Tests
 // ============================================================================
 
+#[cfg(feature = "integration-tests")]
 use chrono::{Duration, Utc};
 use nostr_sdk::Keys;
+#[cfg(feature = "integration-tests")]
 use sqlx::PgPool;
+#[cfg(feature = "integration-tests")]
 use uuid::Uuid;
 
+#[cfg(feature = "integration-tests")]
 mod common;
 
+#[cfg(feature = "integration-tests")]
 async fn setup_pool() -> PgPool {
     common::assert_test_database_url();
     let database_url = std::env::var("DATABASE_URL")
@@ -77,6 +82,7 @@ async fn setup_pool() -> PgPool {
 }
 
 /// Test authorization code expiration logic
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_authorization_code_expiration() {
     let pool = setup_pool().await;
@@ -121,6 +127,7 @@ async fn test_authorization_code_expiration() {
 }
 
 /// Test one-time use of authorization codes
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_authorization_code_one_time_use() {
     let pool = setup_pool().await;
@@ -172,6 +179,7 @@ async fn test_authorization_code_one_time_use() {
 }
 
 /// Test that multiple authorizations can exist for the same user (different origins)
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_multiple_authorizations_per_user() {
     let pool = setup_pool().await;

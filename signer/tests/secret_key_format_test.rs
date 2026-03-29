@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // Tests for secret key encryption/decryption format consistency
 // Verifies that user secret keys are stored as raw encrypted bytes
 // and can be correctly decrypted and parsed into Keys

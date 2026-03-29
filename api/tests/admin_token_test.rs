@@ -1,14 +1,21 @@
 // ABOUTME: Integration tests for admin token lifecycle
 // ABOUTME: Tests UCAN generation/validation, user-token workflow, and claim token operations
 
-use keycast_core::repositories::{ClaimTokenRepository, UserRepository};
-use keycast_core::types::claim_token::generate_claim_token;
 use nostr_sdk::Keys;
-use sqlx::PgPool;
+#[cfg(feature = "integration-tests")]
 use uuid::Uuid;
 
+#[cfg(feature = "integration-tests")]
+use keycast_core::repositories::{ClaimTokenRepository, UserRepository};
+#[cfg(feature = "integration-tests")]
+use keycast_core::types::claim_token::generate_claim_token;
+#[cfg(feature = "integration-tests")]
+use sqlx::PgPool;
+
+#[cfg(feature = "integration-tests")]
 mod common;
 
+#[cfg(feature = "integration-tests")]
 async fn setup_pool() -> PgPool {
     common::assert_test_database_url();
     let database_url = std::env::var("DATABASE_URL")
@@ -34,6 +41,7 @@ fn ensure_server_nsec() -> Keys {
     Keys::parse(&nsec).expect("SERVER_NSEC must be valid")
 }
 
+#[cfg(feature = "integration-tests")]
 async fn cleanup_by_pubkey(pool: &PgPool, pubkey: &str) {
     let _ = sqlx::query("DELETE FROM account_claim_tokens WHERE user_pubkey = $1")
         .bind(pubkey)
@@ -398,6 +406,7 @@ async fn test_preload_ucan_is_server_signed() {
 // 3. User-token workflow (DB-level)
 // ============================================================================
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_user_token_unclaimed_user() {
     let pool = setup_pool().await;
@@ -432,6 +441,7 @@ async fn test_user_token_unclaimed_user() {
     cleanup_by_pubkey(&pool, &pubkey).await;
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_user_token_claimed_user_rejected() {
     let pool = setup_pool().await;
@@ -464,6 +474,7 @@ async fn test_user_token_claimed_user_rejected() {
     cleanup_by_pubkey(&pool, &pubkey).await;
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_user_token_nonexistent_user() {
     let pool = setup_pool().await;
@@ -481,6 +492,7 @@ async fn test_user_token_nonexistent_user() {
 // 4. Claim token lifecycle (DB-level)
 // ============================================================================
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_claim_token_create_and_find() {
     let pool = setup_pool().await;
@@ -537,6 +549,7 @@ async fn test_claim_token_create_and_find() {
     cleanup_by_pubkey(&pool, &pubkey).await;
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_claim_token_expired_not_returned() {
     let pool = setup_pool().await;
@@ -598,6 +611,7 @@ async fn test_claim_token_expired_not_returned() {
     cleanup_by_pubkey(&pool, &pubkey).await;
 }
 
+#[cfg(feature = "integration-tests")]
 #[tokio::test]
 async fn test_claim_token_used_not_returned() {
     let pool = setup_pool().await;

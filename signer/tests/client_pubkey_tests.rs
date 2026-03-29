@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 // NIP-46 Client Pubkey Tracking Tests
 // Tests that the signer properly tracks client pubkeys after connect and validates subsequent requests
 //

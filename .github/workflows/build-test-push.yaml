@@ -82,7 +82,12 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/keycast_test
           REDIS_URL: redis://localhost:16379
           TEST_REDIS_URL: redis://localhost:16379
-        run: cargo test --workspace --verbose
+        run: |
+          cargo test --workspace --verbose
+          cargo test -p keycast_core --features integration-tests --lib --verbose
+          cargo test -p keycast_api --features integration-tests --lib --tests --verbose
+          cargo test -p keycast_signer --features integration-tests --lib --tests --verbose
+          cargo test -p cluster-hashring --lib -- --ignored
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
