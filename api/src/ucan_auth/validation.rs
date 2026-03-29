@@ -2,7 +2,6 @@
 
 use anyhow::{anyhow, Result};
 use axum::http::HeaderMap;
-use once_cell::sync::Lazy;
 use std::env;
 use ucan::crypto::did::{DidParser, SECP256K1_MAGIC_BYTES};
 use ucan::crypto::KeyMaterial;
@@ -11,15 +10,14 @@ use ucan::Ucan;
 use super::did::did_to_nostr_pubkey;
 use super::key_material::NostrVerifyKeyMaterial;
 
-/// Server public key for validating server-signed UCANs
-/// Loaded from SERVER_NSEC environment variable
-pub(crate) static SERVER_PUBKEY: Lazy<String> = Lazy::new(|| {
-    env::var("SERVER_NSEC")
-        .ok()
-        .and_then(|nsec| nostr_sdk::Keys::parse(&nsec).ok())
-        .map(|k| k.public_key().to_hex())
-        .expect("SERVER_NSEC must be set and valid")
-});
+fn server_pubkey() -> Result<String> {
+    let server_nsec =
+        env::var("SERVER_NSEC").map_err(|_| anyhow!("SERVER_NSEC must be set and valid"))?;
+
+    nostr_sdk::Keys::parse(&server_nsec)
+        .map_err(|_| anyhow!("SERVER_NSEC must be set and valid"))
+        .map(|keys| keys.public_key().to_hex())
+}
 
 /// Create a DidParser configured for Nostr secp256k1 keys with Schnorr verification
 fn create_nostr_did_parser() -> DidParser {
@@ -111,14 +109,16 @@ pub async fn validate_ucan_token(
     let issuer_pubkey = did_to_nostr_pubkey(ucan.issuer())?;
     let issuer_pubkey_hex = issuer_pubkey.to_hex();
     let user_pubkey_hex = user_pubkey.to_hex();
-
-    if issuer_pubkey_hex != user_pubkey_hex && issuer_pubkey_hex != *SERVER_PUBKEY {
-        return Err(anyhow!(
-            "Invalid UCAN issuer: must be signed by user ({}) or server ({}), got {}",
-            &user_pubkey_hex[..8],
-            &SERVER_PUBKEY[..8],
-            &issuer_pubkey_hex[..8]
-        ));
+    if issuer_pubkey_hex != user_pubkey_hex {
+        let server_pubkey = server_pubkey()?;
+        if issuer_pubkey_hex != server_pubkey {
+            return Err(anyhow!(
+                "Invalid UCAN issuer: must be signed by user ({}) or server ({}), got {}",
+                &user_pubkey_hex[..8],
+                &server_pubkey[..8],
+                &issuer_pubkey_hex[..8]
+            ));
+        }
     }
 
     Ok((user_pubkey_hex, redirect_origin, bunker_pubkey, ucan))
@@ -143,9 +143,12 @@ pub async fn extract_user_from_ucan(
 
 /// Check if a UCAN was issued by the server (server-signed)
 pub fn is_server_signed(ucan: &Ucan) -> bool {
-    match super::did::did_to_nostr_pubkey(ucan.issuer()) {
-        Ok(issuer_pubkey) => issuer_pubkey.to_hex() == *SERVER_PUBKEY,
-        Err(_) => false,
+    match (
+        super::did::did_to_nostr_pubkey(ucan.issuer()),
+        server_pubkey(),
+    ) {
+        (Ok(issuer_pubkey), Ok(server_pubkey)) => issuer_pubkey.to_hex() == server_pubkey,
+        _ => false,
     }
 }
 
@@ -157,8 +160,19 @@ mod tests {
     use nostr_sdk::Keys;
     use ucan::builder::UcanBuilder;
 
+    fn ensure_server_nsec() -> Keys {
+        if std::env::var("SERVER_NSEC").is_err() {
+            let fake = "0".repeat(63) + "1";
+            std::env::set_var("SERVER_NSEC", &fake);
+        }
+        let nsec = std::env::var("SERVER_NSEC").unwrap();
+        Keys::parse(&nsec).expect("SERVER_NSEC must be valid")
+    }
+
     #[tokio::test]
     async fn test_ucan_generation_and_validation() {
+        let _server_keys = ensure_server_nsec();
+
         // Generate test keys
         let keys = Keys::generate();
         let pubkey = keys.public_key();
@@ -228,6 +242,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ucan_tenant_validation() {
+        let _server_keys = ensure_server_nsec();
+
         let keys = Keys::generate();
         let pubkey = keys.public_key();
         let user_did = nostr_pubkey_to_did(&pubkey);

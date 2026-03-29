@@ -1,12 +1,19 @@
 mod common;
 
+use chrono::{Duration, Utc};
 use keycast_api::api::http::atproto::{
-    disable_user_atproto, disable_user_atproto_with_trigger, enable_user_atproto,
-    enable_user_atproto_with_trigger, get_user_atproto_status, sync_user_atproto_state_by_pubkey,
+    disable_user_atproto, disable_user_atproto_and_revoke_sessions,
+    disable_user_atproto_with_trigger, enable_user_atproto, enable_user_atproto_with_trigger,
+    get_user_atproto_status, sync_user_atproto_state_by_pubkey,
 };
-use keycast_core::repositories::UserRepository;
+use keycast_core::repositories::{
+    AtprotoOAuthSessionRepository, CreateAtprotoOAuthSessionParams, IssueAtprotoTokensParams,
+    UserRepository,
+};
+use keycast_core::types::refresh_token::hash_refresh_token;
 use nostr_sdk::Keys;
 use reqwest::StatusCode;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn enable_sets_pending_and_returns_accepted() {
@@ -153,6 +160,7 @@ async fn enable_trigger_failure_marks_failed_state() {
 async fn disable_trigger_failure_preserves_existing_state() {
     let pool = common::setup_test_db().await;
     let repo = UserRepository::new(pool.clone());
+    let session_repo = AtprotoOAuthSessionRepository::new(pool.clone());
     let tenant_id = 1_i64;
 
     let keys = Keys::generate();
@@ -170,17 +178,22 @@ async fn disable_trigger_failure_preserves_existing_state() {
     .await
     .expect("failed to insert user");
 
-    let error =
-        disable_user_atproto_with_trigger(&repo, tenant_id, &user_pubkey, |_pubkey| async {
+    let error = disable_user_atproto_with_trigger(
+        &repo,
+        &session_repo,
+        tenant_id,
+        &user_pubkey,
+        |_pubkey| async {
             Err(
                 keycast_api::atproto_provisioning::AtprotoProvisioningError::UnexpectedStatus {
                     status: StatusCode::BAD_GATEWAY,
                     body: "disable failed".to_string(),
                 },
             )
-        })
-        .await
-        .expect_err("disable should surface trigger failure");
+        },
+    )
+    .await
+    .expect_err("disable should surface trigger failure");
 
     assert!(error.to_string().contains("disable failed"));
 
@@ -229,4 +242,93 @@ async fn internal_sync_updates_lifecycle_state_by_pubkey() {
     assert_eq!(response.state.as_deref(), Some("ready"));
     assert_eq!(response.did.as_deref(), Some("did:plc:testalice"));
     assert_eq!(response.error, None);
+}
+
+#[tokio::test]
+async fn disable_path_revokes_atproto_oauth_refresh_sessions() {
+    let pool = common::setup_test_db().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let session_repo = AtprotoOAuthSessionRepository::new(pool.clone());
+    let tenant_id = 1_i64;
+
+    let keys = Keys::generate();
+    let user_pubkey = keys.public_key().to_hex();
+    let username = format!("alice-disable-revoke-{}", &user_pubkey[..8]);
+    let request_uri = format!("urn:ietf:params:oauth:request_uri:{}", Uuid::new_v4());
+    let refresh_token_hash =
+        hash_refresh_token(&format!("refresh-token-disable-revoke-{}", Uuid::new_v4()));
+
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, username, atproto_enabled, atproto_state, atproto_did, created_at, updated_at)
+         VALUES ($1, $2, $3, true, 'ready', 'did:plc:testalice', NOW(), NOW())",
+    )
+    .bind(&user_pubkey)
+    .bind(tenant_id)
+    .bind(&username)
+    .execute(&pool)
+    .await
+    .expect("failed to insert user");
+
+    session_repo
+        .create_par(CreateAtprotoOAuthSessionParams {
+            tenant_id,
+            client_id: "https://client.example".to_string(),
+            redirect_uri: "https://client.example/callback".to_string(),
+            scope: "atproto".to_string(),
+            state: Some("csrf-state".to_string()),
+            code_challenge: Some("challenge".to_string()),
+            code_challenge_method: Some("S256".to_string()),
+            request_uri: request_uri.clone(),
+            par_expires_at: Utc::now() + Duration::minutes(10),
+            dpop_jkt: Some("dpop-jkt".to_string()),
+            dpop_nonce: Some("dpop-nonce".to_string()),
+            client_auth_method: "none".to_string(),
+            client_auth_alg: None,
+            client_auth_kid: None,
+            client_auth_jkt: None,
+        })
+        .await
+        .expect("failed to create PAR session");
+
+    session_repo
+        .approve_request(&request_uri, &user_pubkey, "did:plc:testalice")
+        .await
+        .expect("failed to approve PAR session");
+
+    session_repo
+        .store_token_artifacts(
+            &request_uri,
+            IssueAtprotoTokensParams {
+                authorization_code: format!("auth-code-{}", Uuid::new_v4()),
+                authorization_code_expires_at: Utc::now() + Duration::minutes(5),
+                access_token_jti: format!("access-jti-{}", Uuid::new_v4()),
+                access_token_expires_at: Utc::now() + Duration::minutes(15),
+                refresh_token_hash: refresh_token_hash.clone(),
+                refresh_token_expires_at: Utc::now() + Duration::days(30),
+                dpop_jkt: Some("dpop-jkt".to_string()),
+                dpop_nonce: Some("dpop-nonce-2".to_string()),
+            },
+        )
+        .await
+        .expect("failed to issue ATProto OAuth session tokens");
+
+    let response = disable_user_atproto_and_revoke_sessions(
+        &user_repo,
+        &session_repo,
+        tenant_id,
+        &user_pubkey,
+    )
+    .await
+    .expect("disable path should succeed");
+    assert!(!response.enabled);
+    assert_eq!(response.state.as_deref(), Some("disabled"));
+
+    let revoked_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT refresh_token_revoked_at FROM atproto_oauth_sessions WHERE request_uri = $1",
+    )
+    .bind(&request_uri)
+    .fetch_one(&pool)
+    .await
+    .expect("failed to load refresh revocation marker");
+    assert!(revoked_at.is_some());
 }

@@ -1,6 +1,7 @@
 // ABOUTME: Repository module for data access operations
 // ABOUTME: Provides abstraction layer between handlers and database
 
+mod atproto_oauth_session;
 mod authorization;
 mod claim_token;
 mod error;
@@ -14,6 +15,10 @@ mod stored_key;
 mod team;
 mod user;
 
+pub use atproto_oauth_session::{
+    AtprotoOAuthSession, AtprotoOAuthSessionRepository, CreateAtprotoOAuthSessionParams,
+    IssueAtprotoTokensParams,
+};
 pub use authorization::AuthorizationRepository;
 pub use claim_token::ClaimTokenRepository;
 pub use error::RepositoryError;
