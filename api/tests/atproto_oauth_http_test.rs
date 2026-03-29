@@ -229,6 +229,19 @@ fn app(pool: sqlx::PgPool) -> Router {
         .with_state(pool)
 }
 
+async fn create_test_tenant(pool: &sqlx::PgPool, domain: &str) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO tenants (domain, name, created_at, updated_at)
+         VALUES ($1, $2, NOW(), NOW())
+         RETURNING id",
+    )
+    .bind(domain)
+    .bind(format!("Tenant for {domain}"))
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 fn configure_atproto_env() -> Keys {
     unsafe {
         std::env::set_var("APP_URL", "https://login.divine.video");
@@ -237,6 +250,7 @@ fn configure_atproto_env() -> Keys {
             TEST_ATPROTO_JWT_KEY_HEX,
         );
         std::env::set_var("ATPROTO_OAUTH_PDS_DID", TEST_ATPROTO_PDS_DID);
+        std::env::set_var("BUNKER_RELAYS", "wss://relay.test.example");
     }
 
     let server_keys = Keys::parse(TEST_SERVER_SECRET_HEX).unwrap();
@@ -516,6 +530,201 @@ async fn authorize_rejects_when_atproto_link_is_not_ready() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[serial]
+async fn par_uses_request_host_tenant_for_authorize_flow() {
+    let server_keys = configure_atproto_env();
+
+    let pool = common::setup_test_db().await;
+    let app = app(pool.clone());
+
+    let tenant_domain = format!("tenant-{}.example.com", Uuid::new_v4());
+    let tenant_id = create_test_tenant(&pool, &tenant_domain).await;
+
+    let user_keys = Keys::generate();
+    let user_pubkey = user_keys.public_key().to_hex();
+    let user_did = "did:plc:testtenant";
+    let email = format!("tenant-{}@example.com", Uuid::new_v4());
+
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, email, email_verified, atproto_enabled, atproto_state, atproto_did, created_at, updated_at)
+         VALUES ($1, $2, $3, true, true, 'ready', $4, NOW(), NOW())",
+    )
+    .bind(&user_pubkey)
+    .bind(tenant_id)
+    .bind(&email)
+    .bind(user_did)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let par_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/atproto/oauth/par")
+                .header(header::HOST, &tenant_domain)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    "DPoP",
+                    dpop_proof(
+                        &dpop_key_material(),
+                        "POST",
+                        &http_uri("/atproto/oauth/par"),
+                        None,
+                        None,
+                    ),
+                )
+                .body(Body::from(
+                    "client_id=https%3A%2F%2Fclient.example&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=atproto&code_challenge=tenant-challenge&code_challenge_method=S256",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(par_response.status(), StatusCode::OK);
+    let par_body = par_response.into_body().collect().await.unwrap().to_bytes();
+    let par_payload: Value = serde_json::from_slice(&par_body).unwrap();
+    let request_uri = par_payload["request_uri"].as_str().unwrap().to_string();
+    let stored_tenant_id: i64 =
+        sqlx::query_scalar("SELECT tenant_id FROM atproto_oauth_sessions WHERE request_uri = $1")
+            .bind(&request_uri)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_tenant_id, tenant_id);
+
+    let session_token = generate_server_signed_ucan(
+        &user_keys.public_key(),
+        tenant_id,
+        &email,
+        "https://login.divine.video",
+        None,
+        &server_keys,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/atproto/oauth/authorize?request_uri={}",
+                    urlencoding::encode(&request_uri)
+                ))
+                .header(header::COOKIE, format!("keycast_session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+#[serial]
+async fn authorize_rejects_revoked_request_uri_before_redirecting() {
+    let server_keys = configure_atproto_env();
+
+    let pool = common::setup_test_db().await;
+    let app = app(pool.clone());
+
+    let user_keys = Keys::generate();
+    let user_pubkey = user_keys.public_key().to_hex();
+    let user_did = "did:plc:testrevoked";
+    let email = format!("revoked-{}@example.com", Uuid::new_v4());
+
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, email, email_verified, atproto_enabled, atproto_state, atproto_did, created_at, updated_at)
+         VALUES ($1, 1, $2, true, true, 'ready', $3, NOW(), NOW())",
+    )
+    .bind(&user_pubkey)
+    .bind(&email)
+    .bind(user_did)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let par_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/atproto/oauth/par")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    "DPoP",
+                    dpop_proof(
+                        &dpop_key_material(),
+                        "POST",
+                        &http_uri("/atproto/oauth/par"),
+                        None,
+                        None,
+                    ),
+                )
+                .body(Body::from(
+                    "client_id=https%3A%2F%2Fclient.example&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=atproto&code_challenge=revoked-challenge&code_challenge_method=S256",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(par_response.status(), StatusCode::OK);
+    let par_body = par_response.into_body().collect().await.unwrap().to_bytes();
+    let par_payload: Value = serde_json::from_slice(&par_body).unwrap();
+    let request_uri = par_payload["request_uri"].as_str().unwrap().to_string();
+
+    sqlx::query("UPDATE atproto_oauth_sessions SET revoked_at = NOW() WHERE request_uri = $1")
+        .bind(&request_uri)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let session_token = generate_server_signed_ucan(
+        &user_keys.public_key(),
+        1,
+        &email,
+        "https://login.divine.video",
+        None,
+        &server_keys,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/atproto/oauth/authorize?request_uri={}",
+                    urlencoding::encode(&request_uri)
+                ))
+                .header(header::COOKIE, format!("keycast_session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let stored_code: Option<String> = sqlx::query_scalar(
+        "SELECT authorization_code FROM atproto_oauth_sessions WHERE request_uri = $1",
+    )
+    .bind(&request_uri)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(stored_code.is_none());
 }
 
 #[tokio::test]

@@ -111,7 +111,9 @@ impl AtprotoOAuthSessionRepository {
         request_uri: &str,
     ) -> Result<Option<AtprotoOAuthSession>, RepositoryError> {
         sqlx::query_as::<_, AtprotoOAuthSession>(
-            "SELECT * FROM atproto_oauth_sessions WHERE request_uri = $1",
+            "SELECT * FROM atproto_oauth_sessions
+             WHERE request_uri = $1
+               AND revoked_at IS NULL",
         )
         .bind(request_uri)
         .fetch_optional(&self.pool)

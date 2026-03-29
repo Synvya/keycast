@@ -22,6 +22,8 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::time::Duration as StdDuration;
 
+use crate::api::tenant::{get_or_create_tenant, TenantError};
+
 use super::atproto_oauth_metadata::authorization_server_origin;
 use super::auth::{extract_user_from_token, generate_secure_token, AuthError};
 
@@ -937,6 +939,37 @@ async fn ready_atproto_identity(
     Ok(did)
 }
 
+fn request_domain(headers: &HeaderMap) -> Result<String, AuthError> {
+    if let Some(domain) = headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|host| host.split(':').next())
+        .filter(|host| !host.is_empty())
+    {
+        return Ok(domain.to_string());
+    }
+
+    let origin = authorization_server_origin();
+    reqwest::Url::parse(&origin)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .ok_or_else(|| AuthError::Internal("Failed to determine request tenant".to_string()))
+}
+
+async fn request_tenant_id(pool: &PgPool, headers: &HeaderMap) -> Result<i64, AuthError> {
+    let domain = request_domain(headers)?;
+    let tenant = get_or_create_tenant(pool, &domain)
+        .await
+        .map_err(|error| match error {
+            TenantError::DatabaseError(error) => AuthError::Database(error),
+            TenantError::InvalidDomain(message) | TenantError::ValidationFailed(message) => {
+                AuthError::BadRequest(message)
+            }
+        })?;
+
+    Ok(tenant.id)
+}
+
 pub async fn par(
     State(pool): State<PgPool>,
     headers: HeaderMap,
@@ -955,9 +988,10 @@ pub async fn par(
         generate_secure_token()
     );
     let nonce = dpop_nonce();
+    let tenant_id = request_tenant_id(&pool, &headers).await?;
     let repo = AtprotoOAuthSessionRepository::new(pool);
     repo.create_par(CreateAtprotoOAuthSessionParams {
-        tenant_id: 1,
+        tenant_id,
         client_id: request.client_id,
         redirect_uri: request.redirect_uri,
         scope: request.scope,
@@ -1029,7 +1063,8 @@ pub async fn authorize(
         })?;
 
     repo.approve_request(&request.request_uri, &user_pubkey, &user_did)
-        .await?;
+        .await?
+        .ok_or_else(|| AuthError::BadRequest("Unknown or revoked request_uri".to_string()))?;
 
     let code = generate_secure_token();
     repo.store_authorization_code(
@@ -1037,7 +1072,8 @@ pub async fn authorize(
         &code,
         Utc::now() + Duration::minutes(AUTH_CODE_EXPIRY_MINUTES),
     )
-    .await?;
+    .await?
+    .ok_or_else(|| AuthError::BadRequest("Unknown or revoked request_uri".to_string()))?;
 
     let mut redirect_url = reqwest::Url::parse(&session.redirect_uri)
         .map_err(|error| AuthError::BadRequest(format!("Invalid redirect_uri: {error}")))?;
