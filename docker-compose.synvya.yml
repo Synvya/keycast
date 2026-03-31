@@ -1,0 +1,129 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: keycast-postgres
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?error}
+      POSTGRES_DB: keycast
+      POSTGRES_USER: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - synvya
+
+  redis:
+    image: redis:7-alpine
+    container_name: keycast-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - synvya
+
+  migrate:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: keycast-migrate
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?error}@postgres:5432/keycast
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - synvya
+    restart: "no"
+
+  keycast:
+    container_name: keycast
+    build:
+      context: .
+      args:
+        - CARGO_FEATURES=aws
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?error}@postgres:5432/keycast
+      REDIS_URL: redis://redis:6379
+      SERVER_NSEC: ${SERVER_NSEC:?error}
+      BUNKER_RELAYS: ${BUNKER_RELAYS:?error}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?error}
+      PORT: 3000
+      NODE_ENV: production
+      RUST_LOG: ${RUST_LOG:-info}
+      # AWS KMS
+      KMS_PROVIDER: aws
+      AWS_KMS_KEY_ID: ${AWS_KMS_KEY_ID:?error}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # AWS SES
+      EMAIL_PROVIDER: ses
+      FROM_EMAIL: ${FROM_EMAIL:-noreply@synvya.com}
+      FROM_NAME: ${FROM_NAME:-Synvya}
+      BASE_URL: ${BASE_URL:?error}
+      APP_URL: ${APP_URL:?error}
+      # Frontend
+      VITE_DOMAIN: ${VITE_DOMAIN:-}
+      VITE_ALLOWED_PUBKEYS: ${VITE_ALLOWED_PUBKEYS:-}
+      VITE_NDK_EXPLICIT_RELAYS: ${VITE_NDK_EXPLICIT_RELAYS:-}
+      VITE_NDK_BUNKER_RELAYS: ${VITE_NDK_BUNKER_RELAYS:-}
+      # Performance
+      SQLX_POOL_SIZE: ${SQLX_POOL_SIZE:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - synvya
+
+  event-processor:
+    container_name: event-processor
+    build:
+      context: ${EVENT_PROCESSOR_PATH:-../event-processor}
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      KEYCAST_URL: http://keycast:3000
+      KEYCAST_SERVICE_TOKEN: ${EP_SERVICE_TOKEN:?error}
+      NOSTR_RELAYS: ${NOSTR_RELAYS:?error}
+      DYNAMODB_RESERVATION_TABLE: ${DYNAMODB_RESERVATION_TABLE:-synvya-reservation-state}
+      DYNAMODB_CONFIG_TABLE: ${DYNAMODB_CONFIG_TABLE:-synvya-restaurant-config}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      keycast:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - synvya
+
+volumes:
+  postgres_data:
+
+networks:
+  synvya:

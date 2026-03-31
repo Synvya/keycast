@@ -17,7 +17,12 @@ COPY ./database/migrations ./database/migrations
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
 
-RUN cargo build --release --bin keycast
+ARG CARGO_FEATURES=""
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+      cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
+    else \
+      cargo build --release --bin keycast; \
+    fi
 RUN cargo build --release --example migrate-vine-users
 
 # Build stage for Bun frontend
