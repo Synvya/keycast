@@ -6,6 +6,7 @@ edition = "2021"
 
 [features]
 integration-tests = []
+aws = ["aws-sdk-kms", "aws-config"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -37,6 +38,8 @@ uuid = { workspace = true }
 anchorhash = "0.2"
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+aws-sdk-kms = { version = "1", optional = true }
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 bcrypt = "0.17.1"
 crossbeam-channel = "0.5"
 subtle = "2.5"

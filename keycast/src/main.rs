@@ -16,6 +16,8 @@ use keycast_api::handlers::http_rpc_handler::new_http_handler_cache;
 use keycast_api::state::TenantCache;
 use keycast_core::authorization_channel;
 use keycast_core::database::Database;
+#[cfg(feature = "aws")]
+use keycast_core::encryption::aws_key_manager::AwsKeyManager;
 use keycast_core::encryption::file_key_manager::FileKeyManager;
 use keycast_core::encryption::gcp_key_manager::GcpKeyManager;
 use keycast_core::encryption::KeyManager;
@@ -263,14 +265,33 @@ fn validate_environment() -> Result<(), String> {
         errors.push("REDIS_URL must be set (Redis/Memorystore URL for cluster coordination)");
     }
 
-    // Master key validation (either file or GCP KMS)
-    let use_gcp_kms = env::var("USE_GCP_KMS").unwrap_or_else(|_| "false".to_string()) == "true";
-    if !use_gcp_kms && env::var("MASTER_KEY_PATH").is_err() {
-        errors.push("MASTER_KEY_PATH must be set when USE_GCP_KMS=false");
-    }
+    // Master key validation (file, GCP KMS, or AWS KMS)
+    let kms_provider = env::var("KMS_PROVIDER").unwrap_or_else(|_| {
+        // Backward compatibility: USE_GCP_KMS=true → "gcp"
+        if env::var("USE_GCP_KMS").unwrap_or_default() == "true" {
+            "gcp".to_string()
+        } else {
+            "file".to_string()
+        }
+    });
 
-    if use_gcp_kms && env::var("GCP_PROJECT_ID").is_err() {
-        errors.push("GCP_PROJECT_ID must be set when USE_GCP_KMS=true");
+    match kms_provider.as_str() {
+        "file" => {
+            if env::var("MASTER_KEY_PATH").is_err() {
+                errors.push("MASTER_KEY_PATH must be set when KMS_PROVIDER=file");
+            }
+        }
+        "gcp" => {
+            if env::var("GCP_PROJECT_ID").is_err() {
+                errors.push("GCP_PROJECT_ID must be set when KMS_PROVIDER=gcp");
+            }
+        }
+        "aws" => {
+            if env::var("AWS_KMS_KEY_ID").is_err() {
+                errors.push("AWS_KMS_KEY_ID must be set when KMS_PROVIDER=aws");
+            }
+        }
+        _ => errors.push("KMS_PROVIDER must be 'file', 'gcp', or 'aws'"),
     }
 
     // Docker deployment requires additional vars
@@ -438,20 +459,36 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
     );
 
     // Setup key managers (one for signer, one for API - they're cheap to create)
-    let use_gcp_kms = env::var("USE_GCP_KMS").unwrap_or_else(|_| "false".to_string()) == "true";
+    let kms_provider = env::var("KMS_PROVIDER").unwrap_or_else(|_| {
+        // Backward compatibility: USE_GCP_KMS=true → "gcp"
+        if env::var("USE_GCP_KMS").unwrap_or_default() == "true" {
+            "gcp".to_string()
+        } else {
+            "file".to_string()
+        }
+    });
 
-    let signer_key_manager: Box<dyn KeyManager> = if use_gcp_kms {
-        tracing::info!("Using Google Cloud KMS for encryption");
-        Box::new(GcpKeyManager::new().await?)
-    } else {
-        tracing::info!("Using file-based encryption");
-        Box::new(FileKeyManager::new()?)
+    let signer_key_manager: Box<dyn KeyManager> = match kms_provider.as_str() {
+        "gcp" => {
+            tracing::info!("Using Google Cloud KMS for encryption");
+            Box::new(GcpKeyManager::new().await?)
+        }
+        #[cfg(feature = "aws")]
+        "aws" => {
+            tracing::info!("Using AWS KMS for encryption");
+            Box::new(AwsKeyManager::new().await?)
+        }
+        _ => {
+            tracing::info!("Using file-based encryption");
+            Box::new(FileKeyManager::new()?)
+        }
     };
 
-    let api_key_manager: Box<dyn KeyManager> = if use_gcp_kms {
-        Box::new(GcpKeyManager::new().await?)
-    } else {
-        Box::new(FileKeyManager::new()?)
+    let api_key_manager: Box<dyn KeyManager> = match kms_provider.as_str() {
+        "gcp" => Box::new(GcpKeyManager::new().await?),
+        #[cfg(feature = "aws")]
+        "aws" => Box::new(AwsKeyManager::new().await?),
+        _ => Box::new(FileKeyManager::new()?),
     };
 
     // Load server keys for signing UCANs (wrap in Zeroizing for auto-zeroization)
