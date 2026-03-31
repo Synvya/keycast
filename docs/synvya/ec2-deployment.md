@@ -25,27 +25,58 @@ Moving Keycast to EC2 co-locates it with the Event Processor on the same instanc
 
 ### 2.1 Goals
 
-- Deploy Keycast + Event Processor on a single EC2 instance using Docker Compose
+- Deploy Keycast + Event Processor on EC2 instances using Docker Compose
+- Maintain two environments: **staging** (`auth.staging.synvya.com`) and **production** (`auth.synvya.com`) with fully isolated data
 - Use RDS PostgreSQL instead of Cloud SQL
 - Use ElastiCache Redis instead of GCP Memorystore
 - Use AWS KMS instead of GCP KMS (see [AWS KMS Provider spec](aws-kms-provider.md))
 - Use AWS SES instead of SendGrid (see [AWS SES Provider spec](aws-ses-provider.md))
-- Route traffic via ALB at `auth.synvya.com` with path-based routing
+- Route traffic via ALB with path-based routing
 - Automate deployment via GitHub Actions
 - Store secrets in AWS Secrets Manager or SSM Parameter Store
 
 ### 2.2 Non-Goals
 
-- Does NOT set up a multi-instance cluster — single EC2 instance for v1
+- Does NOT set up a multi-instance cluster — single EC2 instance per environment for v1
 - Does NOT use ECS, EKS, or Fargate — Docker Compose on EC2 is simpler for a single instance
 - Does NOT modify the Keycast application code — only deployment configuration
 - Does NOT remove the Cloud Run deployment — that remains in upstream's `cloudbuild.yaml`
 
-## 3. Target Architecture
+## 3. Environments
+
+Two fully isolated environments. Same Docker Compose file, different `.env` and infrastructure.
+
+| | Staging | Production |
+|---|---|---|
+| Domain | `auth.staging.synvya.com` | `auth.synvya.com` |
+| EC2 | `t3.small` (1 vCPU, 2 GB) | `t3.medium` (2 vCPU, 4 GB) |
+| PostgreSQL | Containerized (same instance) | Containerized v1, RDS v2 |
+| Redis | Containerized (same instance) | Containerized v1, ElastiCache v2 |
+| KMS | Shared AWS KMS key | Shared AWS KMS key |
+| SES | SES sandbox (verified recipients only) | SES production access |
+| DynamoDB | `synvya-staging-reservation-state`, `synvya-staging-restaurant-config` | `synvya-reservation-state`, `synvya-restaurant-config` |
+| Keycast nsec | Separate server nsec | Separate server nsec |
+| Deploy trigger | Push to `synvya-staging` branch | Push to `synvya` branch |
+| Secrets path | `synvya/staging/keycast/*`, `synvya/staging/event-processor/*` | `synvya/prod/keycast/*`, `synvya/prod/event-processor/*` |
+
+Staging uses completely separate data — its own PostgreSQL database, DynamoDB tables, Keycast server identity, and Nostr keypairs. No staging action can affect production data.
+
+**Relationship to other services**: All Synvya services follow the same `*.staging.synvya.com` pattern:
+
+| Service | Staging | Production |
+|---|---|---|
+| Keycast + Event Processor (EC2) | `auth.staging.synvya.com` | `auth.synvya.com` |
+| MCP Server (Vercel) | `mcp.staging.synvya.com` | `mcp.synvya.com` |
+| Client App (S3 + CloudFront) | `account.staging.synvya.com` | `account.synvya.com` |
+
+Each staging service points to the staging versions of its dependencies (e.g., staging MCP server calls staging Event Processor, staging client authenticates against staging Keycast).
+
+## 4. Target Architecture
 
 ```
                          ┌──────────────────────────────────────┐
-                         │  ALB (auth.synvya.com)               │
+                         │  ALB (auth.synvya.com or             │
+                         │       auth.staging.synvya.com)       │
                          │                                      │
                          │  /api/auth/*  ──► :3000 (Keycast)    │
                          │  /api/nostr   ──► :3000 (Keycast)    │
@@ -55,7 +86,7 @@ Moving Keycast to EC2 co-locates it with the Event Processor on the same instanc
                          └──────────┬───────────────────────────┘
                                     │
 ┌───────────────────────────────────┼───────────────────────────────────┐
-│  EC2 Instance (t3.medium or larger)                                    │
+│  EC2 Instance                                                          │
 │                                                                        │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
 │  │  Docker Compose                                                  │  │
@@ -77,26 +108,21 @@ Moving Keycast to EC2 co-locates it with the Event Processor on the same instanc
 │  AWS SES ◄── send email (via IAM role)                                │
 │  AWS Secrets Manager ◄── secrets at startup                           │
 └───────────────────────────────────────────────────────────────────────┘
-
-┌──────────────────┐
-│  RDS PostgreSQL  │  ◄── alternative to containerized Postgres (v2)
-│  (future)        │
-└──────────────────┘
 ```
 
-### 3.1 v1: Containerized PostgreSQL + Redis
+### 4.1 v1: Containerized PostgreSQL + Redis
 
 For v1, PostgreSQL and Redis run as Docker containers on the same EC2 instance. This simplifies setup and keeps costs low. Data is persisted via Docker volumes.
 
-### 3.2 v2: Managed Services
+### 4.2 v2: Managed Services
 
 Future migration to RDS PostgreSQL and ElastiCache Redis for automated backups, failover, and patching. The application code doesn't change — only the `DATABASE_URL` and `REDIS_URL` env vars.
 
-## 4. Docker Compose Configuration
+## 5. Docker Compose Configuration
 
 The existing `docker-compose.yml` in the Keycast repo is the starting point. Synvya's version adds the Event Processor and replaces GCP-specific config with AWS equivalents.
 
-### 4.1 Synvya Docker Compose
+### 5.1 Synvya Docker Compose
 
 File: `docker-compose.synvya.yml` (on the `synvya` branch)
 
@@ -232,7 +258,7 @@ networks:
   synvya:
 ```
 
-### 4.2 Dockerfile Change for Feature Flags
+### 5.2 Dockerfile Change for Feature Flags
 
 The Keycast Dockerfile needs a build arg for Cargo features:
 
@@ -248,19 +274,21 @@ RUN if [ -n "$CARGO_FEATURES" ]; then \
 
 This allows `docker compose build --build-arg CARGO_FEATURES=aws` to enable the AWS providers without affecting the upstream Dockerfile default.
 
-## 5. EC2 Instance Setup
+## 6. EC2 Instance Setup
 
-### 5.1 Instance Specification
+### 6.1 Instance Specification
 
-| Property | Value |
-|---|---|
-| Instance type | `t3.medium` (2 vCPU, 4 GB RAM) — upgrade to `t3.large` if needed |
-| AMI | Amazon Linux 2023 |
-| Storage | 30 GB gp3 EBS (for Docker images, PostgreSQL data, logs) |
-| Security group | Inbound: 80/443 from ALB only. SSH (22) from admin IP only. |
-| IAM role | `synvya-ec2-keycast` with KMS, SES, Secrets Manager, DynamoDB permissions |
+| Property | Staging | Production |
+|---|---|---|
+| Instance type | `t3.small` (1 vCPU, 2 GB RAM) | `t3.medium` (2 vCPU, 4 GB RAM) |
+| AMI | Amazon Linux 2023 | Amazon Linux 2023 |
+| Storage | 20 GB gp3 EBS | 30 GB gp3 EBS |
+| Security group | Inbound: 80/443 from ALB. SSH (22) from admin IP. | Same |
+| IAM role | `synvya-ec2-staging` | `synvya-ec2-prod` |
 
-### 5.2 IAM Role Permissions
+Both IAM roles have the same permission structure (see below), scoped to their respective DynamoDB tables and secrets paths.
+
+### 6.2 IAM Role Permissions
 
 ```json
 {
@@ -282,23 +310,23 @@ This allows `docker compose build --build-arg CARGO_FEATURES=aws` to enable the 
       "Sid": "SecretsManager",
       "Effect": "Allow",
       "Action": ["secretsmanager:GetSecretValue"],
-      "Resource": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:synvya/keycast/*"
+      "Resource": "arn:aws:secretsmanager:us-east-1:ACCOUNT_ID:secret:synvya/<ENV>/*"
     },
     {
       "Sid": "DynamoDB",
       "Effect": "Allow",
       "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
       "Resource": [
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/synvya-reservation-state",
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/synvya-reservation-state/index/*",
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/synvya-restaurant-config"
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/<PREFIX>-reservation-state",
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/<PREFIX>-reservation-state/index/*",
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/<PREFIX>-restaurant-config"
       ]
     }
   ]
 }
 ```
 
-### 5.3 Instance Bootstrap
+### 6.3 Instance Bootstrap
 
 One-time setup on the EC2 instance:
 
@@ -323,16 +351,16 @@ git clone https://github.com/Synvya/event-processor.git
 cd keycast && git checkout synvya
 ```
 
-## 6. ALB Configuration
+## 7. ALB Configuration
 
-### 6.1 Target Groups
+### 7.1 Target Groups
 
 | Target Group | Port | Health Check |
 |---|---|---|
 | `synvya-keycast` | 3000 | `GET /health` — healthy threshold: 2, unhealthy: 3, interval: 30s |
 | `synvya-event-processor` | 4000 | `GET /health` — same thresholds |
 
-### 6.2 Listener Rules (HTTPS :443)
+### 7.2 Listener Rules (HTTPS :443)
 
 Priority order:
 
@@ -346,30 +374,40 @@ Priority order:
 | 6 | Path is `/api/teams/*` | `synvya-keycast` |
 | Default | All other paths | `synvya-keycast` |
 
-### 6.3 SSL Certificate
+### 7.3 SSL Certificates
 
-ACM certificate for `auth.synvya.com`, attached to the ALB HTTPS listener. DNS validation via Route 53.
+| Environment | Certificate | Covers |
+|---|---|---|
+| Staging | `*.staging.synvya.com` (wildcard) | All staging services |
+| Production | `auth.synvya.com` | Keycast + Event Processor |
 
-## 7. Secrets Management
+Both validated via DNS in Route 53. The wildcard staging certificate covers `auth.staging.synvya.com`, `mcp.staging.synvya.com`, and `account.staging.synvya.com` with a single cert.
 
-Secrets are stored in AWS Secrets Manager and loaded into environment variables at deploy time.
+## 8. Secrets Management
+
+Secrets are stored in AWS Secrets Manager and loaded into environment variables at deploy time. Each environment has its own secret path prefix.
+
+**Production** (`synvya/prod/`):
 
 | Secret Path | Value | Used By |
 |---|---|---|
-| `synvya/keycast/server-nsec` | Keycast server Nostr secret key | Keycast (`SERVER_NSEC`) |
-| `synvya/keycast/postgres-password` | PostgreSQL password | Keycast + Postgres (`POSTGRES_PASSWORD`) |
-| `synvya/event-processor/service-token` | EP's Keycast service token | Event Processor (`EP_SERVICE_TOKEN`) |
-| `synvya/event-processor/api-key` | MCP→EP API key | Event Processor + MCP Server |
+| `synvya/prod/keycast/server-nsec` | Keycast server Nostr secret key | Keycast (`SERVER_NSEC`) |
+| `synvya/prod/keycast/postgres-password` | PostgreSQL password | Keycast + Postgres (`POSTGRES_PASSWORD`) |
+| `synvya/prod/event-processor/service-token` | EP's Keycast service token | Event Processor (`EP_SERVICE_TOKEN`) |
+| `synvya/prod/event-processor/api-key` | MCP→EP API key | Event Processor + MCP Server |
 
-### 7.1 Loading Secrets at Deploy Time
+**Staging** (`synvya/staging/`): Same structure, different values. Staging uses a separate server nsec so staging events don't pollute the production Nostr identity.
 
-A deploy script fetches secrets from Secrets Manager and writes them to a `.env` file that Docker Compose reads:
+### 8.1 Loading Secrets at Deploy Time
+
+A deploy script fetches secrets from Secrets Manager and writes them to a `.env` file that Docker Compose reads. The script takes an environment argument:
 
 ```bash
 #!/bin/bash
 # scripts/load-secrets.sh
 set -euo pipefail
 
+ENV=${1:?Usage: load-secrets.sh <staging|prod>}
 REGION=${AWS_REGION:-us-east-1}
 
 get_secret() {
@@ -380,30 +418,78 @@ get_secret() {
         --region "$REGION"
 }
 
+if [ "$ENV" = "staging" ]; then
+    DOMAIN=auth.staging.synvya.com
+    DYNAMO_PREFIX=synvya-staging
+else
+    DOMAIN=auth.synvya.com
+    DYNAMO_PREFIX=synvya
+fi
+
 cat > /opt/synvya/.env <<EOF
-POSTGRES_PASSWORD=$(get_secret synvya/keycast/postgres-password)
-SERVER_NSEC=$(get_secret synvya/keycast/server-nsec)
-EP_SERVICE_TOKEN=$(get_secret synvya/event-processor/service-token)
+POSTGRES_PASSWORD=$(get_secret synvya/$ENV/keycast/postgres-password)
+SERVER_NSEC=$(get_secret synvya/$ENV/keycast/server-nsec)
+EP_SERVICE_TOKEN=$(get_secret synvya/$ENV/event-processor/service-token)
 AWS_KMS_KEY_ID=alias/keycast-master-key
 AWS_REGION=$REGION
 BUNKER_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.snort.social
 NOSTR_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.snort.social
+ALLOWED_ORIGINS=https://$DOMAIN
+BASE_URL=https://$DOMAIN
+APP_URL=https://$DOMAIN
+VITE_DOMAIN=https://$DOMAIN
 FROM_EMAIL=noreply@synvya.com
 FROM_NAME=Synvya
+DYNAMODB_RESERVATION_TABLE=${DYNAMO_PREFIX}-reservation-state
+DYNAMODB_CONFIG_TABLE=${DYNAMO_PREFIX}-restaurant-config
 VITE_ALLOWED_PUBKEYS=${VITE_ALLOWED_PUBKEYS:-}
 EOF
 
 chmod 600 /opt/synvya/.env
 ```
 
-## 8. CI/CD — GitHub Actions
+## 9. CI/CD — GitHub Actions
 
-### 8.1 Deployment Workflow
+### 9.1 Deployment Workflows
 
-File: `.github/workflows/deploy.yml` (on the `synvya` branch of `Synvya/keycast`)
+Two workflows, one per environment:
+
+**Staging** — `.github/workflows/deploy-staging.yml`:
 
 ```yaml
-name: Deploy to EC2
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [synvya-staging]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_STAGING_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_STAGING_SSH_KEY }}
+          script: |
+            cd /opt/synvya
+            cd keycast && git pull origin synvya-staging && cd ..
+            cd event-processor && git pull origin main && cd ..
+            bash keycast/scripts/load-secrets.sh staging
+            docker compose -f keycast/docker-compose.synvya.yml build
+            docker compose -f keycast/docker-compose.synvya.yml up -d
+            sleep 10
+            curl -f http://localhost:3000/health || exit 1
+            curl -f http://localhost:4000/health || exit 1
+```
+
+**Production** — `.github/workflows/deploy-prod.yml`:
+
+```yaml
+name: Deploy to Production
 
 on:
   push:
@@ -417,39 +503,35 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_HOST }}
+          host: ${{ secrets.EC2_PROD_HOST }}
           username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
+          key: ${{ secrets.EC2_PROD_SSH_KEY }}
           script: |
             cd /opt/synvya
-
-            # Pull latest code
             cd keycast && git pull origin synvya && cd ..
             cd event-processor && git pull origin main && cd ..
-
-            # Load secrets
-            bash keycast/scripts/load-secrets.sh
-
-            # Build and deploy
+            bash keycast/scripts/load-secrets.sh prod
             docker compose -f keycast/docker-compose.synvya.yml build
             docker compose -f keycast/docker-compose.synvya.yml up -d
-
-            # Wait for health
             sleep 10
             curl -f http://localhost:3000/health || exit 1
             curl -f http://localhost:4000/health || exit 1
 ```
 
-### 8.2 GitHub Secrets
+**Recommended workflow**: Push to `synvya-staging` first. Verify in staging. Then merge `synvya-staging` → `synvya` to deploy to production.
+
+### 9.2 GitHub Secrets
 
 | Secret | Purpose |
 |---|---|
-| `EC2_HOST` | EC2 public IP or hostname |
-| `EC2_SSH_KEY` | SSH private key for `ec2-user` |
+| `EC2_STAGING_HOST` | Staging EC2 public IP or hostname |
+| `EC2_STAGING_SSH_KEY` | SSH private key for staging `ec2-user` |
+| `EC2_PROD_HOST` | Production EC2 public IP or hostname |
+| `EC2_PROD_SSH_KEY` | SSH private key for production `ec2-user` |
 
-## 9. Monitoring
+## 10. Monitoring
 
-### 9.1 CloudWatch Agent
+### 10.1 CloudWatch Agent
 
 Install the CloudWatch agent on the EC2 instance to collect:
 
@@ -457,7 +539,7 @@ Install the CloudWatch agent on the EC2 instance to collect:
 - **System metrics**: CPU, memory, disk, network
 - **Custom metrics**: From Keycast's `/health` endpoint
 
-### 9.2 Health Check Alarms
+### 10.2 Health Check Alarms
 
 | Alarm | Condition | Action |
 |---|---|---|
@@ -466,7 +548,7 @@ Install the CloudWatch agent on the EC2 instance to collect:
 | Disk usage > 80% | CloudWatch metric | SNS notification |
 | CPU > 80% sustained 10 min | CloudWatch metric | SNS notification |
 
-### 9.3 Log Groups
+### 10.3 Log Groups
 
 | Log Group | Source |
 |---|---|
@@ -474,9 +556,9 @@ Install the CloudWatch agent on the EC2 instance to collect:
 | `/synvya/event-processor` | Event Processor container stdout/stderr |
 | `/synvya/postgres` | PostgreSQL container logs |
 
-## 10. Backup Strategy
+## 11. Backup Strategy
 
-### 10.1 PostgreSQL Backups
+### 11.1 PostgreSQL Backups
 
 Daily automated backups of the PostgreSQL data volume:
 
@@ -500,13 +582,13 @@ Cron entry:
 0 3 * * * /opt/synvya/keycast/scripts/backup-postgres.sh
 ```
 
-### 10.2 S3 Backup Retention
+### 11.2 S3 Backup Retention
 
 S3 lifecycle policy on `synvya-backups/keycast/`:
 - Transition to Glacier after 30 days
 - Delete after 90 days
 
-## 11. Rollback
+## 12. Rollback
 
 Docker Compose supports immediate rollback:
 
@@ -519,7 +601,7 @@ docker compose -f keycast/docker-compose.synvya.yml up -d --build
 
 PostgreSQL data persists across deployments (Docker volume). Database migrations are idempotent (0002+), so rolling back the application doesn't require rolling back migrations.
 
-## 12. Files Changed
+## 13. Files Changed
 
 All on the `synvya` branch (Synvya-specific, not upstream):
 
@@ -531,9 +613,9 @@ All on the `synvya` branch (Synvya-specific, not upstream):
 | `.github/workflows/deploy.yml` | GitHub Actions deploy-to-EC2 workflow |
 | `Dockerfile` (modification) | Add `CARGO_FEATURES` build arg for AWS feature flag |
 
-## 13. Migration from Cloud Run
+## 14. Migration from Cloud Run
 
-### 13.1 Prerequisites
+### 14.1 Prerequisites
 
 Before switching DNS:
 
@@ -547,7 +629,7 @@ Before switching DNS:
 - [ ] GitHub Actions secrets configured
 - [ ] PostgreSQL backup cron configured
 
-### 13.2 Data Migration
+### 14.2 Data Migration
 
 1. Export PostgreSQL data from Cloud SQL:
    ```bash
@@ -560,7 +642,7 @@ Before switching DNS:
    ```
 3. Re-encrypt all stored keys from GCP KMS to AWS KMS (see data migration section in [AWS KMS Provider spec](aws-kms-provider.md))
 
-### 13.3 DNS Cutover
+### 14.3 DNS Cutover
 
 1. Deploy to EC2, verify health checks pass
 2. Test with a custom host header or `/etc/hosts` entry pointing `auth.synvya.com` to the ALB
