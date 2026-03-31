@@ -9,6 +9,7 @@ edition = "2021"
 # Feature flag to enable SQLite-based tests (disabled until migrated to PostgreSQL)
 sqlite-tests = []
 integration-tests = []
+aws = ["aws-sdk-sesv2", "aws-config"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -51,6 +52,8 @@ hkdf = "0.12"
 blake3 = "1.5"
 moka = { version = "0.12", features = ["future"] }
 reqwest = { version = "0.12", features = ["json"] }
+aws-sdk-sesv2 = { version = "1", optional = true }
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 jwt-simple = { version = "0.12.9", default-features = false, features = ["pure-rust"] }
 p256 = { version = "0.13", features = ["ecdsa"] }
 # Async bcrypt queue dependencies

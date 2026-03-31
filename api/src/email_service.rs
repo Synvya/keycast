@@ -1,5 +1,5 @@
 // ABOUTME: Email service abstraction for sending verification and password reset emails
-// ABOUTME: Supports SendGrid for production and DevEmailSender for local development/testing
+// ABOUTME: Supports SendGrid for production, AWS SES (behind `aws` feature), and DevEmailSender for local development/testing
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -42,6 +42,116 @@ pub trait EmailSender: Send + Sync {
         // No-op by default
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared email templates (used by SendGrid, SES, and any future providers)
+// ---------------------------------------------------------------------------
+
+fn verification_email_html(verification_url: &str) -> String {
+    format!(
+        r#"
+            <html>
+            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #00B488;">Verify your diVine email</h1>
+                <p>Thanks for signing up! Please verify your email address by clicking the button below:</p>
+                <div style="margin: 30px 0;">
+                    <a href="{}"
+                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                        Verify Email Address
+                    </a>
+                </div>
+                <p style="color: #666; font-size: 14px;">
+                    Or copy and paste this link into your browser:<br>
+                    <a href="{}" style="color: #00B488;">{}</a>
+                </p>
+                <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                    If you didn't sign up for diVine, you can safely ignore this email.
+                </p>
+            </body>
+            </html>
+            "#,
+        verification_url, verification_url, verification_url
+    )
+}
+
+fn verification_email_text(verification_url: &str) -> String {
+    format!(
+        "Thanks for signing up! Please verify your email address by clicking this link:\n\n{}\n\nIf you didn't sign up for diVine, you can safely ignore this email.",
+        verification_url
+    )
+}
+
+fn password_reset_html(reset_url: &str) -> String {
+    format!(
+        r#"
+            <html>
+            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #00B488;">Reset your diVine password</h1>
+                <p>We received a request to reset your password. Click the button below to set a new password:</p>
+                <div style="margin: 30px 0;">
+                    <a href="{}"
+                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                        Reset Password
+                    </a>
+                </div>
+                <p style="color: #666; font-size: 14px;">
+                    Or copy and paste this link into your browser:<br>
+                    <a href="{}" style="color: #00B488;">{}</a>
+                </p>
+                <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                    This link will expire in 1 hour. If you didn't request a password reset, you can safely ignore this email.
+                </p>
+            </body>
+            </html>
+            "#,
+        reset_url, reset_url, reset_url
+    )
+}
+
+fn password_reset_text(reset_url: &str) -> String {
+    format!(
+        "We received a request to reset your password. Click this link to set a new password:\n\n{}\n\nThis link will expire in 1 hour. If you didn't request a password reset, you can safely ignore this email.",
+        reset_url
+    )
+}
+
+fn claim_email_html(claim_url: &str) -> String {
+    format!(
+        r#"
+            <html>
+            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #00B488;">Your Vine account is ready!</h1>
+                <p>Your Vine account has been migrated to diVine. Click the button below to claim it and set up your login:</p>
+                <div style="margin: 30px 0;">
+                    <a href="{}"
+                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                        Claim Your Account
+                    </a>
+                </div>
+                <p style="color: #666; font-size: 14px;">
+                    Or copy and paste this link into your browser:<br>
+                    <a href="{}" style="color: #00B488;">{}</a>
+                </p>
+                <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                    This link will expire in 7 days. If you didn't request this, you can safely ignore this email.
+                </p>
+            </body>
+            </html>
+            "#,
+        claim_url, claim_url, claim_url
+    )
+}
+
+fn claim_email_text(claim_url: &str) -> String {
+    format!(
+        "Your Vine account has been migrated to diVine. Click this link to claim it:\n\n{}\n\nThis link will expire in 7 days. If you didn't request this, you can safely ignore this email.",
+        claim_url
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Development email sender
+// ---------------------------------------------------------------------------
 
 /// Development email sender - logs URLs to console and captures emails for testing
 pub struct DevEmailSender {
@@ -204,6 +314,10 @@ impl EmailSender for DevEmailSender {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SendGrid email sender
+// ---------------------------------------------------------------------------
+
 // SendGrid API types
 #[derive(Debug, Serialize)]
 struct SendGridEmail {
@@ -358,40 +472,11 @@ impl EmailSender for SendGridEmailSender {
             "{}/verify-email?token={}",
             self.base_url, verification_token
         );
+        let subject = "Verify your diVine email address";
+        let html = verification_email_html(&verification_url);
+        let text = verification_email_text(&verification_url);
 
-        let subject = "Verify your diVine email address".to_string();
-        let html_content = format!(
-            r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Verify your diVine email</h1>
-                <p>Thanks for signing up! Please verify your email address by clicking the button below:</p>
-                <div style="margin: 30px 0;">
-                    <a href="{}"
-                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                        Verify Email Address
-                    </a>
-                </div>
-                <p style="color: #666; font-size: 14px;">
-                    Or copy and paste this link into your browser:<br>
-                    <a href="{}" style="color: #00B488;">{}</a>
-                </p>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    If you didn't sign up for diVine, you can safely ignore this email.
-                </p>
-            </body>
-            </html>
-            "#,
-            verification_url, verification_url, verification_url
-        );
-
-        let text_content = format!(
-            "Thanks for signing up! Please verify your email address by clicking this link:\n\n{}\n\nIf you didn't sign up for diVine, you can safely ignore this email.",
-            verification_url
-        );
-
-        self.send_email(to_email, &subject, &html_content, &text_content)
-            .await
+        self.send_email(to_email, subject, &html, &text).await
     }
 
     async fn send_password_reset_email(
@@ -400,87 +485,226 @@ impl EmailSender for SendGridEmailSender {
         reset_token: &str,
     ) -> Result<(), String> {
         let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
+        let subject = "Reset your diVine password";
+        let html = password_reset_html(&reset_url);
+        let text = password_reset_text(&reset_url);
 
-        let subject = "Reset your diVine password".to_string();
-        let html_content = format!(
-            r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Reset your diVine password</h1>
-                <p>We received a request to reset your password. Click the button below to set a new password:</p>
-                <div style="margin: 30px 0;">
-                    <a href="{}"
-                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                        Reset Password
-                    </a>
-                </div>
-                <p style="color: #666; font-size: 14px;">
-                    Or copy and paste this link into your browser:<br>
-                    <a href="{}" style="color: #00B488;">{}</a>
-                </p>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    This link will expire in 1 hour. If you didn't request a password reset, you can safely ignore this email.
-                </p>
-            </body>
-            </html>
-            "#,
-            reset_url, reset_url, reset_url
-        );
-
-        let text_content = format!(
-            "We received a request to reset your password. Click this link to set a new password:\n\n{}\n\nThis link will expire in 1 hour. If you didn't request a password reset, you can safely ignore this email.",
-            reset_url
-        );
-
-        self.send_email(to_email, &subject, &html_content, &text_content)
-            .await
+        self.send_email(to_email, subject, &html, &text).await
     }
 
     async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
-        let subject = "Your Vine account on diVine is ready to claim".to_string();
-        let html_content = format!(
-            r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Your Vine account is ready!</h1>
-                <p>Your Vine account has been migrated to diVine. Click the button below to claim it and set up your login:</p>
-                <div style="margin: 30px 0;">
-                    <a href="{}"
-                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                        Claim Your Account
-                    </a>
-                </div>
-                <p style="color: #666; font-size: 14px;">
-                    Or copy and paste this link into your browser:<br>
-                    <a href="{}" style="color: #00B488;">{}</a>
-                </p>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    This link will expire in 7 days. If you didn't request this, you can safely ignore this email.
-                </p>
-            </body>
-            </html>
-            "#,
-            claim_url, claim_url, claim_url
-        );
+        let subject = "Your Vine account on diVine is ready to claim";
+        let html = claim_email_html(claim_url);
+        let text = claim_email_text(claim_url);
 
-        let text_content = format!(
-            "Your Vine account has been migrated to diVine. Click this link to claim it:\n\n{}\n\nThis link will expire in 7 days. If you didn't request this, you can safely ignore this email.",
-            claim_url
-        );
-
-        self.send_email(to_email, &subject, &html_content, &text_content)
-            .await
+        self.send_email(to_email, subject, &html, &text).await
     }
 }
 
-/// Create the appropriate email sender based on environment
-/// - If SENDGRID_API_KEY is set: use SendGrid (production)
-/// - Otherwise: use DevEmailSender (development/testing)
+// ---------------------------------------------------------------------------
+// AWS SES email sender (behind `aws` feature)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "aws")]
+pub struct SesEmailSender {
+    client: aws_sdk_sesv2::Client,
+    from_email: String,
+    from_name: String,
+    base_url: String,
+}
+
+#[cfg(feature = "aws")]
+impl SesEmailSender {
+    pub async fn new() -> Result<Self, String> {
+        let region = env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region.clone()))
+            .load()
+            .await;
+
+        let client = aws_sdk_sesv2::Client::new(&config);
+
+        let from_email =
+            env::var("FROM_EMAIL").unwrap_or_else(|_| "noreply@divine.video".to_string());
+        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "diVine".to_string());
+        let base_url = env::var("BASE_URL")
+            .or_else(|_| env::var("APP_URL"))
+            .unwrap_or_else(|_| "http://localhost:5173".to_string());
+
+        tracing::info!(
+            "AWS SES email sender initialized (region: {}, from: {})",
+            region,
+            from_email
+        );
+
+        Ok(Self {
+            client,
+            from_email,
+            from_name,
+            base_url,
+        })
+    }
+
+    async fn send_email(
+        &self,
+        to: &str,
+        subject: &str,
+        html: &str,
+        text: &str,
+    ) -> Result<(), String> {
+        // Check if emails are disabled (useful for load testing)
+        if env::var("DISABLE_EMAILS").is_ok() {
+            tracing::info!(
+                "Emails disabled via DISABLE_EMAILS env var, skipping email to {}",
+                to
+            );
+            return Ok(());
+        }
+
+        use aws_sdk_sesv2::types::{
+            Body, Content, Destination, EmailContent, Message,
+        };
+
+        let from = format!("{} <{}>", self.from_name, self.from_email);
+
+        self.client
+            .send_email()
+            .from_email_address(&from)
+            .destination(Destination::builder().to_addresses(to).build())
+            .content(
+                EmailContent::builder()
+                    .simple(
+                        Message::builder()
+                            .subject(
+                                Content::builder()
+                                    .data(subject)
+                                    .charset("UTF-8")
+                                    .build()
+                                    .map_err(|e| format!("SES subject build error: {}", e))?,
+                            )
+                            .body(
+                                Body::builder()
+                                    .html(
+                                        Content::builder()
+                                            .data(html)
+                                            .charset("UTF-8")
+                                            .build()
+                                            .map_err(|e| {
+                                                format!("SES html content build error: {}", e)
+                                            })?,
+                                    )
+                                    .text(
+                                        Content::builder()
+                                            .data(text)
+                                            .charset("UTF-8")
+                                            .build()
+                                            .map_err(|e| {
+                                                format!("SES text content build error: {}", e)
+                                            })?,
+                                    )
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| format!("SES send failed: {}", e))?;
+
+        tracing::debug!("Email sent to {} via SES", to);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "aws")]
+#[async_trait]
+impl EmailSender for SesEmailSender {
+    async fn send_verification_email(
+        &self,
+        to_email: &str,
+        verification_token: &str,
+    ) -> Result<(), String> {
+        let verification_url = format!(
+            "{}/verify-email?token={}",
+            self.base_url, verification_token
+        );
+        let subject = "Verify your diVine email address";
+        let html = verification_email_html(&verification_url);
+        let text = verification_email_text(&verification_url);
+
+        self.send_email(to_email, subject, &html, &text).await
+    }
+
+    async fn send_password_reset_email(
+        &self,
+        to_email: &str,
+        reset_token: &str,
+    ) -> Result<(), String> {
+        let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
+        let subject = "Reset your diVine password";
+        let html = password_reset_html(&reset_url);
+        let text = password_reset_text(&reset_url);
+
+        self.send_email(to_email, subject, &html, &text).await
+    }
+
+    async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
+        let subject = "Your Vine account on diVine is ready to claim";
+        let html = claim_email_html(claim_url);
+        let text = claim_email_text(claim_url);
+
+        self.send_email(to_email, subject, &html, &text).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Provider selection
+// ---------------------------------------------------------------------------
+
+/// Create the appropriate email sender based on environment configuration.
+///
+/// Selection logic:
+/// - `EMAIL_PROVIDER=sendgrid` → SendGrid (requires `SENDGRID_API_KEY`)
+/// - `EMAIL_PROVIDER=ses` → AWS SES (requires `aws` feature)
+/// - `EMAIL_PROVIDER=dev` → Development logger
+/// - No `EMAIL_PROVIDER` set → backward compat: use SendGrid if `SENDGRID_API_KEY` is present, else dev
 pub fn create_email_sender() -> Arc<dyn EmailSender> {
-    match env::var("SENDGRID_API_KEY") {
-        Ok(api_key) if !api_key.is_empty() => Arc::new(SendGridEmailSender::new(api_key)),
-        _ => {
-            tracing::warn!("SENDGRID_API_KEY not set - using development email sender");
+    let provider = env::var("EMAIL_PROVIDER").unwrap_or_else(|_| {
+        // Backward compatibility: SENDGRID_API_KEY presence → "sendgrid"
+        if env::var("SENDGRID_API_KEY")
+            .map(|k| !k.is_empty())
+            .unwrap_or(false)
+        {
+            "sendgrid".to_string()
+        } else {
+            "dev".to_string()
+        }
+    });
+
+    match provider.as_str() {
+        "sendgrid" => {
+            let api_key = env::var("SENDGRID_API_KEY")
+                .expect("SENDGRID_API_KEY must be set when EMAIL_PROVIDER=sendgrid");
+            tracing::info!("Using SendGrid for email delivery");
+            Arc::new(SendGridEmailSender::new(api_key))
+        }
+        #[cfg(feature = "aws")]
+        "ses" => {
+            tracing::info!("Using AWS SES for email delivery");
+            let rt = tokio::runtime::Handle::current();
+            let sender = rt
+                .block_on(async { SesEmailSender::new().await })
+                .expect("Failed to initialize AWS SES email sender");
+            Arc::new(sender)
+        }
+        #[cfg(not(feature = "aws"))]
+        "ses" => {
+            panic!("EMAIL_PROVIDER=ses requires the 'aws' feature to be enabled at compile time");
+        }
+        "dev" | _ => {
+            tracing::warn!("Using development email sender (emails logged to console)");
             Arc::new(DevEmailSender::new())
         }
     }

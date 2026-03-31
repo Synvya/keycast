@@ -527,6 +527,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-sesv2"
+version = "1.69.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f9fe1782bb55901a4ae37c513e897e4ecd6ce06ced7e93dbbda5644aa8695fc"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.61.1",
+ "aws-smithy-json",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "http 0.2.12",
+ "once_cell",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sso"
 version = "1.61.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -604,16 +626,21 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "bytes",
+ "crypto-bigint 0.5.5",
  "form_urlencoded",
  "hex",
  "hmac 0.12.1",
  "http 0.2.12",
  "http 1.2.0",
  "once_cell",
+ "p256 0.11.1",
  "percent-encoding",
+ "ring",
  "sha2 0.10.8",
+ "subtle",
  "time",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -3398,6 +3425,8 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "async-trait",
+ "aws-config",
+ "aws-sdk-sesv2",
  "axum",
  "base64 0.22.1",
  "bcrypt",
