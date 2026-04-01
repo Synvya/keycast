@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-aws = ["keycast_core/aws"]
+aws = ["keycast_core/aws", "keycast_api/aws"]
 
 [dependencies]
 keycast_core = { path = "../core" }
