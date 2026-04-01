@@ -81,7 +81,7 @@ RUN bunx svelte-kit sync
 RUN bun run build
 
 # Final stage
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 # Kamal service label
 LABEL service="keycast"
