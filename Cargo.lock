@@ -505,6 +505,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-kms"
+version = "1.62.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db4ecacd2e7947b670b7f9e5146c860d1b638cef1392351df47ddf6bb4c68839"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.61.1",
+ "aws-smithy-json",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "http 0.2.12",
+ "once_cell",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-sesv2"
 version = "1.69.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3463,6 +3485,8 @@ dependencies = [
  "aes-gcm",
  "anchorhash",
  "async-trait",
+ "aws-config",
+ "aws-sdk-kms",
  "base64 0.22.1",
  "bcrypt",
  "chrono",
