@@ -49,7 +49,7 @@ Two fully isolated environments. Same Docker Compose file, different `.env` and 
 | | Staging | Production |
 |---|---|---|
 | Domain | `auth.staging.synvya.com` | `auth.synvya.com` |
-| EC2 | `t3.small` (1 vCPU, 2 GB) | `t3.medium` (2 vCPU, 4 GB) |
+| EC2 | `t3.xlarge` for first build, then `t3.medium` | `t3.xlarge` for first build, then `t3.medium` |
 | PostgreSQL | Containerized (same instance) | Containerized v1, RDS v2 |
 | Redis | Containerized (same instance) | Containerized v1, ElastiCache v2 |
 | KMS | Shared AWS KMS key | Shared AWS KMS key |
@@ -280,11 +280,18 @@ This allows `docker compose build --build-arg CARGO_FEATURES=aws` to enable the 
 
 | Property | Staging | Production |
 |---|---|---|
-| Instance type | `t3.small` (1 vCPU, 2 GB RAM) | `t3.medium` (2 vCPU, 4 GB RAM) |
+| Instance type | `t3.xlarge` for first build; downsize to `t3.medium` after | `t3.xlarge` for first build; downsize to `t3.medium` after |
 | AMI | Amazon Linux 2023 | Amazon Linux 2023 |
 | Storage | 20 GB gp3 EBS | 30 GB gp3 EBS |
-| Security group | Inbound: 80/443 from ALB. SSH (22) from admin IP. | Same |
+| Security group | Inbound: 80/443 from ALB. SSH (22) from admin IP. Port 3000 open during initial testing (before ALB). | Same |
 | IAM role | `synvya-ec2-staging` | `synvya-ec2-prod` |
+| Elastic IP | Required — assign before configuring GitHub Actions secrets | Required |
+
+> **Instance sizing**: Building the Rust + AWS SDK Docker image requires at least a t3.xlarge (4 vCPU, 16 GB RAM) for the first build. After that, Docker layer caching makes subsequent builds much faster and the instance can be downsized to a t3.medium for normal operation.
+
+> **Port 3000**: Open port 3000 in the security group for direct access during initial testing (before ALB is set up). Once ALB is configured, restrict port 3000 to the ALB security group only.
+
+> **Elastic IP**: Assign an Elastic IP to the instance so the public IP doesn't change on stop/start. This matters because the IP is stored in GitHub Actions secrets (`EC2_STAGING_HOST`/`EC2_PROD_HOST`) — without it, every instance restart requires updating those secrets.
 
 Both IAM roles have the same permission structure (see below), scoped to their respective DynamoDB tables and secrets paths.
 
@@ -328,28 +335,41 @@ Both IAM roles have the same permission structure (see below), scoped to their r
 
 ### 6.3 Instance Bootstrap
 
-One-time setup on the EC2 instance:
+One-time setup on the EC2 instance.
+
+> **Docker on Amazon Linux 2023**: The default `dnf install docker` package does not include the buildx or compose plugins. Docker CE repos (CentOS/Fedora) don't work with Amazon Linux 2023's version string. Install docker via dnf, then manually install both plugins.
 
 ```bash
-# Install Docker + Docker Compose
+# Install Docker (base package from Amazon Linux 2023)
 sudo dnf update -y
 sudo dnf install -y docker
 sudo systemctl enable docker && sudo systemctl start docker
 sudo usermod -aG docker ec2-user
 
-# Install Docker Compose plugin
+# Install buildx plugin manually
 sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+sudo curl -SL https://github.com/docker/buildx/releases/download/v0.14.1/buildx-v0.14.1.linux-amd64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-buildx
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+
+# Install Docker Compose plugin manually
+sudo curl -SL https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-linux-x86_64 \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# Add swap space (2 GB) — safety net even on larger instances
+# Note: swap does not persist across reboots; re-run this after each reboot if needed
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 
 # Clone the repos
 mkdir -p /opt/synvya
 cd /opt/synvya
 git clone https://github.com/Synvya/keycast.git
-git clone https://github.com/Synvya/event-processor.git
-cd keycast && git checkout synvya
+git clone https://github.com/Synvya/event-processor.git  # optional for initial Keycast testing
+cd keycast && git checkout synvya-staging
 ```
+
+> **Re-login required**: After `usermod -aG docker ec2-user`, log out and back in for the group change to take effect before running any `docker` commands.
 
 ## 7. ALB Configuration
 
@@ -398,6 +418,8 @@ Secrets are stored in AWS Secrets Manager and loaded into environment variables 
 
 **Staging** (`synvya/staging/`): Same structure, different values. Staging uses a separate server nsec so staging events don't pollute the production Nostr identity.
 
+> **Postgres password**: Must be **alphanumeric only** (no special characters). The password is embedded in the `DATABASE_URL` connection string (`postgres://postgres:<PASSWORD>@postgres:5432/keycast`), and characters like `@`, `/`, `#`, or `$` break URL parsing. If you need to change the postgres password after first initialization, you must wipe the Docker volume: `docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env down -v` (this deletes all data — only do this on a fresh instance or after backing up).
+
 ### 8.1 Loading Secrets at Deploy Time
 
 A deploy script fetches secrets from Secrets Manager and writes them to a `.env` file that Docker Compose reads. The script takes an environment argument:
@@ -427,6 +449,8 @@ else
 fi
 
 cat > /opt/synvya/.env <<EOF
+# IMPORTANT: postgres password must be alphanumeric only (no @, /, #, $ etc.)
+# Special characters break URL parsing in DATABASE_URL.
 POSTGRES_PASSWORD=$(get_secret synvya/$ENV/keycast/postgres-password)
 SERVER_NSEC=$(get_secret synvya/$ENV/keycast/server-nsec)
 EP_SERVICE_TOKEN=$(get_secret synvya/$ENV/event-processor/service-token)
@@ -479,12 +503,17 @@ jobs:
             cd keycast && git pull origin synvya-staging && cd ..
             cd event-processor && git pull origin main && cd ..
             bash keycast/scripts/load-secrets.sh staging
-            docker compose -f keycast/docker-compose.synvya.yml build
-            docker compose -f keycast/docker-compose.synvya.yml up -d
+            # --env-file is required: Docker Compose resolves .env relative to the
+            # compose file location, not the current working directory.
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
             sleep 10
             curl -f http://localhost:3000/health || exit 1
-            curl -f http://localhost:4000/health || exit 1
+            # Event processor is optional; skip health check if not running
+            curl -f http://localhost:4000/health || echo "event-processor not running (optional)"
 ```
+
+> **GitHub secrets**: `EC2_STAGING_HOST` and `EC2_STAGING_SSH_KEY` must be configured in the repo's GitHub Actions secrets **before** the first push to `synvya-staging`. The workflow runs on every push to that branch — if the secrets are missing, the job will fail immediately with "missing server host".
 
 **Production** — `.github/workflows/deploy-prod.yml`:
 
@@ -511,8 +540,8 @@ jobs:
             cd keycast && git pull origin synvya && cd ..
             cd event-processor && git pull origin main && cd ..
             bash keycast/scripts/load-secrets.sh prod
-            docker compose -f keycast/docker-compose.synvya.yml build
-            docker compose -f keycast/docker-compose.synvya.yml up -d
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
             sleep 10
             curl -f http://localhost:3000/health || exit 1
             curl -f http://localhost:4000/health || exit 1
@@ -594,14 +623,14 @@ Docker Compose supports immediate rollback:
 
 ```bash
 # If a deployment fails, roll back to previous image
-docker compose -f keycast/docker-compose.synvya.yml down
+docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env down
 git -C keycast checkout HEAD~1
-docker compose -f keycast/docker-compose.synvya.yml up -d --build
+docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d --build
 ```
 
 PostgreSQL data persists across deployments (Docker volume). Database migrations are idempotent (0002+), so rolling back the application doesn't require rolling back migrations.
 
-## 13. Files Changed
+## 12.1 Files Changed
 
 All on the `synvya` branch (Synvya-specific, not upstream):
 
@@ -613,7 +642,55 @@ All on the `synvya` branch (Synvya-specific, not upstream):
 | `.github/workflows/deploy.yml` | GitHub Actions deploy-to-EC2 workflow |
 | `Dockerfile` (modification) | Add `CARGO_FEATURES` build arg for AWS feature flag |
 
-## 14. Migration from Cloud Run
+## 13. Starting Without the Event Processor
+
+Keycast can run without the Event Processor for initial testing or if the event-processor repo has not been cloned yet:
+
+```bash
+# Start only Keycast and its dependencies
+docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env \
+  up -d postgres redis migrate keycast
+```
+
+The Event Processor requires its own repo cloned at `/opt/synvya/event-processor`. Start the full stack only after that repo is present:
+
+```bash
+docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
+```
+
+## 14. Known Issues and Lessons Learned
+
+### 14.1 Dockerfile Runtime Base Image
+
+The Dockerfile runtime stage must use `debian:trixie-slim` (not `debian:bookworm-slim`) to match the glibc version bundled with `rust:1.93-slim` (the builder stage). Using `bookworm-slim` causes a glibc version mismatch at runtime: the binary segfaults or fails to start. Fixed in commit `432cf24`.
+
+### 14.2 Docker Compose `--env-file` Resolution
+
+Docker Compose resolves `.env` relative to the **compose file location**, not the current working directory. When running compose commands from `/opt/synvya` with `-f keycast/docker-compose.synvya.yml`, Docker looks for `.env` in `keycast/` — not in `/opt/synvya/`. Always pass `--env-file /opt/synvya/.env` explicitly on every compose command.
+
+### 14.3 Amazon Linux 2023 Docker Installation
+
+The `dnf install docker` package on Amazon Linux 2023 does not include buildx or the compose plugin. Docker CE repos (CentOS/Fedora) are incompatible with Amazon Linux 2023's version string. Install the base `docker` package via dnf, then download buildx and docker-compose binaries manually into `/usr/local/lib/docker/cli-plugins/` (see Section 6.3).
+
+### 14.4 EC2 Instance Sizing for First Build
+
+A t3.small (2 GB RAM) is insufficient to build the Rust + AWS SDK Docker image. The build OOMs and fails silently or hangs. Use a t3.xlarge (16 GB RAM) for the first build. After that, Docker layer caching means incremental builds use far less memory and the instance can be downsized to t3.medium.
+
+### 14.5 Swap Space
+
+Add 2 GB of swap even on larger instances as a safety net for memory spikes during builds:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
+Swap does not persist across reboots. Re-run after each reboot, or add it to `/etc/fstab` for persistence.
+
+### 14.6 Postgres Password Must Be Alphanumeric
+
+The postgres password gets embedded in the `DATABASE_URL` connection string. Special characters (`@`, `/`, `#`, `$`, etc.) break URL parsing and cause connection failures. Use alphanumeric passwords only. If the password is changed after first initialization, the postgres Docker volume must be wiped (`docker compose ... down -v`) since Postgres only sets the password on first init.
+
+## 15. Migration from Cloud Run
 
 ### 14.1 Prerequisites
 

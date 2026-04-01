@@ -19,10 +19,17 @@ jobs:
           script: |
             cd /opt/synvya
             cd keycast && git pull origin synvya-staging && cd ..
-            cd event-processor && git pull origin main && cd ..
+            if [ -d event-processor ]; then
+              cd event-processor && git pull origin main && cd ..
+            fi
             bash keycast/scripts/load-secrets.sh staging
-            docker compose -f keycast/docker-compose.synvya.yml build
-            docker compose -f keycast/docker-compose.synvya.yml up -d
+            # --env-file is required: Docker Compose resolves .env relative to the
+            # compose file location, not the current working directory.
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
             sleep 10
             curl -f http://localhost:3000/health || exit 1
-            curl -f http://localhost:4000/health || exit 1
+            # Event processor is optional; only check if it should be running
+            if docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env ps event-processor | grep -q "running"; then
+              curl -f http://localhost:4000/health || exit 1
+            fi

@@ -26,6 +26,9 @@ else
 fi
 
 cat > /opt/synvya/.env <<EOF
+# IMPORTANT: POSTGRES_PASSWORD must be alphanumeric only (no @, /, #, $ etc.)
+# Special characters break URL parsing in DATABASE_URL connection strings.
+# If this value is changed after first init, wipe the postgres volume: docker compose down -v
 POSTGRES_PASSWORD=$(get_secret synvya/$ENV/keycast/postgres-password)
 SERVER_NSEC=$(get_secret synvya/$ENV/keycast/server-nsec)
 EP_SERVICE_TOKEN=$(get_secret synvya/$ENV/event-processor/service-token)
