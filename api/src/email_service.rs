@@ -562,9 +562,7 @@ impl SesEmailSender {
             return Ok(());
         }
 
-        use aws_sdk_sesv2::types::{
-            Body, Content, Destination, EmailContent, Message,
-        };
+        use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 
         let from = format!("{} <{}>", self.from_name, self.from_email);
 

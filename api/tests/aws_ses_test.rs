@@ -4,8 +4,8 @@
 // ABOUTME: Requires AWS credentials and a verified SES sender identity
 // Tests skip gracefully if AWS_SES_TEST_RECIPIENT is not set
 
-use keycast_api::email_service::SesEmailSender;
 use keycast_api::email_service::EmailSender;
+use keycast_api::email_service::SesEmailSender;
 
 /// Skip helper: returns true if SES test env vars are available
 fn ses_available() -> bool {
@@ -20,7 +20,11 @@ async fn test_ses_initialization() {
 
     // SES sender should initialize successfully with valid AWS credentials
     let sender = SesEmailSender::new().await;
-    assert!(sender.is_ok(), "SES initialization failed: {:?}", sender.err());
+    assert!(
+        sender.is_ok(),
+        "SES initialization failed: {:?}",
+        sender.err()
+    );
 }
 
 #[tokio::test]
@@ -36,7 +40,11 @@ async fn test_ses_send_verification_email() {
         .send_verification_email(&recipient, "test-token-12345")
         .await;
 
-    assert!(result.is_ok(), "Verification email failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Verification email failed: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
@@ -52,7 +60,11 @@ async fn test_ses_send_password_reset_email() {
         .send_password_reset_email(&recipient, "reset-token-67890")
         .await;
 
-    assert!(result.is_ok(), "Password reset email failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Password reset email failed: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]
