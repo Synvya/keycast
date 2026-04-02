@@ -703,7 +703,7 @@ pub fn create_email_sender() -> Arc<dyn EmailSender> {
         "ses" => {
             panic!("EMAIL_PROVIDER=ses requires the 'aws' feature to be enabled at compile time");
         }
-        "dev" | _ => {
+        _ => {
             tracing::warn!("Using development email sender (emails logged to console)");
             Arc::new(DevEmailSender::new())
         }
