@@ -1,0 +1,76 @@
+name: Test AWS Providers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'core/src/encryption/aws_key_manager.rs'
+      - 'api/src/email_service.rs'
+      - 'api/tests/aws_ses_test.rs'
+      - '.github/workflows/test-aws-providers.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/src/encryption/aws_key_manager.rs'
+      - 'api/src/email_service.rs'
+      - 'api/tests/aws_ses_test.rs'
+      - '.github/workflows/test-aws-providers.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-aws-kms:
+    name: AWS KMS Integration Tests
+    runs-on: ubuntu-latest
+    # Only run if AWS secrets are configured (skipped on forks without secrets)
+    if: ${{ vars.AWS_KMS_KEY_ID != '' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run KMS tests
+        env:
+          AWS_KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+        run: |
+          cargo test -p keycast_core --features aws -- aws_key_manager --test-threads=1
+
+  test-aws-ses:
+    name: AWS SES Integration Tests
+    runs-on: ubuntu-latest
+    if: ${{ vars.AWS_SES_TEST_RECIPIENT != '' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run SES tests
+        env:
+          AWS_SES_TEST_RECIPIENT: ${{ vars.AWS_SES_TEST_RECIPIENT }}
+          FROM_EMAIL: ${{ vars.AWS_SES_FROM_EMAIL || 'noreply@divine.video' }}
+          FROM_NAME: ${{ vars.AWS_SES_FROM_NAME || 'diVine' }}
+          BASE_URL: https://example.com
+        run: |
+          cargo test -p keycast_api --features aws --test aws_ses_test -- --test-threads=1
