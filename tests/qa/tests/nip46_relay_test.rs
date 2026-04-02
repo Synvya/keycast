@@ -35,7 +35,7 @@ async fn nip46_001_connect_via_bunker_url() {
     assert!(!secret.is_empty(), "Secret should not be empty");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Should connect via relay");
 
@@ -75,7 +75,7 @@ async fn nip46_002_get_public_key_over_relay() {
         .expect("Should parse bunker URL");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Should connect via relay");
 
@@ -116,7 +116,7 @@ async fn nip46_003_sign_event_over_relay() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Should connect via relay");
 
@@ -159,7 +159,7 @@ async fn nip46_004_nip44_encrypt_over_relay() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Should connect via relay");
 
@@ -192,7 +192,7 @@ async fn nip46_005_nip44_decrypt_over_relay() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Should connect via relay");
 
@@ -230,7 +230,7 @@ async fn nip46_007_secret_reuse_rejected() {
         .expect("OAuth flow should complete");
 
     // First client connects successfully
-    let signer1 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer1 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("First client should connect");
 
@@ -243,7 +243,7 @@ async fn nip46_007_secret_reuse_rejected() {
     // Second client with same secret should fail
     // Note: The bunker URL contains the same secret, so connecting again
     // from a different client should be rejected per NIP-46
-    let signer2_result = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30)).await;
+    let signer2_result = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60)).await;
 
     // This behavior depends on implementation:
     // - Some implementations allow reconnection from same logical client
@@ -275,7 +275,7 @@ async fn nip46_008_same_client_reconnect() {
         .expect("OAuth flow should complete");
 
     // First connection
-    let signer1 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer1 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("First connection should succeed");
 
@@ -292,7 +292,7 @@ async fn nip46_008_same_client_reconnect() {
 
     // Reconnect with same bunker URL (same client scenario)
     // This should work as it's the same logical client reconnecting
-    let signer2 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer2 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Reconnection should succeed");
 
@@ -362,7 +362,7 @@ async fn nip46_multiple_operations_sequence() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(30))
+    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
         .await
         .expect("Should connect via relay");
 

@@ -135,19 +135,26 @@ async fn journey_002_reauthorization_after_revoke() {
     )
     .expect("Should create NIP-46 client");
 
-    // Get the bunker pubkey for later identity comparison WITHOUT making an RPC
+    // Get the user's actual signing pubkey from the DB — WITHOUT making an RPC
     // call.  Making a successful RPC call here would cache the handler under
     // BLAKE3(token1); after the DB delete the cache entry would still be valid,
-    // causing the "revoked_result.is_err()" assertion to fail.
-    // parse_bunker_url extracts the pubkey purely from the URL string.
-    let (pubkey_initial, _, _) =
-        keycast_qa_tests::helpers::nip46::parse_bunker_url(&token1.bunker_url)
-            .expect("Should parse bunker URL");
+    // causing the "revoked_result.is_err()" assertion below to fail.
+    //
+    // Note: parse_bunker_url gives the *bunker* pubkey (HKDF-derived), not the
+    // *user* signing pubkey; those differ by design.  We query the DB directly
+    // to get the canonical user pubkey for the post-reauth equality check.
+    let pool = server.db_pool().await.expect("Should connect to DB");
+    let (pubkey_initial,): (String,) = sqlx::query_as(
+        "SELECT pubkey FROM users WHERE email = $1",
+    )
+    .bind(&user.email)
+    .fetch_one(&pool)
+    .await
+    .expect("Should find user pubkey in DB");
 
     // Step 2: User revokes — delete before making any RPC call so the handler
     // is never cached.  A subsequent request will be a cache miss, hit the DB,
     // find no row, and return 401.
-    let pool = server.db_pool().await.expect("Should connect to DB");
     sqlx::query(
         "DELETE FROM oauth_authorizations
          WHERE bunker_public_key = $1",
