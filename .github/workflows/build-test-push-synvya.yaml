@@ -128,6 +128,7 @@ jobs:
           host: ${{ secrets.EC2_STAGING_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_STAGING_SSH_KEY }}
+          command_timeout: 30m
           script: |
             cd /opt/synvya/keycast
             git pull origin synvya-staging
@@ -153,6 +154,7 @@ jobs:
           host: ${{ secrets.EC2_PROD_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_PROD_SSH_KEY }}
+          command_timeout: 30m
           script: |
             cd /opt/synvya/keycast
             git pull origin synvya
