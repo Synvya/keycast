@@ -1,0 +1,282 @@
+# Synvya CI/CD: test, build, deploy to EC2, run QA suite.
+#
+# - synvya-staging: deploy to staging EC2, run QA
+# - synvya: deploy to production EC2, run QA
+#
+# Required GitHub Variables (repo-level):
+#   AWS_CI_ROLE_ARN, AWS_KMS_KEY_ID, AWS_REGION, AWS_SES_TEST_RECIPIENT
+#
+# Required GitHub Secrets:
+#   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PROD_HOST, EC2_PROD_SSH_KEY
+
+name: "Synvya: Build, Test & Deploy"
+
+on:
+  push:
+    branches: [synvya-staging, synvya]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Step 1: Run tests (same as upstream + AWS provider tests) ───────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: keycast_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 16379:6379
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup test environment
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/keycast_test
+          PGPASSWORD: postgres
+        run: |
+          chmod +x scripts/generate_key.sh
+          ./scripts/generate_key.sh
+          cargo install sqlx-cli --no-default-features --features postgres
+          sqlx migrate run --database-url $DATABASE_URL --source database/migrations
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/keycast_test
+          REDIS_URL: redis://localhost:16379
+          TEST_REDIS_URL: redis://localhost:16379
+        run: |
+          cargo test --workspace --verbose
+          cargo test -p keycast_core --features integration-tests --lib --verbose
+          cargo test -p keycast_api --features integration-tests --lib --tests --verbose
+          cargo test -p keycast_signer --features integration-tests --lib --tests --verbose
+          cargo test -p cluster-hashring --lib -- --ignored
+
+      - name: Configure AWS credentials
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run AWS KMS tests
+        if: ${{ vars.AWS_KMS_KEY_ID != '' }}
+        env:
+          AWS_KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+        run: |
+          cargo test -p keycast_core --features aws -- aws_key_manager --test-threads=1
+
+      - name: Run AWS SES tests
+        if: ${{ vars.AWS_SES_TEST_RECIPIENT != '' }}
+        env:
+          AWS_SES_TEST_RECIPIENT: ${{ vars.AWS_SES_TEST_RECIPIENT }}
+          FROM_EMAIL: ${{ vars.AWS_SES_FROM_EMAIL || 'noreply@synvya.com' }}
+          FROM_NAME: ${{ vars.AWS_SES_FROM_NAME || 'Synvya' }}
+          BASE_URL: https://example.com
+        run: |
+          cargo test -p keycast_api --features aws --test aws_ses_test -- --test-threads=1
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ── Step 2: Deploy to EC2 ──────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy (Staging)
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/synvya-staging'
+
+    steps:
+      - name: Deploy to staging EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_STAGING_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_STAGING_SSH_KEY }}
+          script: |
+            cd /opt/synvya
+            cd keycast && git pull origin synvya-staging && cd ..
+            cd event-processor && git pull origin main && cd ..
+            bash keycast/scripts/load-secrets.sh staging
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
+            sleep 10
+            curl -f http://localhost:3000/health || exit 1
+            curl -f http://localhost:4000/health || echo "event-processor not running (optional)"
+
+  deploy-production:
+    name: Deploy (Production)
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/synvya'
+
+    steps:
+      - name: Deploy to production EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_PROD_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_PROD_SSH_KEY }}
+          script: |
+            cd /opt/synvya
+            cd keycast && git pull origin synvya && cd ..
+            cd event-processor && git pull origin main && cd ..
+            bash keycast/scripts/load-secrets.sh prod
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
+            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
+            sleep 10
+            curl -f http://localhost:3000/health || exit 1
+            curl -f http://localhost:4000/health || exit 1
+
+  # ── Step 3: Run QA suite on deployed instance ──────────────────────────
+  qa-staging:
+    name: QA Suite (Staging)
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run QA tests on staging EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_STAGING_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_STAGING_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+
+            # Ensure Rust is installed
+            if ! command -v cargo &>/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            fi
+            source "$HOME/.cargo/env"
+
+            # Load env for POSTGRES_PASSWORD
+            set -a
+            source /opt/synvya/.env 2>/dev/null || true
+            set +a
+
+            cd /opt/synvya/keycast
+
+            export TEST_SERVER_URL=http://localhost:3000
+            export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/keycast"
+            export RUST_LOG=warn
+
+            cd tests/qa
+
+            FAILED=0
+
+            echo "=== API OAuth Tests ==="
+            cargo test --test api_oauth_test -- --test-threads=1 || FAILED=1
+
+            echo "=== API RPC Tests ==="
+            cargo test --test api_rpc_test -- --test-threads=1 || FAILED=1
+
+            echo "=== NIP-46 Relay Tests ==="
+            cargo test --test nip46_relay_test -- --test-threads=1 || FAILED=1
+
+            echo "=== Security Tests ==="
+            cargo test --test security_test -- --test-threads=1 || FAILED=1
+
+            echo "=== User Journey Tests ==="
+            cargo test --test user_journey_test -- --test-threads=1 || FAILED=1
+
+            if [ $FAILED -ne 0 ]; then
+              echo "=== SOME TESTS FAILED ==="
+              exit 1
+            fi
+
+            echo "=== ALL TESTS PASSED ==="
+
+  qa-production:
+    name: QA Suite (Production)
+    needs: deploy-production
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run QA tests on production EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_PROD_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_PROD_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+
+            # Ensure Rust is installed
+            if ! command -v cargo &>/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            fi
+            source "$HOME/.cargo/env"
+
+            # Load env for POSTGRES_PASSWORD
+            set -a
+            source /opt/synvya/.env 2>/dev/null || true
+            set +a
+
+            cd /opt/synvya/keycast
+
+            export TEST_SERVER_URL=http://localhost:3000
+            export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/keycast"
+            export RUST_LOG=warn
+
+            cd tests/qa
+
+            FAILED=0
+
+            echo "=== API OAuth Tests ==="
+            cargo test --test api_oauth_test -- --test-threads=1 || FAILED=1
+
+            echo "=== API RPC Tests ==="
+            cargo test --test api_rpc_test -- --test-threads=1 || FAILED=1
+
+            echo "=== NIP-46 Relay Tests ==="
+            cargo test --test nip46_relay_test -- --test-threads=1 || FAILED=1
+
+            echo "=== Security Tests ==="
+            cargo test --test security_test -- --test-threads=1 || FAILED=1
+
+            echo "=== User Journey Tests ==="
+            cargo test --test user_journey_test -- --test-threads=1 || FAILED=1
+
+            if [ $FAILED -ne 0 ]; then
+              echo "=== SOME TESTS FAILED ==="
+              exit 1
+            fi
+
+            echo "=== ALL TESTS PASSED ==="
