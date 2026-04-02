@@ -2,7 +2,7 @@ name: Test AWS Providers
 
 on:
   push:
-    branches: [main]
+    branches: [main, fork-main]
     paths:
       - 'core/src/encryption/aws_key_manager.rs'
       - 'api/src/email_service.rs'
