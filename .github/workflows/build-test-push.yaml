@@ -28,6 +28,11 @@ env:
   CARGO_TERM_COLOR: always
   GCP_REGION: us-central1
 
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -88,6 +93,30 @@ jobs:
           cargo test -p keycast_api --features integration-tests --lib --tests --verbose
           cargo test -p keycast_signer --features integration-tests --lib --tests --verbose
           cargo test -p cluster-hashring --lib -- --ignored
+
+      - name: Configure AWS credentials
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run AWS KMS tests
+        if: ${{ vars.AWS_KMS_KEY_ID != '' }}
+        env:
+          AWS_KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+        run: |
+          cargo test -p keycast_core --features aws -- aws_key_manager --test-threads=1
+
+      - name: Run AWS SES tests
+        if: ${{ vars.AWS_SES_TEST_RECIPIENT != '' }}
+        env:
+          AWS_SES_TEST_RECIPIENT: ${{ vars.AWS_SES_TEST_RECIPIENT }}
+          FROM_EMAIL: ${{ vars.AWS_SES_FROM_EMAIL || 'noreply@divine.video' }}
+          FROM_NAME: ${{ vars.AWS_SES_FROM_NAME || 'diVine' }}
+          BASE_URL: https://example.com
+        run: |
+          cargo test -p keycast_api --features aws --test aws_ses_test -- --test-threads=1
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
