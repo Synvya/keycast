@@ -1,24 +1,32 @@
-# ECS Migration Path
+# ECS Deployment
 
-Current deployment: EC2 + Docker Compose (single instance per environment).
+## Strategy
 
-When scaling demands outgrow the EC2 approach, migrate to AWS ECS (Fargate).
+Services are moving to AWS ECS (Fargate) + ECR incrementally — not all at once.
 
-## When to migrate
+**Event Processor**: Goes directly to ECR + ECS. It was never deployed on EC2; ECS is its first production home. This gives Synvya a scalable, auto-scaling deployment for the highest-traffic service from day one.
 
-- Multiple concurrent users causing resource contention
-- Need for auto-scaling (traffic spikes around meal times)
-- Requiring zero-downtime rolling deploys
-- Running multiple services that need independent scaling
+**Keycast**: Stays on EC2 + Docker Compose for now. It has special requirements (persistent NIP-46 signer connections, low-latency relay subscriptions) that benefit from a long-running single process. Migrating to ECS Fargate is a future step when scaling demands require it.
 
-## What changes
+**MCP Server, Client App**: Separate services on their own deployment paths (Vercel, S3+CloudFront).
 
-| Component | Current (EC2) | Future (ECS) |
+## Current state
+
+| Component | Deployment | Status |
 |---|---|---|
-| Keycast | Docker Compose on EC2 | ECS Fargate service |
-| Event Processor | Docker Compose on EC2 | Separate ECS Fargate service |
-| MCP Server | Docker Compose on EC2 | Separate ECS Fargate service |
-| Client | Docker Compose on EC2 | Separate ECS Fargate service |
+| Keycast | EC2 + Docker Compose | Live on EC2 |
+| Event Processor | ECR + ECS Fargate | Next phase |
+| MCP Server | Vercel | Separate |
+| Client App | S3 + CloudFront | Separate |
+| PostgreSQL | Container on EC2 (Keycast) | Live; RDS in future |
+| Redis | Container on EC2 (Keycast) | Live; ElastiCache in future |
+
+## What changes (EC2 → ECS)
+
+| Component | Current (EC2) | ECS |
+|---|---|---|
+| Keycast | Docker Compose on EC2 | ECS Fargate service (future) |
+| Event Processor | — | ECS Fargate service (next phase) |
 | PostgreSQL | Container on EC2 | Amazon RDS |
 | Redis | Container on EC2 | Amazon ElastiCache |
 | Load Balancer | ALB → single EC2 | ALB → ECS service targets |

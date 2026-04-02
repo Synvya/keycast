@@ -137,6 +137,8 @@ services:
       POSTGRES_USER: postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"   # loopback-only; required for QA tests (see §9.3)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -282,7 +284,7 @@ This allows `docker compose build --build-arg CARGO_FEATURES=aws` to enable the 
 |---|---|---|
 | Instance type | `t3.xlarge` for first build; downsize to `t3.medium` after | `t3.xlarge` for first build; downsize to `t3.medium` after |
 | AMI | Amazon Linux 2023 | Amazon Linux 2023 |
-| Storage | 20 GB gp3 EBS | 30 GB gp3 EBS |
+| Storage | 30 GB gp3 EBS (minimum — see §14.7) | 30 GB gp3 EBS |
 | Security group | Inbound: 80/443 from ALB. SSH (22) from admin IP. Port 3000 open during initial testing (before ALB). | Same |
 | IAM role | `synvya-ec2-staging` | `synvya-ec2-prod` |
 | Elastic IP | Required — assign before configuring GitHub Actions secrets | Required |
@@ -474,89 +476,89 @@ chmod 600 /opt/synvya/.env
 
 ## 9. CI/CD — GitHub Actions
 
-### 9.1 Deployment Workflows
+### 9.1 Workflow: `build-test-push-synvya.yaml`
 
-Two workflows, one per environment:
+A single unified workflow handles everything: Rust tests → deploy to EC2 → QA integration tests against the live deployment. It triggers on push to `synvya-staging` (staging) or `synvya` (production), plus `workflow_dispatch` for manual runs.
 
-**Staging** — `.github/workflows/deploy-staging.yml`:
+**Pipeline stages** (in order):
 
-```yaml
-name: Deploy to Staging
+| Stage | Job | What it does |
+|---|---|---|
+| 1 | `test` | Rust unit tests, clippy, fmt; AWS KMS/SES tests if vars present |
+| 2 | `deploy-staging` / `deploy-production` | SSH to EC2, git pull, load secrets, docker build + up |
+| 3 | `qa-staging` / `qa-production` | SSH to EC2, run QA test suite against live server |
 
-on:
-  push:
-    branches: [synvya-staging]
-  workflow_dispatch:
+The deploy and QA stages both have `environment: staging` / `environment: production` — this is required for GitHub to inject environment-scoped secrets (see §9.2).
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_STAGING_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_STAGING_SSH_KEY }}
-          script: |
-            cd /opt/synvya
-            cd keycast && git pull origin synvya-staging && cd ..
-            cd event-processor && git pull origin main && cd ..
-            bash keycast/scripts/load-secrets.sh staging
-            # --env-file is required: Docker Compose resolves .env relative to the
-            # compose file location, not the current working directory.
-            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
-            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
-            sleep 10
-            curl -f http://localhost:3000/health || exit 1
-            # Event processor is optional; skip health check if not running
-            curl -f http://localhost:4000/health || echo "event-processor not running (optional)"
+**Deploy step** (runs on EC2 via SSH):
+```bash
+cd /opt/synvya/keycast
+git pull origin synvya-staging
+bash scripts/load-secrets.sh staging
+docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
+  build postgres redis migrate keycast
+docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
+  up -d postgres redis migrate keycast
+sleep 10
+curl -f http://localhost:3000/health || exit 1
 ```
 
-> **GitHub secrets**: `EC2_STAGING_HOST` and `EC2_STAGING_SSH_KEY` must be configured in the repo's GitHub Actions secrets **before** the first push to `synvya-staging`. The workflow runs on every push to that branch — if the secrets are missing, the job will fail immediately with "missing server host".
+> **`command_timeout: 30m`** is required on all SSH steps. The first Docker build of the Rust image takes 10–20 minutes on a t3.medium; the default 10-minute timeout will fail the deploy (see §14.9).
 
-**Production** — `.github/workflows/deploy-prod.yml`:
+**Recommended workflow**: Push to `synvya-staging` first. Verify staging QA passes. Then merge `synvya-staging` → `synvya` to deploy to production.
 
-```yaml
-name: Deploy to Production
+### 9.2 GitHub Secrets and Variables
 
-on:
-  push:
-    branches: [synvya]
-  workflow_dispatch:
+Secrets must be configured as **GitHub Environment secrets** — not repo-level secrets. Create two environments in the repo settings (`staging` and `production`) and add secrets there. Jobs declare `environment: staging` or `environment: production` to access them.
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_PROD_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_PROD_SSH_KEY }}
-          script: |
-            cd /opt/synvya
-            cd keycast && git pull origin synvya && cd ..
-            cd event-processor && git pull origin main && cd ..
-            bash keycast/scripts/load-secrets.sh prod
-            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env build
-            docker compose -f keycast/docker-compose.synvya.yml --env-file /opt/synvya/.env up -d
-            sleep 10
-            curl -f http://localhost:3000/health || exit 1
-            curl -f http://localhost:4000/health || exit 1
-```
+| Secret | Environment | Purpose |
+|---|---|---|
+| `EC2_STAGING_HOST` | `staging` | Staging EC2 Elastic IP or hostname |
+| `EC2_STAGING_SSH_KEY` | `staging` | SSH private key for staging `ec2-user` |
+| `EC2_PROD_HOST` | `production` | Production EC2 Elastic IP or hostname |
+| `EC2_PROD_SSH_KEY` | `production` | SSH private key for production `ec2-user` |
 
-**Recommended workflow**: Push to `synvya-staging` first. Verify in staging. Then merge `synvya-staging` → `synvya` to deploy to production.
+> **Critical**: If the secrets are at repo level instead of environment level, the SSH step fails immediately with "missing server host". The job must declare `environment: staging` for GitHub to inject the scoped secrets.
 
-### 9.2 GitHub Secrets
+Repository-level variables (used by the `test` job):
 
-| Secret | Purpose |
+| Variable | Purpose |
 |---|---|
-| `EC2_STAGING_HOST` | Staging EC2 public IP or hostname |
-| `EC2_STAGING_SSH_KEY` | SSH private key for staging `ec2-user` |
-| `EC2_PROD_HOST` | Production EC2 public IP or hostname |
-| `EC2_PROD_SSH_KEY` | SSH private key for production `ec2-user` |
+| `AWS_CI_ROLE_ARN` | IAM role for GitHub OIDC (gates AWS tests) |
+| `AWS_KMS_KEY_ID` | KMS key ID for KMS integration tests |
+| `AWS_REGION` | AWS region (default: `us-east-1`) |
+| `AWS_SES_TEST_RECIPIENT` | Verified SES recipient for email send test |
+
+### 9.3 QA Integration Test Suite
+
+The `tests/qa/` directory contains a Rust integration test suite that runs against a live deployed instance. It covers 42 tests across 5 suites (plus 1 intentionally ignored):
+
+| Suite | Tests | What it covers |
+|---|---|---|
+| `api_oauth_test` | 10 | PKCE validation, code exchange, poll endpoint, denial flow |
+| `api_rpc_test` | 10 | HTTP RPC signing, NIP-04/44 encrypt/decrypt |
+| `nip46_relay_test` | 8 (+ 1 ignored) | NIP-46 over relay: connect, sign, encrypt, secret reuse |
+| `security_test` | 8 | Entropy, CORS, policy enforcement, revocation |
+| `user_journey_test` | 6 | End-to-end: OAuth → sign → revoke → re-auth |
+
+**Requirements for QA to run on EC2**:
+
+- Rust and `cargo` must be installed (`rustup` installed by the workflow if missing)
+- `gcc`, `openssl-devel`, and `pkg-config` must be installed (`sudo yum install -y gcc openssl-devel pkg-config`)
+- Postgres must be accessible on `localhost:5432` — this requires the `127.0.0.1:5432:5432` port binding on the postgres container (see §5.1)
+- `DATABASE_URL` pointing to the live database (for test setup: email verification, bcrypt wait)
+- `TEST_SERVER_URL=http://localhost:3000`
+
+**Why `DATABASE_URL` is needed in tests**: Keycast requires email verification before login, and hashes passwords asynchronously via a background bcrypt worker. The QA test helper:
+1. Registers a user via HTTP
+2. Directly updates `email_verified = true` in the DB
+3. Polls until `password_hash IS NOT NULL` (bcrypt job complete)
+
+Without DB access both of these block, and every test fails with 401 or 403.
+
+**Known test behaviour — revocation and the RPC cache**: The HTTP RPC handler caches auth tokens by `BLAKE3(token)` with a 1-hour TTL. Revocation via DB delete does not immediately invalidate the cache. Revocation tests are therefore structured to revoke *before* making any RPC call (so the handler is never cached), then verify the first call fails (cache miss → DB lookup → row not found → 401). Tests that have already used the token before revocation check DB state instead of RPC failure.
+
+**`nip46_008_same_client_reconnect`** is permanently `#[ignore]`: NIP-46 connection secrets are single-use; reconnecting with the same bunker URL is not supported by the protocol.
 
 ## 10. Monitoring
 
@@ -689,6 +691,51 @@ Swap does not persist across reboots. Re-run after each reboot, or add it to `/e
 ### 14.6 Postgres Password Must Be Alphanumeric
 
 The postgres password gets embedded in the `DATABASE_URL` connection string. Special characters (`@`, `/`, `#`, `$`, etc.) break URL parsing and cause connection failures. Use alphanumeric passwords only. If the password is changed after first initialization, the postgres Docker volume must be wiped (`docker compose ... down -v`) since Postgres only sets the password on first init.
+
+### 14.7 Disk Space — 20 GB Is Not Enough
+
+A 20 GB EBS volume fills up with the Rust Docker build cache and images. A full `docker build` of the Keycast image (Rust + AWS SDK + SvelteKit) produces ~6 GB of build cache alone, plus the final image layers. After several deployments the disk fills completely, causing the next build to fail mid-way with obscure errors.
+
+Provision **at least 30 GB** for the staging instance. If the disk fills up, reclaim space with:
+```bash
+docker system prune -a -f
+docker builder prune -a -f
+```
+These are safe to run — Docker will rebuild from scratch on the next deploy (slow once, then cached again).
+
+### 14.8 GitHub Secrets Must Be Environment-Scoped
+
+`EC2_STAGING_HOST` and `EC2_STAGING_SSH_KEY` must be added as **GitHub Environment secrets** under the `staging` environment, not as repository-level secrets. If a workflow job doesn't declare `environment: staging`, GitHub does not inject the environment secrets and the SSH step fails immediately with "missing server host".
+
+Create environments: **Repo → Settings → Environments → New environment** → `staging` and `production`. Add the EC2 secrets there. All jobs that use those secrets must declare `environment: staging` or `environment: production`.
+
+### 14.9 Docker Build via SSH Requires 30-Minute Timeout
+
+The `appleboy/ssh-action` default command timeout is 10 minutes. Building the Rust + AWS SDK Docker image on a t3.medium takes 10–20 minutes. All SSH steps in the deploy and QA jobs must set `command_timeout: 30m`.
+
+### 14.10 GCC Required for QA Test Compilation
+
+The EC2 instance (Amazon Linux 2023 minimal) does not have a C compiler installed by default. Compiling the QA test suite via `cargo test` fails with "linker `cc` not found". Install before running tests:
+
+```bash
+sudo yum install -y gcc openssl-devel pkg-config
+```
+
+The CI workflow checks for `cc` and installs these only if missing, so subsequent runs are fast.
+
+### 14.11 SES Async Initialization — `block_on()` Panics in Tokio Runtime
+
+The `EMAIL_PROVIDER=ses` code originally used `tokio::runtime::Handle::block_on()` inside an async context to initialize the SES client. This panics with "Cannot start a runtime from within a runtime" when the server starts. Fixed by making the email sender initialization fully `async` throughout (`create_email_sender().await`, `EmailService::new().await`). This fix is in the upstream `fork-main` branch as well. If you ever see this panic on startup, it means an `block_on()` call was re-introduced in the email service.
+
+### 14.12 Docker Build Cache May Serve Stale Binary After Async Code Changes
+
+Docker layer caching can cause a rebuilt image to still contain the old binary if the build cache isn't busted. This happens when a code change (especially in async initialization paths) compiles cleanly but the cached layer is reused. If a bug you fixed is still appearing in the deployed container, force a clean rebuild:
+
+```bash
+docker build --no-cache -t keycast .
+# or via compose:
+docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env build --no-cache keycast
+```
 
 ## 15. Migration from Cloud Run
 
