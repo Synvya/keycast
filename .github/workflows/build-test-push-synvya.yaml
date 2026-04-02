@@ -9,7 +9,7 @@
 # Required GitHub Secrets:
 #   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PROD_HOST, EC2_PROD_SSH_KEY
 
-name: "Synvya: Build, Test & Deploy"
+name: "Synvya - Build, Test & Push"
 
 on:
   push:
