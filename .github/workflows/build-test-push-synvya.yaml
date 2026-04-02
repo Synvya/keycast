@@ -6,6 +6,10 @@
 # Required GitHub Variables (repo-level):
 #   AWS_CI_ROLE_ARN, AWS_KMS_KEY_ID, AWS_REGION, AWS_SES_TEST_RECIPIENT
 #
+# Optional GitHub environment variables:
+#   DISABLE_EMAILS - when set for an environment (for example `staging`),
+#   injects DISABLE_EMAILS into the deployed keycast container env.
+#
 # Required GitHub Secrets:
 #   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PROD_HOST, EC2_PROD_SSH_KEY
 
@@ -133,6 +137,9 @@ jobs:
             cd /opt/synvya/keycast
             git pull origin synvya-staging
             bash scripts/load-secrets.sh staging
+            if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
+              echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
+            fi
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               build postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
@@ -159,6 +166,9 @@ jobs:
             cd /opt/synvya/keycast
             git pull origin synvya
             bash scripts/load-secrets.sh prod
+            if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
+              echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
+            fi
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               build postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
