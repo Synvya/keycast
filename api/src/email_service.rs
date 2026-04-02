@@ -562,9 +562,7 @@ impl SesEmailSender {
             return Ok(());
         }
 
-        use aws_sdk_sesv2::types::{
-            Body, Content, Destination, EmailContent, Message,
-        };
+        use aws_sdk_sesv2::types::{Body, Content, Destination, EmailContent, Message};
 
         let from = format!("{} <{}>", self.from_name, self.from_email);
 
@@ -611,7 +609,7 @@ impl SesEmailSender {
             )
             .send()
             .await
-            .map_err(|e| format!("SES send failed: {}", e))?;
+            .map_err(|e| format!("SES send failed: {:?}", e))?;
 
         tracing::debug!("Email sent to {} via SES", to);
         Ok(())
@@ -703,7 +701,7 @@ pub fn create_email_sender() -> Arc<dyn EmailSender> {
         "ses" => {
             panic!("EMAIL_PROVIDER=ses requires the 'aws' feature to be enabled at compile time");
         }
-        "dev" | _ => {
+        _ => {
             tracing::warn!("Using development email sender (emails logged to console)");
             Arc::new(DevEmailSender::new())
         }

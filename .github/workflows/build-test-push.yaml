@@ -1,17 +1,26 @@
-# Builds once, pushes to all GCP Artifact Registry environments via docker-push-gcp.
-# Production push only on version tags (v*). Dispatch to IAC repo triggers ArgoCD sync.
+# Builds once, pushes to configured registries (GCP Artifact Registry and/or AWS ECR).
+# Production push only on version tags (v*). Deploy triggers are cloud-specific.
 #
-# Required GitHub Variables (repo-level):
+# GCP Variables (repo-level):
 #   Per environment: WORKLOAD_IDENTITY_PROVIDER_{ENV}, SERVICE_ACCOUNT_{ENV}, GCP_PROJECT_ID_{ENV}
-#
-# Required GitHub Secrets (staging environment):
+# GCP Secrets:
 #   CORECONFIG_DISPATCH_APP_ID, CORECONFIG_DISPATCH_APP_PRIVATE_KEY
+#
+# AWS Variables (repo-level):
+#   AWS_DEPLOY_ROLE_ARN, AWS_REGION, AWS_ECR_REPOSITORY
+#   AWS_ECS_CLUSTER, AWS_ECS_SERVICE, AWS_ECS_CONTAINER_NAME
+#
+# AWS CI Variables (for provider tests):
+#   AWS_CI_ROLE_ARN, AWS_KMS_KEY_ID, AWS_SES_TEST_RECIPIENT
+#
+# GHCR Variables (optional):
+#   GHCR_IMAGE (e.g., ghcr.io/org/keycast) — if unset, GHCR push is skipped
 
 name: Build, Test & Push
 
 on:
   push:
-    branches: [main]
+    branches: [main, fork-main]
     tags:
       - 'v*'
   pull_request:
@@ -26,7 +35,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  GCP_REGION: us-central1
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
 
 jobs:
   test:
@@ -89,21 +102,45 @@ jobs:
           cargo test -p keycast_signer --features integration-tests --lib --tests --verbose
           cargo test -p cluster-hashring --lib -- --ignored
 
+      - name: Configure AWS credentials
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run AWS KMS tests
+        if: ${{ vars.AWS_KMS_KEY_ID != '' }}
+        env:
+          AWS_KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+        run: |
+          cargo test -p keycast_core --features aws -- aws_key_manager --test-threads=1
+
+      - name: Run AWS SES tests
+        if: ${{ vars.AWS_SES_TEST_RECIPIENT != '' }}
+        env:
+          AWS_SES_TEST_RECIPIENT: ${{ vars.AWS_SES_TEST_RECIPIENT }}
+          FROM_EMAIL: ${{ vars.AWS_SES_FROM_EMAIL || 'noreply@divine.video' }}
+          FROM_NAME: ${{ vars.AWS_SES_FROM_NAME || 'diVine' }}
+          BASE_URL: https://example.com
+        run: |
+          cargo test -p keycast_api --features aws --test aws_ses_test -- --test-threads=1
+
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  docker:
-    name: Build & Push
+  # ── GCP: Build, Push & Deploy ──────────────────────────────────────────
+  docker-gcp:
+    name: "Build & Push (GCP)"
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && vars.WORKLOAD_IDENTITY_PROVIDER_POC != ''
     permissions:
       id-token: write
       contents: read
-      packages: write
     outputs:
       tags: ${{ steps.tags.outputs.tags }}
 
@@ -139,7 +176,7 @@ jobs:
           service-account: ${{ vars.SERVICE_ACCOUNT_POC }}
           project-id: ${{ vars.GCP_PROJECT_ID_POC }}
           repository: containers-poc
-          region: ${{ env.GCP_REGION }}
+          region: us-central1
 
       - name: Push to Test
         uses: divinevideo/divine-github-actions/docker-push-gcp@v1
@@ -151,7 +188,7 @@ jobs:
           service-account: ${{ vars.SERVICE_ACCOUNT_TEST }}
           project-id: ${{ vars.GCP_PROJECT_ID_TEST }}
           repository: containers-test
-          region: ${{ env.GCP_REGION }}
+          region: us-central1
 
       - name: Push to Staging
         uses: divinevideo/divine-github-actions/docker-push-gcp@v1
@@ -163,7 +200,7 @@ jobs:
           service-account: ${{ vars.SERVICE_ACCOUNT_STAGING }}
           project-id: ${{ vars.GCP_PROJECT_ID_STAGING }}
           repository: containers-staging
-          region: ${{ env.GCP_REGION }}
+          region: us-central1
 
       - name: Push to Production
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.include_production)
@@ -176,44 +213,45 @@ jobs:
           service-account: ${{ vars.SERVICE_ACCOUNT_PRODUCTION }}
           project-id: ${{ vars.GCP_PROJECT_ID_PRODUCTION }}
           repository: containers-production
-          region: ${{ env.GCP_REGION }}
+          region: us-central1
 
       - name: Summary
         run: |
-          echo "### Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Image Published (GCP)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** keycast" >> $GITHUB_STEP_SUMMARY
           echo "**Tags:** ${{ steps.tags.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environments:**" >> $GITHUB_STEP_SUMMARY
-          echo "- POC: \`${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_POC }}/containers-poc/keycast\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Test: \`${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_TEST }}/containers-test/keycast\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Staging: \`${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_STAGING }}/containers-staging/keycast\`" >> $GITHUB_STEP_SUMMARY
+          echo "- POC: \`us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_POC }}/containers-poc/keycast\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Test: \`us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_TEST }}/containers-test/keycast\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Staging: \`us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_STAGING }}/containers-staging/keycast\`" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ github.ref }}" == refs/tags/v* ]] || [[ "${{ inputs.include_production }}" == "true" ]]; then
-            echo "- Production: \`${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_PRODUCTION }}/containers-production/keycast\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Production: \`us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID_PRODUCTION }}/containers-production/keycast\`" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Log in to GHCR
+        if: ${{ vars.GHCR_IMAGE != '' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push to GHCR (public)
+      - name: Push to GHCR
+        if: ${{ vars.GHCR_IMAGE != '' }}
         continue-on-error: true
         run: |
-          GHCR_IMAGE="ghcr.io/divinevideo/keycast"
-          docker tag keycast:local "${GHCR_IMAGE}:latest"
-          docker tag keycast:local "${GHCR_IMAGE}:${{ github.sha }}"
-          docker push "${GHCR_IMAGE}:latest"
-          docker push "${GHCR_IMAGE}:${{ github.sha }}"
+          docker tag keycast:local "${{ vars.GHCR_IMAGE }}:latest"
+          docker tag keycast:local "${{ vars.GHCR_IMAGE }}:${{ github.sha }}"
+          docker push "${{ vars.GHCR_IMAGE }}:latest"
+          docker push "${{ vars.GHCR_IMAGE }}:${{ github.sha }}"
 
-  deploy:
-    name: Trigger Deploy
-    needs: docker
+  deploy-gcp:
+    name: "Deploy (GCP)"
+    needs: docker-gcp
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && vars.WORKLOAD_IDENTITY_PROVIDER_POC != ''
     environment: staging
 
     steps:
@@ -254,10 +292,120 @@ jobs:
           }
           EOF
 
-          echo "## Deploy Dispatched" >> $GITHUB_STEP_SUMMARY
+          echo "## Deploy Dispatched (GCP)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Application | keycast |" >> $GITHUB_STEP_SUMMARY
           echo "| Image Tag | \`${SHORT_SHA}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Environments | ${{ steps.envs.outputs.environments }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ── AWS: Build, Push & Deploy ──────────────────────────────────────────
+  docker-aws:
+    name: "Build & Push (AWS)"
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: keycast:local
+          build-args: |
+            BUILD_VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag and push to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.AWS_ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker tag keycast:local "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker tag keycast:local "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          echo "### Docker Image Published (AWS ECR)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** $ECR_REGISTRY/${{ vars.AWS_ECR_REPOSITORY }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+
+  deploy-aws:
+    name: "Deploy (AWS ECS)"
+    needs: docker-aws
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && vars.AWS_ECS_CLUSTER != ''
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ vars.AWS_ECS_SERVICE }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Render new task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ vars.AWS_ECS_CONTAINER_NAME }}
+          image: ${{ needs.docker-aws.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ vars.AWS_ECS_SERVICE }}
+          cluster: ${{ vars.AWS_ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Summary
+        run: |
+          echo "## Deploy Complete (AWS ECS)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Cluster | ${{ vars.AWS_ECS_CLUSTER }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | ${{ vars.AWS_ECS_SERVICE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | ${{ needs.docker-aws.outputs.image }} |" >> $GITHUB_STEP_SUMMARY
