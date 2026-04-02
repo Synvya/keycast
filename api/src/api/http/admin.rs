@@ -635,16 +635,17 @@ pub async fn batch_create_claim_tokens(
     let claim_token_repo = ClaimTokenRepository::new(pool.clone());
 
     // Create email service once outside the loop
-    let email_service =
-        req.delivery_email
-            .as_ref()
-            .and_then(|_| match crate::email_service::EmailService::new() {
-                Ok(svc) => Some(svc),
-                Err(e) => {
-                    tracing::error!("Failed to create email service: {}", e);
-                    None
-                }
-            });
+    let email_service = if req.delivery_email.is_some() {
+        match crate::email_service::EmailService::new().await {
+            Ok(svc) => Some(svc),
+            Err(e) => {
+                tracing::error!("Failed to create email service: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let mut tokens = Vec::new();
     let mut skipped = Vec::new();

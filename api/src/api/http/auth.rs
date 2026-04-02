@@ -722,7 +722,7 @@ pub async fn register(
     METRICS.inc_registration();
 
     // Send verification email (required - user must verify before login)
-    match crate::email_service::EmailService::new() {
+    match crate::email_service::EmailService::new().await {
         Ok(email_service) => {
             if let Err(e) = email_service
                 .send_verification_email(&req.email, &verification_token)
@@ -1675,7 +1675,7 @@ pub async fn resend_verification(
     let email_clone = email.clone();
     let token_clone = verification_token.clone();
     tokio::spawn(async move {
-        match crate::email_service::EmailService::new() {
+        match crate::email_service::EmailService::new().await {
             Ok(email_service) => {
                 if let Err(e) = email_service
                     .send_verification_email(&email_clone, &token_clone)
@@ -1746,7 +1746,7 @@ pub async fn forgot_password(
         .await?;
 
     // Send password reset email (optional - don't fail if email service unavailable)
-    match crate::email_service::EmailService::new() {
+    match crate::email_service::EmailService::new().await {
         Ok(email_service) => {
             if let Err(e) = email_service
                 .send_password_reset_email(&req.email, &reset_token)
