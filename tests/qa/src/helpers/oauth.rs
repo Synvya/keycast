@@ -81,6 +81,25 @@ impl OAuthClient {
                 .execute(&pool)
                 .await
                 .map_err(|e| format!("Email verify failed: {}", e))?;
+
+            // Wait for the async bcrypt worker to set password_hash (up to 10s).
+            // Registration inserts password_hash=NULL and queues a background job;
+            // login will return 401 until that job completes.
+            for _ in 0..20u8 {
+                let row: Option<(bool,)> = sqlx::query_as(
+                    "SELECT password_hash IS NOT NULL FROM users WHERE email = $1",
+                )
+                .bind(&user.email)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|e| format!("DB query failed: {}", e))?;
+
+                if matches!(row, Some((true,))) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
             Ok(())
         } else {
             let status = resp.status();
