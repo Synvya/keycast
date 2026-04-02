@@ -205,7 +205,7 @@ pub async fn headless_register(
         .await?;
 
     // Send verification email
-    match crate::email_service::EmailService::new() {
+    match crate::email_service::EmailService::new().await {
         Ok(email_service) => {
             if let Err(e) = email_service
                 .send_verification_email(&req.email, &verification_token)

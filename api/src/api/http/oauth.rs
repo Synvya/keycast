@@ -2561,7 +2561,7 @@ async fn handle_authorization_code_grant(
         );
 
         // Send verification email (optional - don't fail if email service unavailable)
-        match crate::email_service::EmailService::new() {
+        match crate::email_service::EmailService::new().await {
             Ok(email_service) => {
                 if let Err(e) = email_service
                     .send_verification_email(pending_email_val, &verification_token)
@@ -3210,7 +3210,7 @@ pub async fn oauth_register(
     );
 
     // Send verification email (required - user must verify before OAuth flow completes)
-    match crate::email_service::EmailService::new() {
+    match crate::email_service::EmailService::new().await {
         Ok(email_service) => {
             if let Err(e) = email_service
                 .send_verification_email(&req.email, &verification_token)

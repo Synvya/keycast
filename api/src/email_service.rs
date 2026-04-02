@@ -668,7 +668,7 @@ impl EmailSender for SesEmailSender {
 /// - `EMAIL_PROVIDER=ses` → AWS SES (requires `aws` feature)
 /// - `EMAIL_PROVIDER=dev` → Development logger
 /// - No `EMAIL_PROVIDER` set → backward compat: use SendGrid if `SENDGRID_API_KEY` is present, else dev
-pub fn create_email_sender() -> Arc<dyn EmailSender> {
+pub async fn create_email_sender() -> Arc<dyn EmailSender> {
     let provider = env::var("EMAIL_PROVIDER").unwrap_or_else(|_| {
         // Backward compatibility: SENDGRID_API_KEY presence → "sendgrid"
         if env::var("SENDGRID_API_KEY")
@@ -691,9 +691,8 @@ pub fn create_email_sender() -> Arc<dyn EmailSender> {
         #[cfg(feature = "aws")]
         "ses" => {
             tracing::info!("Using AWS SES for email delivery");
-            let rt = tokio::runtime::Handle::current();
-            let sender = rt
-                .block_on(async { SesEmailSender::new().await })
+            let sender = SesEmailSender::new()
+                .await
                 .expect("Failed to initialize AWS SES email sender");
             Arc::new(sender)
         }
@@ -715,9 +714,9 @@ pub struct EmailService {
 }
 
 impl EmailService {
-    pub fn new() -> Result<Self, String> {
+    pub async fn new() -> Result<Self, String> {
         Ok(Self {
-            inner: create_email_sender(),
+            inner: create_email_sender().await,
         })
     }
 
