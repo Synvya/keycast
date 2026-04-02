@@ -180,7 +180,7 @@ jobs:
           host: ${{ secrets.EC2_STAGING_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_STAGING_SSH_KEY }}
-          command_timeout: 15m
+          command_timeout: 30m
           script: |
             set -e
 
@@ -203,6 +203,21 @@ jobs:
             export TEST_SERVER_URL=http://localhost:3000
             export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/keycast"
             export RUST_LOG=warn
+
+            # Wait for keycast to be healthy
+            echo "=== Waiting for keycast to be ready ==="
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:3000/health >/dev/null 2>&1; then
+                echo "keycast is ready"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "keycast failed to start after 30 attempts"
+                docker compose -f docker-compose.synvya.yml logs keycast --tail=50
+                exit 1
+              fi
+              sleep 2
+            done
 
             cd tests/qa
 
@@ -243,7 +258,7 @@ jobs:
           host: ${{ secrets.EC2_PROD_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_PROD_SSH_KEY }}
-          command_timeout: 15m
+          command_timeout: 30m
           script: |
             set -e
 
@@ -266,6 +281,21 @@ jobs:
             export TEST_SERVER_URL=http://localhost:3000
             export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/keycast"
             export RUST_LOG=warn
+
+            # Wait for keycast to be healthy
+            echo "=== Waiting for keycast to be ready ==="
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:3000/health >/dev/null 2>&1; then
+                echo "keycast is ready"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "keycast failed to start after 30 attempts"
+                docker compose -f docker-compose.synvya.yml logs keycast --tail=50
+                exit 1
+              fi
+              sleep 2
+            done
 
             cd tests/qa
 
