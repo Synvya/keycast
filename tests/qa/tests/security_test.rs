@@ -23,7 +23,11 @@ async fn sec_revoked_authorization_rejected() {
         .await
         .expect("OAuth flow should complete");
 
-    // Create NIP-46 client and verify it works
+    // Build NIP-46 client WITHOUT making any RPC call first.
+    // Important: making a successful RPC call before revocation would populate the
+    // in-memory BLAKE3(token) cache (1-hour TTL), causing post-revocation calls to
+    // still succeed via cache hit.  By revoking before the first call we guarantee
+    // the subsequent request is a cache miss → DB lookup → row not found → 401.
     let nip46 = Nip46Client::from_token_response(
         token_resp.bunker_url.clone(),
         token_resp.access_token.clone(),
@@ -31,14 +35,10 @@ async fn sec_revoked_authorization_rejected() {
     )
     .expect("Should create NIP-46 client");
 
-    // Verify it works initially
-    let pubkey = nip46.get_public_key().await;
-    assert!(pubkey.is_ok(), "Initial request should succeed");
+    let bunker_pubkey = nip46.bunker_pubkey();
 
     // Revoke by deleting from database (simulates revocation)
-    // Note: nip46.bunker_pubkey() returns the bunker_public_key from bunker URL
     let pool = server.db_pool().await.expect("Should connect to database");
-    let bunker_pubkey = nip46.bunker_pubkey();
 
     sqlx::query(
         "DELETE FROM oauth_authorizations
@@ -49,19 +49,8 @@ async fn sec_revoked_authorization_rejected() {
     .await
     .expect("Should delete authorization");
 
-    // Delay to allow REST RPC handler to detect deletion on next request
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    // Create new client (simulating app trying to use revoked auth)
-    let nip46_after_revoke = Nip46Client::from_token_response(
-        token_resp.bunker_url,
-        token_resp.access_token,
-        server.base_url.clone(),
-    )
-    .expect("Should create NIP-46 client");
-
-    // Request after revocation should fail
-    let result = nip46_after_revoke.get_public_key().await;
+    // Request should fail: cache miss → DB lookup → no row → InvalidToken
+    let result = nip46.get_public_key().await;
     assert!(
         result.is_err(),
         "Request after revocation should fail"

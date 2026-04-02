@@ -291,8 +291,8 @@ impl OAuthClient {
     }
 
     /// Poll for authorization code (GET /oauth/poll)
-    pub async fn poll_authorization(&self, state: &str) -> Result<PollResponse, (u16, String)> {
-        let url = format!("{}?state={}", self.server.oauth_url("/poll"), state);
+    pub async fn poll_authorization(&self, device_code: &str) -> Result<PollResponse, (u16, String)> {
+        let url = format!("{}?device_code={}", self.server.oauth_url("/poll"), device_code);
 
         let resp = self
             .client
