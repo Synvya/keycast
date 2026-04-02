@@ -1,20 +1,20 @@
+# AWS provider integration tests and post-deploy QA.
+#
+# - fork-main: Runs AWS KMS + SES provider tests in CI
+# - synvya-staging: Runs provider tests + full QA suite on staging EC2
+# - synvya (prod): Runs provider tests + full QA suite on production EC2
+#
+# Required GitHub Variables (repo-level):
+#   AWS_CI_ROLE_ARN, AWS_KMS_KEY_ID, AWS_REGION, AWS_SES_TEST_RECIPIENT
+#
+# Required GitHub Secrets (for QA on EC2):
+#   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PROD_HOST, EC2_PROD_SSH_KEY
+
 name: Test AWS Providers
 
 on:
   push:
-    branches: [main, fork-main]
-    paths:
-      - 'core/src/encryption/aws_key_manager.rs'
-      - 'api/src/email_service.rs'
-      - 'api/tests/aws_ses_test.rs'
-      - '.github/workflows/test-aws-providers.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'core/src/encryption/aws_key_manager.rs'
-      - 'api/src/email_service.rs'
-      - 'api/tests/aws_ses_test.rs'
-      - '.github/workflows/test-aws-providers.yml'
+    branches: [fork-main, synvya-staging, synvya]
   workflow_dispatch:
 
 env:
@@ -28,7 +28,6 @@ jobs:
   test-aws-kms:
     name: AWS KMS Integration Tests
     runs-on: ubuntu-latest
-    # Only run if AWS secrets are configured (skipped on forks without secrets)
     if: ${{ vars.AWS_KMS_KEY_ID != '' || github.event_name == 'workflow_dispatch' }}
 
     steps:
@@ -74,3 +73,131 @@ jobs:
           BASE_URL: https://example.com
         run: |
           cargo test -p keycast_api --features aws --test aws_ses_test -- --test-threads=1
+
+  qa-staging:
+    name: QA Suite (Staging)
+    runs-on: ubuntu-latest
+    needs: [test-aws-kms, test-aws-ses]
+    if: github.ref == 'refs/heads/synvya-staging'
+
+    steps:
+      - name: Run QA tests on staging EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_STAGING_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_STAGING_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+
+            # Ensure Rust is installed
+            if ! command -v cargo &>/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            fi
+            source "$HOME/.cargo/env"
+
+            # Load env for POSTGRES_PASSWORD
+            set -a
+            source /opt/synvya/.env 2>/dev/null || true
+            set +a
+
+            cd /opt/synvya/keycast
+            git pull origin synvya-staging
+
+            # Verify server is healthy
+            curl -f http://localhost:3000/health || { echo "Server not healthy"; exit 1; }
+
+            export TEST_SERVER_URL=http://localhost:3000
+            export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/keycast"
+            export RUST_LOG=warn
+
+            cd tests/qa
+
+            FAILED=0
+
+            echo "=== API OAuth Tests ==="
+            cargo test --test api_oauth_test -- --test-threads=1 || FAILED=1
+
+            echo "=== API RPC Tests ==="
+            cargo test --test api_rpc_test -- --test-threads=1 || FAILED=1
+
+            echo "=== NIP-46 Relay Tests ==="
+            cargo test --test nip46_relay_test -- --test-threads=1 || FAILED=1
+
+            echo "=== Security Tests ==="
+            cargo test --test security_test -- --test-threads=1 || FAILED=1
+
+            echo "=== User Journey Tests ==="
+            cargo test --test user_journey_test -- --test-threads=1 || FAILED=1
+
+            if [ $FAILED -ne 0 ]; then
+              echo "=== SOME TESTS FAILED ==="
+              exit 1
+            fi
+
+            echo "=== ALL TESTS PASSED ==="
+
+  qa-production:
+    name: QA Suite (Production)
+    runs-on: ubuntu-latest
+    needs: [test-aws-kms, test-aws-ses]
+    if: github.ref == 'refs/heads/synvya'
+
+    steps:
+      - name: Run QA tests on production EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_PROD_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_PROD_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+
+            # Ensure Rust is installed
+            if ! command -v cargo &>/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            fi
+            source "$HOME/.cargo/env"
+
+            # Load env for POSTGRES_PASSWORD
+            set -a
+            source /opt/synvya/.env 2>/dev/null || true
+            set +a
+
+            cd /opt/synvya/keycast
+            git pull origin synvya
+
+            # Verify server is healthy
+            curl -f http://localhost:3000/health || { echo "Server not healthy"; exit 1; }
+
+            export TEST_SERVER_URL=http://localhost:3000
+            export DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/keycast"
+            export RUST_LOG=warn
+
+            cd tests/qa
+
+            FAILED=0
+
+            echo "=== API OAuth Tests ==="
+            cargo test --test api_oauth_test -- --test-threads=1 || FAILED=1
+
+            echo "=== API RPC Tests ==="
+            cargo test --test api_rpc_test -- --test-threads=1 || FAILED=1
+
+            echo "=== NIP-46 Relay Tests ==="
+            cargo test --test nip46_relay_test -- --test-threads=1 || FAILED=1
+
+            echo "=== Security Tests ==="
+            cargo test --test security_test -- --test-threads=1 || FAILED=1
+
+            echo "=== User Journey Tests ==="
+            cargo test --test user_journey_test -- --test-threads=1 || FAILED=1
+
+            if [ $FAILED -ne 0 ]; then
+              echo "=== SOME TESTS FAILED ==="
+              exit 1
+            fi
+
+            echo "=== ALL TESTS PASSED ==="
