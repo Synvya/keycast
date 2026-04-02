@@ -29,7 +29,7 @@ pub trait EmailSender: Send + Sync {
         reset_token: &str,
     ) -> Result<(), String>;
 
-    /// Send a claim link email for a preloaded Vine account.
+    /// Send a claim link email for a preloaded account.
     async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String>;
 
     /// Get captured emails (only available in dev/test mode)
@@ -52,7 +52,7 @@ fn verification_email_html(verification_url: &str) -> String {
         r#"
             <html>
             <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Verify your diVine email</h1>
+                <h1 style="color: #00B488;">Verify your Synvya email</h1>
                 <p>Thanks for signing up! Please verify your email address by clicking the button below:</p>
                 <div style="margin: 30px 0;">
                     <a href="{}"
@@ -65,7 +65,7 @@ fn verification_email_html(verification_url: &str) -> String {
                     <a href="{}" style="color: #00B488;">{}</a>
                 </p>
                 <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    If you didn't sign up for diVine, you can safely ignore this email.
+                    If you didn't sign up for Synvya, you can safely ignore this email.
                 </p>
             </body>
             </html>
@@ -76,7 +76,7 @@ fn verification_email_html(verification_url: &str) -> String {
 
 fn verification_email_text(verification_url: &str) -> String {
     format!(
-        "Thanks for signing up! Please verify your email address by clicking this link:\n\n{}\n\nIf you didn't sign up for diVine, you can safely ignore this email.",
+        "Thanks for signing up! Please verify your email address by clicking this link:\n\n{}\n\nIf you didn't sign up for Synvya, you can safely ignore this email.",
         verification_url
     )
 }
@@ -86,7 +86,7 @@ fn password_reset_html(reset_url: &str) -> String {
         r#"
             <html>
             <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Reset your diVine password</h1>
+                <h1 style="color: #00B488;">Reset your Synvya password</h1>
                 <p>We received a request to reset your password. Click the button below to set a new password:</p>
                 <div style="margin: 30px 0;">
                     <a href="{}"
@@ -120,8 +120,8 @@ fn claim_email_html(claim_url: &str) -> String {
         r#"
             <html>
             <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Your Vine account is ready!</h1>
-                <p>Your Vine account has been migrated to diVine. Click the button below to claim it and set up your login:</p>
+                <h1 style="color: #00B488;">Your Synvya account is ready!</h1>
+                <p>Your Synvya account is ready. Click the button below to claim it and set up your login:</p>
                 <div style="margin: 30px 0;">
                     <a href="{}"
                        style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
@@ -144,7 +144,7 @@ fn claim_email_html(claim_url: &str) -> String {
 
 fn claim_email_text(claim_url: &str) -> String {
     format!(
-        "Your Vine account has been migrated to diVine. Click this link to claim it:\n\n{}\n\nThis link will expire in 7 days. If you didn't request this, you can safely ignore this email.",
+        "Your Synvya account is ready. Click this link to claim it:\n\n{}\n\nThis link will expire in 7 days. If you didn't request this, you can safely ignore this email.",
         claim_url
     )
 }
@@ -206,7 +206,7 @@ impl EmailSender for DevEmailSender {
         tracing::info!("  VERIFICATION EMAIL");
         tracing::info!("==================================================");
         tracing::info!("  To: {}", to_email);
-        tracing::info!("  Subject: Verify your diVine email address");
+        tracing::info!("  Subject: Verify your Synvya email address");
         tracing::info!("");
         tracing::info!("  Click to verify:");
         tracing::info!("  {}", verification_url);
@@ -223,7 +223,7 @@ impl EmailSender for DevEmailSender {
         if let Ok(mut captured) = self.captured.lock() {
             captured.push(CapturedEmail {
                 to: to_email.to_string(),
-                subject: "Verify your diVine email address".to_string(),
+                subject: "Verify your Synvya email address".to_string(),
                 verification_url: Some(verification_url),
                 reset_url: None,
             });
@@ -244,7 +244,7 @@ impl EmailSender for DevEmailSender {
         tracing::info!("  PASSWORD RESET EMAIL");
         tracing::info!("==================================================");
         tracing::info!("  To: {}", to_email);
-        tracing::info!("  Subject: Reset your diVine password");
+        tracing::info!("  Subject: Reset your Synvya password");
         tracing::info!("");
         tracing::info!("  Click to reset password:");
         tracing::info!("  {}", reset_url);
@@ -261,7 +261,7 @@ impl EmailSender for DevEmailSender {
         if let Ok(mut captured) = self.captured.lock() {
             captured.push(CapturedEmail {
                 to: to_email.to_string(),
-                subject: "Reset your diVine password".to_string(),
+                subject: "Reset your Synvya password".to_string(),
                 verification_url: None,
                 reset_url: Some(reset_url),
             });
@@ -273,10 +273,10 @@ impl EmailSender for DevEmailSender {
     async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
         tracing::info!("");
         tracing::info!("==================================================");
-        tracing::info!("  VINE CLAIM EMAIL");
+        tracing::info!("  SYNVYA CLAIM EMAIL");
         tracing::info!("==================================================");
         tracing::info!("  To: {}", to_email);
-        tracing::info!("  Subject: Your Vine account on diVine is ready to claim");
+        tracing::info!("  Subject: Your Synvya account is ready to claim");
         tracing::info!("");
         tracing::info!("  Claim link:");
         tracing::info!("  {}", claim_url);
@@ -284,14 +284,14 @@ impl EmailSender for DevEmailSender {
         tracing::info!("");
 
         eprintln!(
-            "\n\x1b[36m[DEV EMAIL]\x1b[0m Vine claim link for {}: \x1b[4m{}\x1b[0m\n",
+            "\n\x1b[36m[DEV EMAIL]\x1b[0m Synvya claim link for {}: \x1b[4m{}\x1b[0m\n",
             to_email, claim_url
         );
 
         if let Ok(mut captured) = self.captured.lock() {
             captured.push(CapturedEmail {
                 to: to_email.to_string(),
-                subject: "Your Vine account on diVine is ready to claim".to_string(),
+                subject: "Your Synvya account is ready to claim".to_string(),
                 verification_url: Some(claim_url.to_string()),
                 reset_url: None,
             });
@@ -375,7 +375,7 @@ impl SendGridEmailSender {
     pub fn new(api_key: String) -> Self {
         let from_email =
             env::var("FROM_EMAIL").unwrap_or_else(|_| "noreply@divine.video".to_string());
-        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "diVine".to_string());
+        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "Synvya".to_string());
         let base_url = env::var("BASE_URL")
             .or_else(|_| env::var("APP_URL"))
             .unwrap_or_else(|_| "http://localhost:5173".to_string());
@@ -472,7 +472,7 @@ impl EmailSender for SendGridEmailSender {
             "{}/verify-email?token={}",
             self.base_url, verification_token
         );
-        let subject = "Verify your diVine email address";
+        let subject = "Verify your Synvya email address";
         let html = verification_email_html(&verification_url);
         let text = verification_email_text(&verification_url);
 
@@ -485,7 +485,7 @@ impl EmailSender for SendGridEmailSender {
         reset_token: &str,
     ) -> Result<(), String> {
         let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
-        let subject = "Reset your diVine password";
+        let subject = "Reset your Synvya password";
         let html = password_reset_html(&reset_url);
         let text = password_reset_text(&reset_url);
 
@@ -493,7 +493,7 @@ impl EmailSender for SendGridEmailSender {
     }
 
     async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
-        let subject = "Your Vine account on diVine is ready to claim";
+        let subject = "Your Synvya account is ready to claim";
         let html = claim_email_html(claim_url);
         let text = claim_email_text(claim_url);
 
@@ -527,7 +527,7 @@ impl SesEmailSender {
 
         let from_email =
             env::var("FROM_EMAIL").unwrap_or_else(|_| "noreply@divine.video".to_string());
-        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "diVine".to_string());
+        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "Synvya".to_string());
         let base_url = env::var("BASE_URL")
             .or_else(|_| env::var("APP_URL"))
             .unwrap_or_else(|_| "http://localhost:5173".to_string());
@@ -628,7 +628,7 @@ impl EmailSender for SesEmailSender {
             "{}/verify-email?token={}",
             self.base_url, verification_token
         );
-        let subject = "Verify your diVine email address";
+        let subject = "Verify your Synvya email address";
         let html = verification_email_html(&verification_url);
         let text = verification_email_text(&verification_url);
 
@@ -641,7 +641,7 @@ impl EmailSender for SesEmailSender {
         reset_token: &str,
     ) -> Result<(), String> {
         let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
-        let subject = "Reset your diVine password";
+        let subject = "Reset your Synvya password";
         let html = password_reset_html(&reset_url);
         let text = password_reset_text(&reset_url);
 
@@ -649,7 +649,7 @@ impl EmailSender for SesEmailSender {
     }
 
     async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
-        let subject = "Your Vine account on diVine is ready to claim";
+        let subject = "Your Synvya account is ready to claim";
         let html = claim_email_html(claim_url);
         let text = claim_email_text(claim_url);
 
