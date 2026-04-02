@@ -611,7 +611,7 @@ impl SesEmailSender {
             )
             .send()
             .await
-            .map_err(|e| format!("SES send failed: {}", e))?;
+            .map_err(|e| format!("SES send failed: {:?}", e))?;
 
         tracing::debug!("Email sent to {} via SES", to);
         Ok(())
