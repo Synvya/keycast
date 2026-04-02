@@ -53,7 +53,7 @@ impl OAuthClient {
         }
     }
 
-    /// Register a new user and return session cookies
+    /// Register a new user, auto-verify email, and return session cookies
     pub async fn register_user(&self, user: &TestUser) -> Result<(), String> {
         let url = self.server.api_url("/auth/register");
 
@@ -73,6 +73,14 @@ impl OAuthClient {
             .map_err(|e| format!("Register request failed: {}", e))?;
 
         if resp.status().is_success() {
+            // Auto-verify email so login works in tests
+            let pool = self.server.db_pool().await
+                .map_err(|e| format!("DB connect failed: {}", e))?;
+            sqlx::query("UPDATE users SET email_verified = true WHERE email = $1")
+                .bind(&user.email)
+                .execute(&pool)
+                .await
+                .map_err(|e| format!("Email verify failed: {}", e))?;
             Ok(())
         } else {
             let status = resp.status();
