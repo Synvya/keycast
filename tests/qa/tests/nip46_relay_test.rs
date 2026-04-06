@@ -4,12 +4,92 @@ use keycast_qa_tests::helpers::oauth::OAuthClient;
 use keycast_qa_tests::helpers::server::TestServer;
 use nostr::{EventBuilder, Keys, Kind};
 use nostr_connect::prelude::*;
+use std::future::Future;
 use std::time::Duration;
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("info,keycast_qa_tests=debug")
         .try_init();
+}
+
+fn is_retryable_relay_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("timeout")
+        || error.contains("503")
+        || error.contains("service unavailable")
+        || error.contains("temporarily unavailable")
+        || error.contains("connection")
+}
+
+async fn retry_relay_operation<T, E, F, Fut>(
+    label: &str,
+    attempts: usize,
+    mut operation: F,
+) -> Result<T, String>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut last_error = None;
+
+    for attempt in 1..=attempts {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let error = err.to_string();
+
+                if attempt == attempts || !is_retryable_relay_error(&error) {
+                    return Err(format!("{label} failed on attempt {attempt}: {error}"));
+                }
+
+                last_error = Some(error);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+
+    Err(format!(
+        "{label} failed after {attempts} attempts: {}",
+        last_error.unwrap_or_else(|| "unknown relay error".to_string())
+    ))
+}
+
+async fn connect_via_relay_ready(
+    bunker_url: &str,
+    timeout: Duration,
+) -> Result<(NostrConnect, PublicKey), String> {
+    let mut last_error = None;
+
+    // Public relays can fail transiently even when the signer is healthy.
+    // Require one successful `get_public_key` roundtrip before proceeding.
+    for attempt in 1..=3 {
+        match connect_via_relay(bunker_url, timeout).await {
+            Ok(signer) => match retry_relay_operation("get_public_key", 2, || signer.get_public_key()).await {
+                Ok(pubkey) => return Ok((signer, pubkey)),
+                Err(err) if attempt < 3 => {
+                    last_error = Some(format!("get_public_key attempt {attempt} failed: {err}"));
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "get_public_key failed after relay connection succeeded: {err}"
+                    ));
+                }
+            },
+            Err(err) if attempt < 3 => {
+                last_error = Some(format!("connect attempt {attempt} failed: {err}"));
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(err) => return Err(format!("Failed to connect to signer after retries: {err}")),
+        }
+    }
+
+    Err(format!(
+        "Relay signer did not become ready after retries: {}",
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
 }
 
 #[tokio::test]
@@ -35,15 +115,10 @@ async fn nip46_001_connect_via_bunker_url() {
     assert!(!secret.is_empty(), "Secret should not be empty");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (_signer, user_pubkey) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Should connect via relay");
-
-    // Get public key to verify connection
-    let user_pubkey = signer
-        .get_public_key()
-        .await
-        .expect("Should get signer pubkey");
+        .expect("Should connect via relay and complete the first roundtrip");
 
     // Note: With HKDF-derived bunker keys, the user_pubkey (signing key) differs
     // from bunker_pubkey (bunker URL key) for privacy. This is by design.
@@ -75,15 +150,10 @@ async fn nip46_002_get_public_key_over_relay() {
         .expect("Should parse bunker URL");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (_signer, user_pubkey) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Should connect via relay");
-
-    // Get public key (the user's signing key, NOT the bunker identity key)
-    let user_pubkey = signer
-        .get_public_key()
-        .await
-        .expect("get_public_key should succeed");
+        .expect("Should connect via relay and complete the first roundtrip");
 
     // Note: With HKDF-derived bunker keys, user_pubkey differs from bunker_pubkey
     // for privacy (prevents relay traffic correlation). This is by design.
@@ -116,20 +186,14 @@ async fn nip46_003_sign_event_over_relay() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (signer, pubkey) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Should connect via relay");
-
-    // Get public key for event building
-    let pubkey = signer
-        .get_public_key()
-        .await
-        .expect("get_public_key should succeed");
+        .expect("Should connect via relay and complete the first roundtrip");
 
     // Build and sign event
     let unsigned = EventBuilder::text_note("Hello from NIP-46 relay test!").build(pubkey);
-    let signed_event = signer
-        .sign_event(unsigned)
+    let signed_event = retry_relay_operation("sign_event", 2, || signer.sign_event(unsigned.clone()))
         .await
         .expect("sign_event should succeed");
 
@@ -159,17 +223,20 @@ async fn nip46_004_nip44_encrypt_over_relay() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (signer, _pubkey) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Should connect via relay");
+        .expect("Should connect via relay and complete the first roundtrip");
 
     // Generate recipient
     let recipient = Keys::generate();
+    let recipient_pubkey = recipient.public_key();
     let plaintext = "Secret message for NIP-44 relay test";
 
     // Encrypt
-    let ciphertext = signer
-        .nip44_encrypt(&recipient.public_key(), plaintext)
+    let ciphertext = retry_relay_operation("nip44_encrypt", 2, || {
+        signer.nip44_encrypt(&recipient_pubkey, plaintext)
+    })
         .await
         .expect("nip44_encrypt should succeed");
 
@@ -192,23 +259,27 @@ async fn nip46_005_nip44_decrypt_over_relay() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (signer, _pubkey) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Should connect via relay");
+        .expect("Should connect via relay and complete the first roundtrip");
 
     // Generate recipient
     let recipient = Keys::generate();
+    let recipient_pubkey = recipient.public_key();
     let plaintext = "Secret message for NIP-44 roundtrip test";
 
     // Encrypt
-    let ciphertext = signer
-        .nip44_encrypt(&recipient.public_key(), plaintext)
+    let ciphertext = retry_relay_operation("nip44_encrypt", 2, || {
+        signer.nip44_encrypt(&recipient_pubkey, plaintext)
+    })
         .await
         .expect("nip44_encrypt should succeed");
 
     // Decrypt
-    let decrypted = signer
-        .nip44_decrypt(&recipient.public_key(), &ciphertext)
+    let decrypted = retry_relay_operation("nip44_decrypt", 2, || {
+        signer.nip44_decrypt(&recipient_pubkey, &ciphertext)
+    })
         .await
         .expect("nip44_decrypt should succeed");
 
@@ -230,15 +301,10 @@ async fn nip46_007_secret_reuse_rejected() {
         .expect("OAuth flow should complete");
 
     // First client connects successfully
-    let signer1 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (_signer1, _pubkey1) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("First client should connect");
-
-    // Verify first client works
-    let _pubkey1 = signer1
-        .get_public_key()
-        .await
-        .expect("First client should work");
+        .expect("First client should connect and complete the first roundtrip");
 
     // Second client with same secret should fail
     // Note: The bunker URL contains the same secret, so connecting again
@@ -275,14 +341,10 @@ async fn nip46_008_same_client_reconnect() {
         .expect("OAuth flow should complete");
 
     // First connection
-    let signer1 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (signer1, pubkey1) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("First connection should succeed");
-
-    let pubkey1 = signer1
-        .get_public_key()
-        .await
-        .expect("get_public_key should succeed");
+        .expect("First connection should succeed and complete the first roundtrip");
 
     // Drop first signer to simulate disconnect
     drop(signer1);
@@ -292,14 +354,10 @@ async fn nip46_008_same_client_reconnect() {
 
     // Reconnect with same bunker URL (same client scenario)
     // This should work as it's the same logical client reconnecting
-    let signer2 = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (_signer2, pubkey2) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Reconnection should succeed");
-
-    let pubkey2 = signer2
-        .get_public_key()
-        .await
-        .expect("get_public_key after reconnect should succeed");
+        .expect("Reconnection should succeed and complete the first roundtrip");
 
     assert_eq!(pubkey1, pubkey2, "Public keys should match after reconnect");
 }
@@ -362,47 +420,49 @@ async fn nip46_multiple_operations_sequence() {
         .expect("OAuth flow should complete");
 
     // Connect via relay
-    let signer = connect_via_relay(&token_resp.bunker_url, Duration::from_secs(60))
+    let (signer, pubkey) =
+        connect_via_relay_ready(&token_resp.bunker_url, Duration::from_secs(60))
         .await
-        .expect("Should connect via relay");
+        .expect("Should connect via relay and complete the first roundtrip");
 
     let recipient = Keys::generate();
+    let recipient_pubkey = recipient.public_key();
 
     // Sequence of operations
-    // 1. Get public key
-    let pubkey = signer.get_public_key().await.expect("Step 1: get_public_key");
-
-    // 2. Sign first event
-    let event1 = signer
-        .sign_event(EventBuilder::text_note("First note").build(pubkey))
+    // 1. Sign first event
+    let event1 = retry_relay_operation("sign first event", 2, || {
+        signer.sign_event(EventBuilder::text_note("First note").build(pubkey))
+    })
         .await
-        .expect("Step 2: sign first event");
+        .expect("Step 1: sign first event");
     assert!(event1.verify().is_ok(), "First event should be valid");
 
-    // 3. Encrypt message
+    // 2. Encrypt message
     let plaintext = "Secret for sequence test";
-    let ciphertext = signer
-        .nip44_encrypt(&recipient.public_key(), plaintext)
+    let ciphertext = retry_relay_operation("nip44_encrypt", 2, || {
+        signer.nip44_encrypt(&recipient_pubkey, plaintext)
+    })
         .await
-        .expect("Step 3: encrypt");
+        .expect("Step 2: encrypt");
 
-    // 4. Sign second event
-    let event2 = signer
-        .sign_event(EventBuilder::text_note("Second note").build(pubkey))
+    // 3. Sign second event
+    let event2 = retry_relay_operation("sign second event", 2, || {
+        signer.sign_event(EventBuilder::text_note("Second note").build(pubkey))
+    })
         .await
-        .expect("Step 4: sign second event");
+        .expect("Step 3: sign second event");
     assert!(event2.verify().is_ok(), "Second event should be valid");
 
-    // 5. Decrypt message
-    let decrypted = signer
-        .nip44_decrypt(&recipient.public_key(), &ciphertext)
+    // 4. Decrypt message
+    let decrypted = retry_relay_operation("nip44_decrypt", 2, || {
+        signer.nip44_decrypt(&recipient_pubkey, &ciphertext)
+    })
         .await
-        .expect("Step 5: decrypt");
+        .expect("Step 4: decrypt");
     assert_eq!(decrypted, plaintext, "Decrypted should match");
 
     // 6. Get public key again (should be consistent)
-    let pubkey2 = signer
-        .get_public_key()
+    let pubkey2 = retry_relay_operation("get_public_key", 2, || signer.get_public_key())
         .await
         .expect("Step 6: get_public_key again");
     assert_eq!(pubkey, pubkey2, "Pubkey should be consistent");
