@@ -47,7 +47,19 @@ Start Keycast locally:
 ```bash
 cd /Users/alejandro/Synvya/keycast
 export E2E_DEMO_RESTAURANT_NSEC='nsec1...'
-bun run dev:e2e
+docker compose -f docker-compose.deps.yml --profile e2e up -d --wait
+test -f master.key || ./scripts/generate_key.sh
+cargo build --bin keycast
+
+DATABASE_URL=postgres://postgres:password@localhost/keycast \
+REDIS_URL=redis://localhost:16379 \
+MASTER_KEY_PATH=./master.key \
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3000 \
+SERVER_NSEC=0000000000000000000000000000000000000000000000000000000000000001 \
+WEB_BUILD_DIR=./web/build \
+BUNKER_RELAYS=ws://localhost:8080 \
+ALLOWED_PUBKEYS=25fa07621969c92191feb4433fca94fdb500f2b445fd4f017c0a332ceecbf813 \
+./target/debug/keycast
 ```
 
 In a second terminal, run the dedicated spec:
@@ -56,6 +68,28 @@ In a second terminal, run the dedicated spec:
 cd /Users/alejandro/Synvya/keycast/e2e
 npx playwright test tests/restaurant-team.spec.ts
 ```
+
+If you want to provision the signer and print the returned values for manual server testing, run:
+
+```bash
+cd /Users/alejandro/Synvya/keycast/e2e
+KEYCAST_BASE_URL='http://localhost:3000' \
+BUNKER_RELAYS='ws://localhost:8080' \
+E2E_DEMO_RESTAURANT_NSEC='nsec1...' \
+npm run provision:restaurant
+```
+
+That command prints:
+
+- `bunkerUrl`
+- `restaurantPubkey`
+- `teamId`
+- `policyId`
+- `authorizationId`
+- `sessionCookie`
+- shell `export` lines you can paste into another terminal
+
+If `tsx` is not installed yet in `e2e/`, run `npm install` first.
 
 Run only the preservation test:
 
