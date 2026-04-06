@@ -18,6 +18,8 @@ name: "Synvya - Build, Test & Push"
 on:
   push:
     branches: [synvya-staging, synvya]
+    paths-ignore:
+      - "**/*.md"
   workflow_dispatch:
 
 env:

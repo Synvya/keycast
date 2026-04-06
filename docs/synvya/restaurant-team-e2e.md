@@ -4,6 +4,8 @@ This document explains how to use the Playwright helper in [`e2e/helpers/restaur
 
 For process-level Synvya integration tests, use the companion harness in [`e2e/helpers/synvya-server.ts`](../../e2e/helpers/synvya-server.ts).
 
+If you need to hand this off to a `Synvya/server` implementation session, start with [`server-e2e-handoff.md`](server-e2e-handoff.md).
+
 ## What This Helper Does
 
 `provisionRestaurantTeam()` creates the exact Keycast state needed for a restaurant-scoped signing test:
