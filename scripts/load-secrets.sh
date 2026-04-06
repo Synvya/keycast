@@ -25,6 +25,8 @@ else
     exit 1
 fi
 
+ALLOWED_PUBKEYS=$(get_secret synvya/$ENV/keycast/allowed-pubkeys 2>/dev/null || echo "")
+
 cat > /opt/synvya/.env <<EOF
 # IMPORTANT: POSTGRES_PASSWORD must be alphanumeric only (no @, /, #, $ etc.)
 # Special characters break URL parsing in DATABASE_URL connection strings.
@@ -44,7 +46,8 @@ FROM_EMAIL=noreply@synvya.com
 FROM_NAME=Synvya
 DYNAMODB_RESERVATION_TABLE=${DYNAMO_PREFIX}-reservation-state
 DYNAMODB_CONFIG_TABLE=${DYNAMO_PREFIX}-restaurant-config
-VITE_ALLOWED_PUBKEYS=$(get_secret synvya/$ENV/keycast/allowed-pubkeys 2>/dev/null || echo "")
+ALLOWED_PUBKEYS=$ALLOWED_PUBKEYS
+VITE_ALLOWED_PUBKEYS=$ALLOWED_PUBKEYS
 EOF
 
 chmod 600 /opt/synvya/.env

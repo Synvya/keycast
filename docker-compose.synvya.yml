@@ -59,6 +59,7 @@ services:
       SERVER_NSEC: ${SERVER_NSEC:?error}
       BUNKER_RELAYS: ${BUNKER_RELAYS:?error}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?error}
+      ALLOWED_PUBKEYS: ${ALLOWED_PUBKEYS:-}
       PORT: 3000
       NODE_ENV: production
       RUST_LOG: ${RUST_LOG:-info}
