@@ -11,7 +11,7 @@
 #   injects DISABLE_EMAILS into the deployed keycast container env.
 #
 # Required GitHub Secrets:
-#   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PROD_HOST, EC2_PROD_SSH_KEY
+#   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PRODUCTION_HOST, EC2_PRODUCTION_SSH_KEY
 
 name: "Synvya - Build, Test & Push"
 
@@ -160,14 +160,14 @@ jobs:
       - name: Deploy to production EC2
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_PROD_HOST }}
+          host: ${{ secrets.EC2_PRODUCTION_HOST }}
           username: ec2-user
-          key: ${{ secrets.EC2_PROD_SSH_KEY }}
+          key: ${{ secrets.EC2_PRODUCTION_SSH_KEY }}
           command_timeout: 30m
           script: |
             cd /opt/synvya/keycast
             git pull origin synvya
-            bash scripts/load-secrets.sh prod
+            bash scripts/load-secrets.sh production
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
             fi
@@ -267,9 +267,9 @@ jobs:
       - name: Run QA tests on production EC2
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_PROD_HOST }}
+          host: ${{ secrets.EC2_PRODUCTION_HOST }}
           username: ec2-user
-          key: ${{ secrets.EC2_PROD_SSH_KEY }}
+          key: ${{ secrets.EC2_PRODUCTION_SSH_KEY }}
           command_timeout: 30m
           script: |
             set -e

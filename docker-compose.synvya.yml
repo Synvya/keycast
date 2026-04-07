@@ -98,33 +98,6 @@ services:
     networks:
       - synvya
 
-  event-processor:
-    container_name: event-processor
-    build:
-      context: ${EVENT_PROCESSOR_PATH:-../event-processor}
-    ports:
-      - "4000:4000"
-    environment:
-      PORT: 4000
-      KEYCAST_URL: http://keycast:3000
-      KEYCAST_SERVICE_TOKEN: ${EP_SERVICE_TOKEN:?error}
-      NOSTR_RELAYS: ${NOSTR_RELAYS:?error}
-      DYNAMODB_RESERVATION_TABLE: ${DYNAMODB_RESERVATION_TABLE:-synvya-reservation-state}
-      DYNAMODB_CONFIG_TABLE: ${DYNAMODB_CONFIG_TABLE:-synvya-restaurant-config}
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-    depends_on:
-      keycast:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    restart: unless-stopped
-    networks:
-      - synvya
 
 volumes:
   postgres_data:
