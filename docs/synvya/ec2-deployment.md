@@ -1,6 +1,6 @@
-# Keycast EC2 Deployment — v2.0
+# Keycast EC2 Deployment — v2.1
 
-Deploy Keycast on EC2 using Docker Compose, replacing the current Google Cloud Run deployment. This is Synvya-specific infrastructure.
+Deploy Keycast on EC2 using Docker Compose. This is Synvya-specific infrastructure.
 
 This document describes Keycast only. The Server is a separate service deployed to ECS/Fargate and exposed on `server.*`.
 
@@ -10,7 +10,7 @@ This document covers:
 
 - Keycast deployment on EC2
 - PostgreSQL and Redis for Keycast
-- ALB and DNS for `auth.staging.synvya.com` and `auth.synvya.com`
+- ALB, WAF, and DNS for `auth.staging.synvya.com` and `auth.synvya.com`
 - GitHub Actions deployment of Keycast-specific changes
 
 This document does not cover:
@@ -37,6 +37,7 @@ EC2 + Docker Compose remains the chosen Keycast deployment target for now.
 - maintain staging and production isolation
 - expose Keycast on `auth.staging.synvya.com` and `auth.synvya.com`
 - use AWS KMS and AWS SES
+- protect email-triggering endpoints from bot abuse via AWS WAF
 
 ### 3.2 Non-Goals
 
@@ -50,9 +51,11 @@ EC2 + Docker Compose remains the chosen Keycast deployment target for now.
 |---|---|---|
 | Domain | `auth.staging.synvya.com` | `auth.synvya.com` |
 | Runtime | EC2 + Docker Compose | EC2 + Docker Compose |
-| PostgreSQL | containerized in v1 | containerized in v1 |
-| Redis | containerized in v1 | containerized in v1 |
-| Secrets path | `synvya/staging/keycast/*` | `synvya/prod/keycast/*` |
+| PostgreSQL | containerized | containerized |
+| Redis | containerized | containerized |
+| Secrets path | `synvya/staging/keycast/*` | `synvya/production/keycast/*` |
+| KMS key alias | `alias/keycast-master-key` | `alias/synvya-production-keycast-masterkey` |
+| WAF Web ACL | `synvya-staging-keycast-waf` | `synvya-production-keycast-waf` |
 
 ## 5. Service Boundary
 
@@ -81,17 +84,20 @@ Keycast does not own:
 Internet
    |
    v
-ALB
+AWS WAF (rate limiting + IP reputation)
+   |
+   v
+ALB (HTTPS 443, *.synvya.com cert)
    |
    v
 auth.staging.synvya.com / auth.synvya.com
    |
    v
 EC2 instance
-  - keycast
+  - keycast (port 3000)
   - postgres
   - redis
-  - migration job
+  - migration job (runs once on deploy)
 ```
 
 The Server is a separate service on ECS/Fargate and is not part of this stack.
@@ -134,16 +140,46 @@ There is no `/api/events/*` routing in the Keycast stack anymore.
 Keycast secrets live under:
 
 - `synvya/staging/keycast/*`
-- `synvya/prod/keycast/*`
+- `synvya/production/keycast/*`
 
-Examples:
+| Secret name | Description |
+|---|---|
+| `privatekey` | Server Nostr secret key (hex or nsec bech32) |
+| `postgres-password` | PostgreSQL password — alphanumeric only, no special characters |
+| `allowed-pubkeys` | Comma-separated admin pubkeys for whitelist access |
 
-- `server-nsec`
-- `postgres-password`
+Do not load Server-specific secrets in the Keycast deployment. IAM roles are scoped to `synvya/{env}/keycast/*` only.
 
-Do not load Server-specific secrets in the Keycast deployment.
+## 10. WAF
 
-## 10. CI/CD
+Each environment has a dedicated AWS WAF Web ACL associated with its ALB.
+
+| Web ACL | Associated ALB |
+|---|---|
+| `synvya-staging-keycast-waf` | `synvya-staging-keycast-alb` |
+| `synvya-production-keycast-waf` | `synvya-production-keycast-alb` |
+
+### Rules
+
+**Rate-based rules** (10 requests per 1 minute per IP, action: Block):
+
+| Rule | URI path | Protects |
+|---|---|---|
+| `rate-limit-register` | `/api/auth/register` | Verification email |
+| `rate-limit-forgot-password` | `/api/auth/forgot-password` | Password reset email |
+| `rate-limit-claim` | `/claim` | Account claim email |
+
+**Managed rule groups** (always on):
+
+- `AWSManagedRulesAmazonIpReputationList` — blocks known bot and scanner IPs
+
+### Notes
+
+- WAF is managed manually in the AWS console, not via CI/CD
+- Default action is **Allow** — only matched rules block
+- To test WAF on staging without blocking yourself, temporarily set rules to **Count** mode, verify metrics, then switch back to **Block**
+
+## 11. CI/CD
 
 Keycast CI/CD remains Keycast-specific:
 
@@ -153,7 +189,7 @@ Keycast CI/CD remains Keycast-specific:
 
 This workflow should not build or deploy the Server.
 
-## 11. Monitoring
+## 12. Monitoring
 
 Monitor:
 
@@ -165,7 +201,7 @@ Monitor:
 
 Do not mix Server alarms into this deployment document.
 
-## 12. Relationship to ECS
+## 13. Relationship to ECS
 
 - Keycast remains on EC2 + Docker Compose for now
 - the Server is already targeted at ECS/Fargate + ECR

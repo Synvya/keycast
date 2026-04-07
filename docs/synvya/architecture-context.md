@@ -51,6 +51,7 @@ The client represents humans. The server represents the always-on restaurant ope
 - Keycast remains its own service on `auth.*`
 - The Server is a separate service on `server.*`
 - The Server calls Keycast over HTTPS for auth introspection and signing/decryption RPC
+- AWS WAF sits in front of both ALBs, rate-limiting email-triggering endpoints and blocking known bot IPs
 
 ## What Synvya Needs From Keycast
 
@@ -59,3 +60,4 @@ The client represents humans. The server represents the always-on restaurant ope
 - stable auth and signing RPC surface
 - deployable AWS hosting for Keycast itself
 - support for background provisioning of server-side restaurant authorizations
+- bot-resistant email endpoints (via AWS WAF rate limiting)
