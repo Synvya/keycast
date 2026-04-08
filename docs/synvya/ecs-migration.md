@@ -37,7 +37,7 @@ Server ECS deployment should include:
 
 1. ECR repository for the server image
 2. ECS task definitions and services for staging and production
-3. ALB target groups for `server.staging.synvya.com` and `server.synvya.com`
+3. dedicated ALBs and target groups for `server.staging.synvya.com` and `server.synvya.com`
 4. task roles with DynamoDB and Secrets Manager access
 5. environment-specific configuration for Keycast URLs and DynamoDB table names
 
