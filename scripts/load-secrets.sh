@@ -25,6 +25,7 @@ else
     exit 1
 fi
 
+EXTRA_ALLOWED_ORIGINS="https://account.synvya.com,https://account.staging.synvya.com,https://server.synvya.com,https://server.staging.synvya.com"
 ALLOWED_PUBKEYS=$(get_secret synvya/$ENV/keycast/allowed-pubkeys 2>/dev/null || echo "")
 
 cat > /opt/synvya/.env <<EOF
@@ -36,7 +37,7 @@ SERVER_NSEC=$(get_secret synvya/$ENV/keycast/privatekey)
 AWS_KMS_KEY_ID=$KMS_KEY_ID
 AWS_REGION=$REGION
 BUNKER_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.snort.social
-ALLOWED_ORIGINS=https://$DOMAIN
+ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS
 BASE_URL=https://$DOMAIN
 APP_URL=https://$DOMAIN
 VITE_DOMAIN=https://$DOMAIN
