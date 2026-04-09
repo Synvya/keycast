@@ -46,10 +46,12 @@ pub fn api_routes(
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
-    // Logout route - public CORS so third-party OAuth apps can revoke sessions
-    // Protected by Bearer token (UCAN), not cookies
+    // Logout route - restricted CORS with credentials
+    // This endpoint clears the first-party session cookie, so it must use
+    // auth_cors rather than wildcard public CORS.
     let logout_route = Router::new()
         .route("/auth/logout", post(auth::logout))
+        .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
     // verify_email needs auth_state for key_manager (to decrypt keys and issue UCAN)
@@ -257,7 +259,7 @@ pub fn api_routes(
         .merge(bunker_routes) // Has auth_cors (bunker creation)
         .merge(key_export_routes) // Has auth_cors (authenticated, needs cookies)
         .merge(change_key_route) // Has auth_cors (authenticated, needs cookies)
-        .merge(logout_route.layer(public_cors.clone())) // Public CORS - Bearer token auth, third-party apps
+        .merge(logout_route) // Has auth_cors (credentialed cookie logout)
         .merge(account_delete_route.layer(public_cors.clone())) // Public CORS - Bearer token auth, third-party apps
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer
         .merge(email_routes.layer(public_cors.clone()))
