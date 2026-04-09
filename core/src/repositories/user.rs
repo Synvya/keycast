@@ -149,6 +149,25 @@ impl UserRepository {
         Ok(count > 0)
     }
 
+    /// Count how many teams this user belongs to within the tenant.
+    pub async fn count_team_memberships(
+        &self,
+        tenant_id: i64,
+        pubkey: &PublicKey,
+    ) -> Result<i64, RepositoryError> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*)
+             FROM team_users tu
+             JOIN teams t ON t.id = tu.team_id
+             WHERE tu.user_pubkey = $1 AND t.tenant_id = $2",
+        )
+        .bind(pubkey.to_hex())
+        .bind(tenant_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
     // =========================================================================
     // Authentication methods
     // =========================================================================
@@ -1555,6 +1574,49 @@ mod tests {
         let result = repo.is_team_member(1, &pubkey, team_id).await;
         assert!(result.is_ok());
         assert!(!result.unwrap(), "User should not be member");
+    }
+
+    #[tokio::test]
+    async fn test_count_team_memberships_zero_for_new_user() {
+        let pool = setup_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+
+        repo.find_or_create(1, &pubkey).await.unwrap();
+
+        let result = repo.count_team_memberships(1, &pubkey).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0, "New user should have zero teams");
+    }
+
+    #[tokio::test]
+    async fn test_count_team_memberships_filters_by_tenant() {
+        let pool = setup_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+        let suffix = test_suffix();
+
+        repo.find_or_create(1, &pubkey).await.unwrap();
+        repo.find_or_create(2, &pubkey).await.unwrap();
+
+        let team1_id = create_test_team(&pool, &format!("Tenant One {}", suffix)).await;
+        add_user_to_team(&pool, &pubkey.to_hex(), team1_id, "admin").await;
+
+        let team2_id: i32 = sqlx::query_scalar(
+            "INSERT INTO teams (tenant_id, name, created_at, updated_at)
+             VALUES (2, $1, NOW(), NOW())
+             RETURNING id",
+        )
+        .bind(format!("Tenant Two {}", suffix))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        add_user_to_team(&pool, &pubkey.to_hex(), team2_id, "admin").await;
+
+        assert_eq!(repo.count_team_memberships(1, &pubkey).await.unwrap(), 1);
+        assert_eq!(repo.count_team_memberships(2, &pubkey).await.unwrap(), 1);
     }
 
     #[tokio::test]

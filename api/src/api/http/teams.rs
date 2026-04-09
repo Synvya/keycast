@@ -55,9 +55,16 @@ pub async fn create_team(
 ) -> ApiResult<Json<TeamWithRelations>> {
     let tenant_id = tenant.0.id;
     let user_pubkey_hex = &auth.pubkey;
+    let user_pubkey = PublicKey::from_hex(user_pubkey_hex)
+        .map_err(|_| ApiError::bad_request("Invalid pubkey"))?;
+    let user_repo = UserRepository::new(pool.clone());
 
-    // Check admin access for team creation
-    if !super::admin::is_full_admin(&auth) {
+    let can_create_first_team = user_repo
+        .count_team_memberships(tenant_id, &user_pubkey)
+        .await?
+        == 0;
+
+    if !super::admin::is_full_admin(&auth) && !can_create_first_team {
         tracing::warn!(
             "Team creation denied for non-admin pubkey: {}",
             user_pubkey_hex
