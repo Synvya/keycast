@@ -148,6 +148,9 @@ jobs:
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
             fi
+            docker system df || true
+            docker builder prune -af || true
+            docker image prune -af || true
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               build postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
@@ -183,6 +186,9 @@ jobs:
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
             fi
+            docker system df || true
+            docker builder prune -af || true
+            docker image prune -af || true
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               build postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
