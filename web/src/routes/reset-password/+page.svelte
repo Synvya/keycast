@@ -8,6 +8,8 @@
 
 	const api = new KeycastApi();
 	const loginUrl = getLoginUrl();
+	const isSynvyaManaged = loginUrl !== '/login';
+	const pageTitle = isSynvyaManaged ? 'Reset Password - Synvya' : `Reset Password - ${BRAND.name}`;
 
 	let password = $state('');
 	let confirmPassword = $state('');
@@ -60,18 +62,22 @@
 </script>
 
 <svelte:head>
-	<title>Reset Password - {BRAND.name}</title>
+	<title>{pageTitle}</title>
 </svelte:head>
 
-<div class="auth-page">
-	<div class="auth-container">
+<div class:auth-page={true} class:synvya-page={isSynvyaManaged}>
+	<div class:auth-container={true} class:synvya-container={isSynvyaManaged}>
 		<a href="/" class="auth-branding">
-			<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
-			<span class="auth-logo-sub">Login</span>
+			{#if isSynvyaManaged}
+				<img src="/synvya-logo.png" alt="Synvya" class="synvya-logo-img" />
+			{:else}
+				<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
+				<span class="auth-logo-sub">Login</span>
+			{/if}
 		</a>
 
-		<h1>Reset Password</h1>
-		<p class="subtitle">Enter your new password</p>
+		<h1>{isSynvyaManaged ? 'Set new password' : 'Reset Password'}</h1>
+		<p class="subtitle">{isSynvyaManaged ? 'Enter your new password below.' : 'Enter your new password'}</p>
 
 		{#if !token}
 			<div class="error-message">
@@ -129,6 +135,10 @@
 		background: var(--color-divine-bg);
 	}
 
+	.synvya-page {
+		background: color-mix(in srgb, var(--color-divine-muted) 60%, white);
+	}
+
 	.auth-container {
 		background: var(--color-divine-surface);
 		border: 1px solid var(--color-divine-border);
@@ -137,6 +147,15 @@
 		max-width: 420px;
 		width: 100%;
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.08);
+	}
+
+	.synvya-container {
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		padding: 0;
+		box-shadow: none;
+		max-width: 24rem;
 	}
 
 	.auth-branding {
@@ -155,6 +174,11 @@
 
 	.auth-logo-img {
 		height: 28px;
+	}
+
+	.synvya-logo-img {
+		height: 3rem;
+		width: auto;
 	}
 
 	.auth-logo-sub {
@@ -177,11 +201,24 @@
 		letter-spacing: -0.02em;
 	}
 
+	.synvya-container h1 {
+		color: #0f172a;
+		font-size: 1.25rem;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+	}
+
 	.subtitle {
 		color: var(--color-divine-text-secondary);
 		margin: 0 0 1.5rem 0;
 		text-align: center;
 		font-size: 0.95rem;
+	}
+
+	.synvya-container .subtitle,
+	.synvya-container label,
+	.synvya-container .auth-link {
+		color: #64748b;
 	}
 
 	.form-group {
@@ -224,6 +261,16 @@
 		cursor: not-allowed;
 	}
 
+	.synvya-container input {
+		background: white;
+		border-color: rgba(15, 23, 42, 0.12);
+		color: #0f172a;
+	}
+
+	.synvya-container input::placeholder {
+		color: #94a3b8;
+	}
+
 	.btn-primary {
 		display: block;
 		width: 100%;
@@ -241,9 +288,18 @@
 		margin-top: 0.5rem;
 	}
 
+	.synvya-container .btn-primary {
+		background: #0f172a;
+		box-shadow: none;
+	}
+
 	.btn-primary:hover:not(:disabled) {
 		background: var(--color-divine-green-dark);
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.16);
+	}
+
+	.synvya-container .btn-primary:hover:not(:disabled) {
+		background: #111827;
 	}
 
 	.btn-primary:disabled {
@@ -266,6 +322,12 @@
 
 	.auth-link a:hover {
 		text-decoration: underline;
+	}
+
+	.synvya-container .auth-link a {
+		color: #0f172a;
+		text-decoration: underline;
+		text-underline-offset: 2px;
 	}
 
 	.error-message {
