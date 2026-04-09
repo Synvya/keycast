@@ -6,10 +6,12 @@
 	import { setCurrentUser } from '$lib/current_user.svelte';
 	import { BRAND } from '$lib/brand';
 	import { signin, SigninMethod, signout } from '$lib/utils/auth';
+	import { getLoginUrl } from '$lib/utils/env';
 	import { PlugsConnected } from 'phosphor-svelte';
 	import { onMount } from 'svelte';
 
 	const api = new KeycastApi();
+	const loginUrl = getLoginUrl();
 	let isNip07Loading = $state(false);
 	let hasExtension = $state(false);
 	let checkingSession = $state(true);
@@ -239,7 +241,7 @@
 			</form>
 
 			<p class="auth-link">
-				<a href="/forgot-password">Forgot password?</a>
+				<a href={loginUrl}>Forgot password?</a>
 			</p>
 
 			<p class="auth-link">

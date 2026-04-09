@@ -4,14 +4,25 @@
 	import { toast } from 'svelte-hot-french-toast';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { BRAND } from '$lib/brand';
+	import { getLoginUrl } from '$lib/utils/env';
 
 	const api = new KeycastApi();
+	const loginUrl = getLoginUrl();
 
 	let password = $state('');
 	let confirmPassword = $state('');
 	let isLoading = $state(false);
 
 	const token = $derived($page.url.searchParams.get('token'));
+
+	function redirectToLogin() {
+		if (loginUrl.startsWith('http://') || loginUrl.startsWith('https://')) {
+			window.location.assign(loginUrl);
+			return;
+		}
+
+		goto(loginUrl);
+	}
 
 	async function handleSubmit() {
 		if (!token) {
@@ -38,7 +49,7 @@
 			});
 
 			toast.success('Password reset successfully!');
-			goto('/login');
+			redirectToLogin();
 		} catch (err: any) {
 			console.error('Reset password error:', err);
 			toast.error(err.message || 'Failed to reset password. The link may have expired.');
@@ -67,7 +78,7 @@
 				<p>Invalid or missing reset token.</p>
 				<p>Please request a new password reset link.</p>
 			</div>
-			<a href="/forgot-password" class="btn-primary">Request New Link</a>
+			<a href={loginUrl} class="btn-primary">Request New Link</a>
 		{:else}
 			<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
 				<div class="form-group">
@@ -103,7 +114,7 @@
 		{/if}
 
 		<p class="auth-link">
-			<a href="/login">Back to Login</a>
+			<a href={loginUrl}>Back to Login</a>
 		</p>
 	</div>
 </div>

@@ -25,6 +25,20 @@ use serde::{Deserialize, Serialize};
 // Import constants and helpers from auth module
 use super::auth::{generate_secure_token, token_expiry_seconds, EMAIL_VERIFICATION_EXPIRY_HOURS};
 
+fn forgot_password_url_for_auth_host() -> &'static str {
+    let auth_url = std::env::var("APP_URL")
+        .or_else(|_| std::env::var("VITE_DOMAIN"))
+        .unwrap_or_default();
+
+    if auth_url.contains("auth.staging.synvya.com") {
+        "https://account.staging.synvya.com/login"
+    } else if auth_url.contains("auth.synvya.com") {
+        "https://account.synvya.com/login"
+    } else {
+        "/forgot-password"
+    }
+}
+
 /// Generate a 256-bit random authorization handle (64 hex characters)
 /// Used for silent re-authentication in OAuth flows
 pub fn generate_authorization_handle() -> String {
@@ -1469,6 +1483,7 @@ pub async fn authorize_get(
         }
     } else {
         // User not authenticated - show login/register form (divine.video-inspired design)
+        let forgot_password_url = forgot_password_url_for_auth_host();
         format!(
             r#"
 <!DOCTYPE html>
@@ -1830,7 +1845,7 @@ pub async fn authorize_get(
                     <button type="submit" class="btn_primary">Sign in</button>
                 </form>
                 <div class="toggle_link">
-                    <a href="/forgot-password">Forgot password?</a>
+                    <a href="{}">Forgot password?</a>
                 </div>
                 <div class="toggle_link">
                     Don't have an account? <a onclick="showForm('register')">Create one</a>
@@ -2148,6 +2163,7 @@ pub async fn authorize_get(
                 .unwrap_or('A')
                 .to_uppercase(), // app icon letter
             params.client_id, // app name in card
+            forgot_password_url, // Forgot password link target
             params.client_id, // JS clientId
             params.redirect_uri, // JS redirectUri
             scope_str,        // JS scope

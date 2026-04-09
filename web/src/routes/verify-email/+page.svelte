@@ -5,9 +5,12 @@
 	import { toast } from 'svelte-hot-french-toast';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { BRAND } from '$lib/brand';
+	import { getLoginUrl } from '$lib/utils/env';
 
 	const api = new KeycastApi();
-
+	const loginUrl = getLoginUrl();
+	const isSynvyaManaged = loginUrl !== '/login';
+	const pageTitle = isSynvyaManaged ? 'Verify Email - Synvya' : `Verify Email - ${BRAND.name}`;
 	let status = $state<'loading' | 'processing' | 'success' | 'oauth_redirect' | 'headless_verified' | 'error' | 'no-token'>('loading');
 	let message = $state('');
 	let redirectUrl = $state('');
@@ -142,15 +145,19 @@
 </script>
 
 <svelte:head>
-	<title>Verify Email - {BRAND.name}</title>
+	<title>{pageTitle}</title>
 </svelte:head>
 
-<div class="verify-page">
-	<div class="verify-container">
+<div class:verify-page={true} class:synvya-page={isSynvyaManaged}>
+	<div class:verify-container={true} class:synvya-container={isSynvyaManaged}>
 		<!-- Logo/Branding -->
-		<a href="/" class="verify-branding">
-			<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="verify-logo-img" />
-			<span class="verify-logo-sub">Login</span>
+		<a href="/" class:verify-branding={true} class:synvya-branding={isSynvyaManaged}>
+			{#if isSynvyaManaged}
+				<img src="/synvya-logo.png" alt="Synvya" class="synvya-logo-img" />
+			{:else}
+				<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="verify-logo-img" />
+				<span class="verify-logo-sub">Login</span>
+			{/if}
 		</a>
 
 		{#if status === 'loading'}
@@ -213,7 +220,7 @@
 			<h1>Verification Failed</h1>
 			<p class="subtitle">{message}</p>
 			<div class="actions">
-				<a href="/login" class="btn-secondary">Go to Login</a>
+				<a href={loginUrl} class="btn-secondary">Go to Login</a>
 				<a href="/register" class="btn-primary">Create New Account</a>
 			</div>
 
@@ -226,7 +233,7 @@
 			<h1>Invalid Link</h1>
 			<p class="subtitle">This verification link is invalid or incomplete.</p>
 			<div class="actions">
-				<a href="/login" class="btn-secondary">Go to Login</a>
+				<a href={loginUrl} class="btn-secondary">Go to Login</a>
 				<a href="/register" class="btn-primary">Create New Account</a>
 			</div>
 		{/if}
@@ -243,6 +250,10 @@
 		background: var(--color-divine-bg);
 	}
 
+	.synvya-page {
+		background: color-mix(in srgb, var(--color-divine-muted) 60%, white);
+	}
+
 	.verify-container {
 		background: var(--color-divine-surface);
 		border: 1px solid var(--color-divine-border);
@@ -252,6 +263,15 @@
 		width: 100%;
 		text-align: center;
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.08);
+	}
+
+	.synvya-container {
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		padding: 0;
+		box-shadow: none;
+		max-width: 24rem;
 	}
 
 	.verify-branding {
@@ -267,6 +287,17 @@
 		opacity: 0.85;
 	}
 
+	.synvya-branding {
+		flex-direction: column;
+		align-items: center;
+		gap: 0;
+		opacity: 1;
+	}
+
+	.synvya-branding:hover {
+		opacity: 0.95;
+	}
+
 	.verify-logo-img {
 		height: 28px;
 	}
@@ -279,6 +310,11 @@
 		text-transform: uppercase;
 		color: var(--color-divine-green);
 		opacity: 0.6;
+	}
+
+	.synvya-logo-img {
+		height: 3rem;
+		width: auto;
 	}
 
 	.status-icon {
@@ -316,10 +352,23 @@
 		font-weight: 700;
 	}
 
+	.synvya-container h1 {
+		color: #0f172a;
+		font-size: 1.25rem;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+	}
+
 	.subtitle {
 		color: var(--color-divine-text-secondary);
 		margin: 0 0 1.25rem 0;
 		font-size: 0.95rem;
+	}
+
+	.synvya-container .subtitle,
+	.synvya-container .redirect-notice,
+	.synvya-container .processing-notice {
+		color: #475569;
 	}
 
 	.redirect-notice {
@@ -354,9 +403,18 @@
 		transition: all 0.2s;
 	}
 
+	.synvya-container .btn-primary {
+		background: #0f172a;
+		box-shadow: none;
+	}
+
 	.btn-primary:hover {
 		background: var(--color-divine-green-dark);
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.16);
+	}
+
+	.synvya-container .btn-primary:hover {
+		background: #111827;
 	}
 
 	.btn-secondary {
@@ -373,8 +431,19 @@
 		transition: all 0.2s;
 	}
 
+	.synvya-container .btn-secondary {
+		background: rgba(255, 255, 255, 0.72);
+		border-color: rgba(15, 23, 42, 0.12);
+		color: #0f172a;
+	}
+
 	.btn-secondary:hover {
 		background: var(--color-divine-muted);
 		color: var(--color-divine-text);
+	}
+
+	.synvya-container .btn-secondary:hover {
+		background: rgba(248, 250, 252, 1);
+		border-color: rgba(15, 23, 42, 0.2);
 	}
 </style>

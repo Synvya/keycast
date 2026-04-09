@@ -1,13 +1,23 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { toast } from 'svelte-hot-french-toast';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { BRAND } from '$lib/brand';
+	import { getLoginUrl } from '$lib/utils/env';
 
 	const api = new KeycastApi();
+	const loginUrl = getLoginUrl();
+	const isManagedExternally = loginUrl !== '/login';
 
 	let email = $state('');
 	let isLoading = $state(false);
 	let emailSent = $state(false);
+
+	onMount(() => {
+		if (isManagedExternally) {
+			window.location.replace(loginUrl);
+		}
+	});
 
 	async function handleSubmit() {
 		if (!email) {
@@ -43,14 +53,26 @@
 		</a>
 
 		<h1>Forgot Password</h1>
-		<p class="subtitle">Enter your email and we'll send you a reset link</p>
+		<p class="subtitle">
+			{#if isManagedExternally}
+				Redirecting you to Synvya account login.
+			{:else}
+				Enter your email and we'll send you a reset link
+			{/if}
+		</p>
 
-		{#if emailSent}
+		{#if isManagedExternally}
+			<div class="success-message">
+				<p>Password reset now lives in the Synvya account app.</p>
+				<p>If you are not redirected automatically, continue below.</p>
+			</div>
+			<a href={loginUrl} class="btn-primary">Continue to Login</a>
+		{:else if emailSent}
 			<div class="success-message">
 				<p>If an account exists with that email, you'll receive a password reset link shortly.</p>
 				<p>Check your inbox and spam folder.</p>
 			</div>
-			<a href="/login" class="btn-primary">Back to Login</a>
+			<a href={loginUrl} class="btn-primary">Back to Login</a>
 		{:else}
 			<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
 				<div class="form-group">
@@ -72,7 +94,7 @@
 		{/if}
 
 		<p class="auth-link">
-			Remember your password? <a href="/login">Sign in</a>
+			Remember your password? <a href={loginUrl}>Sign in</a>
 		</p>
 	</div>
 </div>
