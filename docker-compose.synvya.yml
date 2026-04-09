@@ -73,7 +73,7 @@ services:
       FROM_NAME: ${FROM_NAME:-Synvya}
       BASE_URL: ${BASE_URL:?error}
       APP_URL: ${APP_URL:?error}
-      DISABLE_EMAILS: ${DISABLE_EMAILS:-}
+      DISABLE_EMAILS:
       # Frontend
       VITE_DOMAIN: ${VITE_DOMAIN:-}
       VITE_ALLOWED_PUBKEYS: ${VITE_ALLOWED_PUBKEYS:-}
