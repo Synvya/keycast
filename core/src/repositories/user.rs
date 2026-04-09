@@ -1421,6 +1421,20 @@ mod tests {
         result.0
     }
 
+    async fn create_test_tenant(pool: &PgPool, tenant_id: i64, suffix: &str) {
+        sqlx::query(
+            "INSERT INTO tenants (id, domain, name, created_at, updated_at)
+             VALUES ($1, $2, $3, NOW(), NOW())
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .bind(format!("tenant-{}.{}.test", tenant_id, suffix))
+        .bind(format!("Tenant {}", tenant_id))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn add_user_to_team(pool: &PgPool, pubkey: &str, team_id: i32, role: &str) {
         sqlx::query(
             "INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
@@ -1598,6 +1612,7 @@ mod tests {
         let pubkey = keys.public_key();
         let suffix = test_suffix();
 
+        create_test_tenant(&pool, 2, &suffix).await;
         repo.find_or_create(1, &pubkey).await.unwrap();
         repo.find_or_create(2, &pubkey).await.unwrap();
 
