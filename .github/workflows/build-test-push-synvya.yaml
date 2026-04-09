@@ -136,8 +136,14 @@ jobs:
           key: ${{ secrets.EC2_STAGING_SSH_KEY }}
           command_timeout: 30m
           script: |
+            set -euo pipefail
             cd /opt/synvya/keycast
-            git pull origin synvya-staging
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "Refusing to deploy from a dirty worktree"
+              git status --short
+              exit 1
+            fi
+            git pull --ff-only origin synvya-staging
             bash scripts/load-secrets.sh staging
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
@@ -165,8 +171,14 @@ jobs:
           key: ${{ secrets.EC2_PRODUCTION_SSH_KEY }}
           command_timeout: 30m
           script: |
+            set -euo pipefail
             cd /opt/synvya/keycast
-            git pull origin synvya
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "Refusing to deploy from a dirty worktree"
+              git status --short
+              exit 1
+            fi
+            git pull --ff-only origin synvya
             bash scripts/load-secrets.sh production
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env

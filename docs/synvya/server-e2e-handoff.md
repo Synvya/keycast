@@ -59,6 +59,8 @@ That helper:
 
 So the server test does not need to care about raw key import. It only needs to consume the resulting bunker URL and prove signing works correctly.
 
+For Synvya product behavior, Keycast now allows a newly authenticated user to create their first team without being whitelisted. That bootstrap rule is separate from this helper, which still provisions through the admin E2E account for repeatable test setup. Additional restaurant teams remain a Synvya approval or server-provisioning concern rather than an open self-serve Keycast action.
+
 ## What The Server Session Should Build
 
 The server coding session should implement an end-to-end test harness with this shape:

@@ -17,6 +17,8 @@ If you need to hand this off to a `Synvya/server` implementation session, start 
 5. creates a team authorization for that imported key
 6. returns the `bunkerUrl` and related IDs for test code
 
+In the Synvya product flow, Keycast now allows an authenticated user to create their first team even if they are not whitelisted. This helper still uses the admin E2E account because it is a deterministic provisioning path for integration tests and avoids coupling tests to onboarding state.
+
 This is the correct Synvya model when:
 
 - the restaurant already published events with its own Nostr key
@@ -236,7 +238,8 @@ For a full server integration test, assert all of the following:
 - Do not commit the real demo restaurant `nsec` into the repo.
 - This helper is only suitable for restaurants whose private key is available.
 - If a partner restaurant's `nsec` is unavailable, you cannot preserve its existing pubkey with this flow.
-- The helper uses the whitelisted E2E admin account because team creation in this repo is admin-gated.
+- Keycast now allows self-serve creation of a user's first team. Additional restaurant teams should still be created through the Synvya manual-approval or server-managed path.
+- The helper still uses the whitelisted E2E admin account because this document is about deterministic test provisioning, not the end-user onboarding flow.
 
 ## Failure Modes
 
