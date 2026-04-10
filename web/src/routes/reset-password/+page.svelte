@@ -67,7 +67,7 @@
 
 <div class:auth-page={true} class:synvya-page={isSynvyaManaged}>
 	<div class:auth-container={true} class:synvya-container={isSynvyaManaged}>
-		<a href="/" class="auth-branding">
+		<a href={isSynvyaManaged ? loginUrl : '/'} class="auth-branding">
 			{#if isSynvyaManaged}
 				<img src="/synvya-logo.png" alt="Synvya" class="synvya-logo-img" />
 			{:else}
@@ -76,8 +76,10 @@
 			{/if}
 		</a>
 
-		<h1>{isSynvyaManaged ? 'Set new password' : 'Reset Password'}</h1>
-		<p class="subtitle">{isSynvyaManaged ? 'Enter your new password below.' : 'Enter your new password'}</p>
+		<div class="auth-copy">
+			<h1>{isSynvyaManaged ? 'Set new password' : 'Reset Password'}</h1>
+			<p class="subtitle">{isSynvyaManaged ? 'Enter your new password below.' : 'Enter your new password'}</p>
+		</div>
 
 		{#if !token}
 			<div class="error-message">
@@ -136,7 +138,8 @@
 	}
 
 	.synvya-page {
-		background: color-mix(in srgb, var(--color-divine-muted) 60%, white);
+		padding: 1.5rem;
+		background: #ffffff;
 	}
 
 	.auth-container {
@@ -156,6 +159,9 @@
 		padding: 0;
 		box-shadow: none;
 		max-width: 24rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
 	}
 
 	.auth-branding {
@@ -177,8 +183,14 @@
 	}
 
 	.synvya-logo-img {
-		height: 3rem;
+		height: 2.75rem;
 		width: auto;
+	}
+
+	.auth-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
 	}
 
 	.auth-logo-sub {
@@ -203,9 +215,11 @@
 
 	.synvya-container h1 {
 		color: #0f172a;
-		font-size: 1.25rem;
+		font-family: var(--font-sans);
+		font-size: 1.875rem;
 		font-weight: 600;
 		letter-spacing: -0.01em;
+		line-height: 1.15;
 	}
 
 	.subtitle {
@@ -216,13 +230,22 @@
 	}
 
 	.synvya-container .subtitle,
-	.synvya-container label,
 	.synvya-container .auth-link {
 		color: #64748b;
 	}
 
+	.synvya-container .subtitle {
+		margin: 0;
+		font-size: 0.975rem;
+		line-height: 1.5;
+	}
+
 	.form-group {
 		margin-bottom: 1rem;
+	}
+
+	.synvya-container .form-group {
+		margin-bottom: 0;
 	}
 
 	label {
@@ -231,6 +254,11 @@
 		color: var(--color-divine-text-secondary);
 		font-size: 0.875rem;
 		font-weight: 500;
+	}
+
+	.synvya-container label {
+		margin-bottom: 0.5rem;
+		color: #0f172a;
 	}
 
 	input {
@@ -262,13 +290,27 @@
 	}
 
 	.synvya-container input {
-		background: white;
-		border-color: rgba(15, 23, 42, 0.12);
+		background: #eff6ff;
+		border-color: #dbe4f0;
+		border-radius: 0.75rem;
 		color: #0f172a;
+		padding: 0.875rem 1rem;
 	}
 
 	.synvya-container input::placeholder {
-		color: #94a3b8;
+		color: #9aa7b8;
+		opacity: 1;
+	}
+
+	.synvya-container input:focus {
+		border-color: #22c55e;
+		box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+	}
+
+	.synvya-container form {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
 	}
 
 	.btn-primary {
@@ -289,7 +331,9 @@
 	}
 
 	.synvya-container .btn-primary {
-		background: #0f172a;
+		margin-top: 0.25rem;
+		border-radius: 0.75rem;
+		background: #22c55e;
 		box-shadow: none;
 	}
 
@@ -299,7 +343,7 @@
 	}
 
 	.synvya-container .btn-primary:hover:not(:disabled) {
-		background: #111827;
+		background: #16a34a;
 	}
 
 	.btn-primary:disabled {
@@ -325,9 +369,10 @@
 	}
 
 	.synvya-container .auth-link a {
-		color: #0f172a;
+		color: #334155;
 		text-decoration: underline;
 		text-underline-offset: 2px;
+		font-weight: 400;
 	}
 
 	.error-message {
@@ -345,5 +390,22 @@
 
 	.error-message p:last-child {
 		margin-bottom: 0;
+	}
+
+	.synvya-container .error-message {
+		margin-bottom: 0;
+		background: #fef2f2;
+		border-color: #fecaca;
+		color: #b91c1c;
+	}
+
+	@media (max-width: 640px) {
+		.synvya-page {
+			padding: 1.25rem;
+		}
+
+		.synvya-container h1 {
+			font-size: 1.625rem;
+		}
 	}
 </style>
