@@ -34,7 +34,7 @@ CREATE TABLE team_invitations (
     team_id         INT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     tenant_id       BIGINT NOT NULL,
     email           VARCHAR(255) NOT NULL,
-    role            VARCHAR(20) NOT NULL DEFAULT 'Member',
+    role            VARCHAR(20) NOT NULL DEFAULT 'member',
     token           VARCHAR(64) NOT NULL UNIQUE,
     invited_by      VARCHAR(64) NOT NULL,   -- hex pubkey of the admin who sent the invite
     expires_at      TIMESTAMPTZ NOT NULL,
@@ -43,14 +43,17 @@ CREATE TABLE team_invitations (
     revoked_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    -- Prevent duplicate pending invitations for the same email on the same team
-    CONSTRAINT uq_pending_invite UNIQUE (team_id, email)
-        -- NOTE: partial unique index preferred (WHERE accepted_at IS NULL AND revoked_at IS NULL)
-        -- but standard UNIQUE constraint is simpler; enforce in application code if needed.
+    CONSTRAINT chk_invitation_role CHECK (role IN ('admin', 'member'))
 );
 
 CREATE INDEX idx_team_invitations_token ON team_invitations(token);
 CREATE INDEX idx_team_invitations_team ON team_invitations(team_id);
+
+-- Partial unique index: only one pending invite per email per team
+-- Allows re-inviting after revocation or expiry (application checks expires_at)
+CREATE UNIQUE INDEX uq_pending_invite
+    ON team_invitations(team_id, email)
+    WHERE accepted_at IS NULL AND revoked_at IS NULL;
 ```
 
 Token generation: 32 random bytes, hex-encoded (64 chars). Use the same `generate_claim_token` pattern from `keycast_core::types::claim_token`.
@@ -213,7 +216,7 @@ Returns 404 if the token is invalid, expired, accepted, or revoked. The response
 8. Return { team_id, role }
 ```
 
-**Response codes**: 200 (success), 403 (email mismatch), 404 (invalid token), 409 (already member), 410 (expired).
+**Response codes**: 200 (success), 403 (email mismatch), 404 (invalid, expired, or already used token), 409 (already member).
 
 ## 4. Email
 
@@ -262,7 +265,7 @@ For staging: `https://account.staging.synvya.com/accept-invite?token=...`
 
 ## 6. Routing
 
-Add to `routes.rs`:
+Added to `routes.rs`:
 
 ```rust
 // Under team_routes (existing, auth_cors):
@@ -270,11 +273,14 @@ Add to `routes.rs`:
 .route("/teams/:id/invitations", get(teams::list_invitations))
 .route("/teams/:id/invitations/:invitation_id", delete(teams::revoke_invitation))
 
-// New invitation routes (mixed auth):
-let invitation_routes = Router::new()
-    .route("/invitations/preview", get(teams::preview_invitation))  // public
-    .route("/invitations/accept", post(teams::accept_invitation))   // auth required
-    .with_state(auth_state.clone());
+// Separate routers for different CORS/auth requirements:
+let invitation_preview_route = Router::new()
+    .route("/invitations/preview", get(teams::preview_invitation))  // public_cors, no auth
+    .with_state(pool.clone());
+
+let invitation_accept_route = Router::new()
+    .route("/invitations/accept", post(teams::accept_invitation))   // auth_cors, session required
+    .with_state(pool);
 ```
 
 ## 7. Security Considerations
