@@ -41,9 +41,10 @@ steps:
         export PGPASSWORD="$$DB_PASS"
 
         # Skip 0001 (initial schema) - it's not idempotent and should only run once
-        # Migrations 0002+ are designed to be safe to re-run
-        for migration in database/migrations/000[2-9]*.sql database/migrations/00[1-9][0-9]*.sql; do
+        # All other migrations (sequential 0002+ and date-based 2026*) are idempotent and safe to re-run
+        for migration in database/migrations/*.sql; do
           [ -f "$$migration" ] || continue
+          [[ "$$(basename $$migration)" == 0001* ]] && continue
           echo "  → $$(basename $$migration)"
           psql -h 127.0.0.1 -U $$DB_USER -d $$DB_NAME -f "$$migration" -q 2>&1 | grep -v "already exists" || true
         done

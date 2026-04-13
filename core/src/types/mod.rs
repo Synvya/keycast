@@ -6,4 +6,5 @@ pub mod policy;
 pub mod refresh_token;
 pub mod stored_key;
 pub mod team;
+pub mod team_invitation;
 pub mod user;
