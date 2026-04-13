@@ -156,6 +156,8 @@ pub struct RegisterRequest {
     pub nsec: Option<String>, // Optional: user can provide their own nsec/hex secret key
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relays: Option<Vec<String>>, // Optional: user's preferred relays
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>, // Optional: where to redirect after email verification
 }
 
 #[derive(Debug, Serialize)]
@@ -672,6 +674,11 @@ pub async fn register(
     // Password hash is NULL initially - will be set by bcrypt worker
     // Returns Err(RepositoryError::Duplicate) if email already exists, which maps to AuthError::EmailAlreadyExists
     let user_repo = UserRepository::new(pool.clone());
+    // Validate redirect_uri if provided (must be HTTPS or localhost HTTP)
+    let redirect_uri = req.redirect_uri.as_deref().filter(|uri| {
+        uri.starts_with("https://") || uri.starts_with("http://localhost")
+    });
+
     user_repo
         .register_with_personal_key(
             &public_key.to_hex(),
@@ -681,6 +688,7 @@ pub async fn register(
             &verification_token,
             verification_expires,
             &encrypted_secret,
+            redirect_uri,
         )
         .await?;
 
@@ -1545,13 +1553,22 @@ pub async fn verify_email(
         ucan_token
     );
 
+    // If the registration included a redirect_uri, redirect back to the client app
+    let redirect_to = token_data.redirect_uri.map(|uri| {
+        if uri.contains('?') {
+            format!("{}&verified=1", uri)
+        } else {
+            format!("{}?verified=1", uri)
+        }
+    });
+
     Ok((
         axum::http::StatusCode::OK,
         [(axum::http::header::SET_COOKIE, cookie)],
         axum::Json(VerifyEmailResponse {
             success: true,
             message: "Email verified successfully! You are now logged in.".to_string(),
-            redirect_to: None,
+            redirect_to,
             authenticated: Some(true),
             status: None,
             retry_after: None,

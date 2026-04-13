@@ -16,6 +16,7 @@ pub struct VerificationTokenData {
     pub password_hash: Option<String>,
     pub created_at: DateTime<Utc>,
     pub email_verified: bool,
+    pub redirect_uri: Option<String>,
 }
 
 /// User details returned by admin lookup.
@@ -323,6 +324,7 @@ impl UserRepository {
         verification_token: &str,
         verification_expires_at: DateTime<Utc>,
         encrypted_secret: &[u8],
+        redirect_uri: Option<&str>,
     ) -> Result<(), RepositoryError> {
         let mut tx = self.pool.begin().await?;
         let now = Utc::now();
@@ -330,8 +332,8 @@ impl UserRepository {
         // Insert user with email verification token
         // password_hash may be NULL for async bcrypt flow (computed in background)
         sqlx::query(
-            "INSERT INTO users (pubkey, tenant_id, email, password_hash, email_verified, email_verification_token, email_verification_expires_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO users (pubkey, tenant_id, email, password_hash, email_verified, email_verification_token, email_verification_expires_at, redirect_uri, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(pubkey)
         .bind(tenant_id)
@@ -340,6 +342,7 @@ impl UserRepository {
         .bind(false)
         .bind(verification_token)
         .bind(verification_expires_at)
+        .bind(redirect_uri)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -373,7 +376,7 @@ impl UserRepository {
         tenant_id: i64,
     ) -> Result<Option<VerificationTokenData>, RepositoryError> {
         sqlx::query_as(
-            "SELECT pubkey, email_verification_expires_at, password_hash, created_at, email_verified FROM users
+            "SELECT pubkey, email_verification_expires_at, password_hash, created_at, email_verified, redirect_uri FROM users
              WHERE email_verification_token = $1 AND tenant_id = $2",
         )
         .bind(token)
