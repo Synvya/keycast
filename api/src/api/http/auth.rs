@@ -675,9 +675,10 @@ pub async fn register(
     // Returns Err(RepositoryError::Duplicate) if email already exists, which maps to AuthError::EmailAlreadyExists
     let user_repo = UserRepository::new(pool.clone());
     // Validate redirect_uri if provided (must be HTTPS or localhost HTTP)
-    let redirect_uri = req.redirect_uri.as_deref().filter(|uri| {
-        uri.starts_with("https://") || uri.starts_with("http://localhost")
-    });
+    let redirect_uri = req
+        .redirect_uri
+        .as_deref()
+        .filter(|uri| uri.starts_with("https://") || uri.starts_with("http://localhost"));
 
     user_repo
         .register_with_personal_key(
