@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
 
 use nostr_sdk::prelude::*;
 
@@ -21,7 +22,7 @@ use keycast_core::types::authorization::{Authorization, AuthorizationWithRelatio
 use keycast_core::types::policy::PolicyWithPermissions;
 use keycast_core::types::stored_key::PublicStoredKey;
 use keycast_core::types::team::{KeyWithRelations, Team, TeamWithRelations};
-use keycast_core::types::user::TeamUser;
+use keycast_core::types::user::{TeamUser, TeamUserRole};
 
 pub async fn list_teams(
     tenant: crate::api::tenant::TenantExtractor,
@@ -528,5 +529,361 @@ pub async fn verify_admin<'a>(
             "You are not authorized to access this team",
         )),
         Err(_) => Err(ApiError::auth("Failed to verify admin status")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Team invitation handlers
+// ---------------------------------------------------------------------------
+
+use keycast_core::repositories::TeamInvitationRepository;
+use keycast_core::types::team_invitation::{
+    generate_invitation_token, InvitationListItem, InvitationPreview,
+};
+
+#[derive(Debug, Deserialize)]
+pub struct InviteRequest {
+    pub email: String,
+    pub role: TeamUserRole,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status")]
+pub enum InviteResponse {
+    #[serde(rename = "added")]
+    Added { member: TeamUser },
+    #[serde(rename = "invited")]
+    Invited { invitation: InvitationListItem },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptInvitationRequest {
+    pub token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AcceptInvitationResponse {
+    pub team_id: i32,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PreviewQuery {
+    pub token: String,
+}
+
+/// POST /api/teams/:id/invite
+/// Invite a user to a team by email. If the user already exists, add them immediately.
+/// Otherwise, create an invitation and send an email.
+pub async fn invite_user(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(pool): State<PgPool>,
+    UcanAuth {
+        pubkey: user_pubkey_hex,
+        ..
+    }: UcanAuth,
+    Path(team_id): Path<i32>,
+    Json(request): Json<InviteRequest>,
+) -> ApiResult<Json<InviteResponse>> {
+    let tenant_id = tenant.0.id;
+    verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
+
+    // Normalize email
+    let email = request.email.trim().to_lowercase();
+
+    // Basic email validation
+    if !email.contains('@') || email.len() < 5 {
+        return Err(ApiError::bad_request("Invalid email address"));
+    }
+
+    let role_str = request.role.as_str();
+    let user_repo = UserRepository::new(pool.clone());
+    let team_repo = TeamRepository::new(pool.clone());
+    let invite_repo = TeamInvitationRepository::new(pool.clone());
+
+    // Check if calling user is inviting themselves
+    let caller_email: Option<String> =
+        sqlx::query_scalar("SELECT email FROM users WHERE pubkey = $1 AND tenant_id = $2")
+            .bind(&user_pubkey_hex)
+            .bind(tenant_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to look up caller email: {}", e)))?;
+
+    if let Some(ref caller_email) = caller_email {
+        if caller_email.to_lowercase() == email {
+            return Err(ApiError::bad_request("Cannot invite yourself"));
+        }
+    }
+
+    // Check if user with this email already exists
+    let existing_pubkey = user_repo.find_pubkey_by_email(&email, tenant_id).await?;
+
+    match existing_pubkey {
+        Some(pubkey) => {
+            // User exists — add directly
+            if team_repo.is_member(team_id, &pubkey).await? {
+                return Err(ApiError::conflict("Already a team member"));
+            }
+
+            // Ensure user record exists
+            let pk = PublicKey::from_hex(&pubkey)
+                .map_err(|_| ApiError::internal("Invalid stored pubkey"))?;
+            user_repo.find_or_create(tenant_id, &pk).await?;
+
+            let team_user = team_repo.add_member(team_id, &pubkey, role_str).await?;
+            Ok(Json(InviteResponse::Added { member: team_user }))
+        }
+        None => {
+            // User does not exist — create invitation
+            if invite_repo
+                .find_pending_by_email(team_id, &email)
+                .await?
+                .is_some()
+            {
+                return Err(ApiError::conflict(
+                    "Invitation already pending for this email",
+                ));
+            }
+
+            let token = generate_invitation_token();
+
+            let invitation = invite_repo
+                .create(
+                    team_id,
+                    tenant_id,
+                    &email,
+                    role_str,
+                    &token,
+                    &user_pubkey_hex,
+                )
+                .await?;
+
+            // Resolve inviter display name
+            let inviter_name = resolve_display_name(&pool, &user_pubkey_hex, tenant_id).await;
+
+            // Resolve team name
+            let team = team_repo.find(tenant_id, team_id).await?;
+
+            // Build invite URL
+            let invite_base_url = std::env::var("INVITE_BASE_URL")
+                .or_else(|_| std::env::var("BASE_URL"))
+                .or_else(|_| std::env::var("APP_URL"))
+                .unwrap_or_else(|_| "http://localhost:5173".to_string());
+            let invite_url = format!("{}/accept-invite?token={}", invite_base_url, token);
+
+            // Send invitation email
+            match crate::email_service::EmailService::new().await {
+                Ok(email_service) => {
+                    if let Err(e) = email_service
+                        .send_team_invite_email(
+                            &email,
+                            &team.name,
+                            &inviter_name,
+                            role_str,
+                            &invite_url,
+                        )
+                        .await
+                    {
+                        tracing::error!("Failed to send team invite email to {}: {}", email, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize email service: {}", e);
+                }
+            }
+
+            let list_item = InvitationListItem {
+                id: invitation.id,
+                email: invitation.email,
+                role: invitation.role,
+                invited_by: inviter_name,
+                created_at: invitation.created_at,
+                expires_at: invitation.expires_at,
+                accepted_at: invitation.accepted_at,
+                revoked_at: invitation.revoked_at,
+            };
+
+            Ok(Json(InviteResponse::Invited {
+                invitation: list_item,
+            }))
+        }
+    }
+}
+
+/// GET /api/teams/:id/invitations
+/// List all invitations for a team.
+pub async fn list_invitations(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(pool): State<PgPool>,
+    UcanAuth {
+        pubkey: user_pubkey_hex,
+        ..
+    }: UcanAuth,
+    Path(team_id): Path<i32>,
+) -> ApiResult<Json<Vec<InvitationListItem>>> {
+    let tenant_id = tenant.0.id;
+    verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
+
+    let invite_repo = TeamInvitationRepository::new(pool.clone());
+    let invitations = invite_repo.list_by_team(team_id, tenant_id).await?;
+
+    // Collect unique inviter pubkeys for batch display name resolution
+    let mut items = Vec::with_capacity(invitations.len());
+    for inv in invitations {
+        let inviter_name = resolve_display_name(&pool, &inv.invited_by, tenant_id).await;
+        items.push(InvitationListItem {
+            id: inv.id,
+            email: inv.email,
+            role: inv.role,
+            invited_by: inviter_name,
+            created_at: inv.created_at,
+            expires_at: inv.expires_at,
+            accepted_at: inv.accepted_at,
+            revoked_at: inv.revoked_at,
+        });
+    }
+
+    Ok(Json(items))
+}
+
+/// DELETE /api/teams/:id/invitations/:invitation_id
+/// Revoke a pending invitation.
+pub async fn revoke_invitation(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(pool): State<PgPool>,
+    UcanAuth {
+        pubkey: user_pubkey_hex,
+        ..
+    }: UcanAuth,
+    Path((team_id, invitation_id)): Path<(i32, i32)>,
+) -> ApiResult<StatusCode> {
+    let tenant_id = tenant.0.id;
+    verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
+
+    let invite_repo = TeamInvitationRepository::new(pool.clone());
+    invite_repo
+        .revoke(invitation_id, team_id, tenant_id)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /api/invitations/preview?token=...
+/// Public endpoint — returns enough info to render the invite landing page.
+pub async fn preview_invitation(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(pool): State<PgPool>,
+    axum::extract::Query(query): axum::extract::Query<PreviewQuery>,
+) -> ApiResult<Json<InvitationPreview>> {
+    let tenant_id = tenant.0.id;
+
+    let invite_repo = TeamInvitationRepository::new(pool.clone());
+    let invitation = invite_repo
+        .find_valid_by_token(&query.token)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Invitation not found or expired"))?;
+
+    // Verify tenant match
+    if invitation.tenant_id != tenant_id {
+        return Err(ApiError::not_found("Invitation not found or expired"));
+    }
+
+    // Resolve team name
+    let team_repo = TeamRepository::new(pool.clone());
+    let team = team_repo.find(tenant_id, invitation.team_id).await?;
+
+    // Resolve inviter display name
+    let inviter_name = resolve_display_name(&pool, &invitation.invited_by, tenant_id).await;
+
+    Ok(Json(InvitationPreview {
+        team_name: team.name,
+        role: invitation.role,
+        invited_by_display_name: inviter_name,
+        expires_at: invitation.expires_at,
+    }))
+}
+
+/// POST /api/invitations/accept
+/// Accept a team invitation. Requires authenticated session.
+pub async fn accept_invitation(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(pool): State<PgPool>,
+    UcanAuth {
+        pubkey: user_pubkey_hex,
+        ..
+    }: UcanAuth,
+    Json(request): Json<AcceptInvitationRequest>,
+) -> ApiResult<Json<AcceptInvitationResponse>> {
+    let tenant_id = tenant.0.id;
+
+    let invite_repo = TeamInvitationRepository::new(pool.clone());
+
+    // Find valid invitation
+    let invitation = invite_repo
+        .find_valid_by_token(&request.token)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Invitation not found or expired"))?;
+
+    // Verify tenant match
+    if invitation.tenant_id != tenant_id {
+        return Err(ApiError::not_found("Invitation not found or expired"));
+    }
+
+    // Get the authenticated user's email
+    let user_repo = UserRepository::new(pool.clone());
+    let user_email: String = user_repo
+        .get_email(&user_pubkey_hex, tenant_id)
+        .await
+        .map_err(|_| ApiError::bad_request("Could not retrieve your email address"))?;
+
+    // Verify email match (case-insensitive)
+    if user_email.to_lowercase() != invitation.email.to_lowercase() {
+        return Err(ApiError::forbidden(
+            "This invitation was sent to a different email address",
+        ));
+    }
+
+    // Check if already a team member
+    let team_repo = TeamRepository::new(pool.clone());
+    if team_repo
+        .is_member(invitation.team_id, &user_pubkey_hex)
+        .await?
+    {
+        return Err(ApiError::conflict("You are already a member of this team"));
+    }
+
+    // Add to team
+    team_repo
+        .add_member(invitation.team_id, &user_pubkey_hex, &invitation.role)
+        .await?;
+
+    // Mark invitation as accepted
+    invite_repo
+        .accept(&request.token, &user_pubkey_hex)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to mark invitation as accepted: {}", e)))?;
+
+    Ok(Json(AcceptInvitationResponse {
+        team_id: invitation.team_id,
+        role: invitation.role,
+    }))
+}
+
+/// Resolve a pubkey to a display name, falling back to truncated pubkey.
+async fn resolve_display_name(pool: &PgPool, pubkey: &str, tenant_id: i64) -> String {
+    let result: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT display_name, username FROM users WHERE pubkey = $1 AND tenant_id = $2",
+    )
+    .bind(pubkey)
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+
+    match result {
+        Some((Some(display_name), _)) if !display_name.is_empty() => display_name,
+        Some((_, Some(username))) if !username.is_empty() => username,
+        _ => format!("{}…", &pubkey[..8]),
     }
 }

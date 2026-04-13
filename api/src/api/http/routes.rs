@@ -245,6 +245,21 @@ pub fn api_routes(
             delete(teams::delete_authorization),
         )
         .route("/teams/:id/policies", post(teams::add_policy))
+        .route("/teams/:id/invite", post(teams::invite_user))
+        .route("/teams/:id/invitations", get(teams::list_invitations))
+        .route(
+            "/teams/:id/invitations/:invitation_id",
+            delete(teams::revoke_invitation),
+        )
+        .with_state(pool.clone());
+
+    // Invitation routes (mixed auth: preview is public, accept requires auth)
+    let invitation_preview_route = Router::new()
+        .route("/invitations/preview", get(teams::preview_invitation))
+        .with_state(pool.clone());
+
+    let invitation_accept_route = Router::new()
+        .route("/invitations/accept", post(teams::accept_invitation))
         .with_state(pool);
 
     // Combine routes
@@ -269,6 +284,8 @@ pub fn api_routes(
         .merge(signing_routes.layer(public_cors.clone()))
         .merge(nostr_rpc_routes.layer(public_cors.clone())) // NIP-46 RPC for OAuth apps
         .merge(team_routes.layer(auth_cors.clone())) // Team routes need credentials
+        .merge(invitation_preview_route.layer(public_cors.clone())) // Public - preview invite without auth
+        .merge(invitation_accept_route.layer(auth_cors.clone())) // Auth - accept invite needs session
         .merge(discovery_route.layer(public_cors.clone()))
         .merge(policy_routes.layer(public_cors.clone())) // Public - available to third-party OAuth apps
         .merge(headless_routes.layer(public_cors.clone())) // Public CORS - embedded flow for web + mobile (PKCE protects token exchange)

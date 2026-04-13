@@ -32,6 +32,16 @@ pub trait EmailSender: Send + Sync {
     /// Send a claim link email for a preloaded account.
     async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String>;
 
+    /// Send a team invitation email.
+    async fn send_team_invite_email(
+        &self,
+        to_email: &str,
+        team_name: &str,
+        inviter_name: &str,
+        role: &str,
+        invite_url: &str,
+    ) -> Result<(), String>;
+
     /// Get captured emails (only available in dev/test mode)
     fn get_captured_emails(&self) -> Vec<CapturedEmail> {
         vec![]
@@ -146,6 +156,38 @@ fn claim_email_text(claim_url: &str) -> String {
     format!(
         "Your Synvya account is ready. Click this link to claim it:\n\n{}\n\nThis link will expire in 7 days. If you didn't request this, you can safely ignore this email.",
         claim_url
+    )
+}
+
+fn team_invite_html(team_name: &str, inviter_name: &str, role: &str, invite_url: &str) -> String {
+    format!(
+        r#"
+            <html>
+            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h1 style="color: #00B488;">You're invited to join {team_name}</h1>
+                <p><strong>{inviter_name}</strong> has invited you to join <strong>{team_name}</strong> as a <strong>{role}</strong> on Synvya.</p>
+                <div style="margin: 30px 0;">
+                    <a href="{invite_url}"
+                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                        Accept Invitation
+                    </a>
+                </div>
+                <p style="color: #666; font-size: 14px;">
+                    Or copy and paste this link into your browser:<br>
+                    <a href="{invite_url}" style="color: #00B488;">{invite_url}</a>
+                </p>
+                <p style="color: #666; font-size: 14px; margin-top: 30px;">
+                    This invitation expires in 7 days. If you didn't expect this email, you can safely ignore it.
+                </p>
+            </body>
+            </html>
+            "#,
+    )
+}
+
+fn team_invite_text(team_name: &str, inviter_name: &str, role: &str, invite_url: &str) -> String {
+    format!(
+        "{inviter_name} has invited you to join {team_name} as a {role} on Synvya.\n\nAccept the invitation:\n{invite_url}\n\nThis invitation expires in 7 days. If you didn't expect this email, you can safely ignore it.",
     )
 }
 
@@ -293,6 +335,44 @@ impl EmailSender for DevEmailSender {
                 to: to_email.to_string(),
                 subject: "Your Synvya account is ready to claim".to_string(),
                 verification_url: Some(claim_url.to_string()),
+                reset_url: None,
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn send_team_invite_email(
+        &self,
+        to_email: &str,
+        team_name: &str,
+        inviter_name: &str,
+        role: &str,
+        invite_url: &str,
+    ) -> Result<(), String> {
+        tracing::info!("");
+        tracing::info!("==================================================");
+        tracing::info!("  TEAM INVITATION EMAIL");
+        tracing::info!("==================================================");
+        tracing::info!("  To: {}", to_email);
+        tracing::info!("  Team: {} (as {})", team_name, role);
+        tracing::info!("  Invited by: {}", inviter_name);
+        tracing::info!("");
+        tracing::info!("  Accept link:");
+        tracing::info!("  {}", invite_url);
+        tracing::info!("==================================================");
+        tracing::info!("");
+
+        eprintln!(
+            "\n\x1b[35m[DEV EMAIL]\x1b[0m Team invite for {} to join {}: \x1b[4m{}\x1b[0m\n",
+            to_email, team_name, invite_url
+        );
+
+        if let Ok(mut captured) = self.captured.lock() {
+            captured.push(CapturedEmail {
+                to: to_email.to_string(),
+                subject: format!("You've been invited to join {} on Synvya", team_name),
+                verification_url: Some(invite_url.to_string()),
                 reset_url: None,
             });
         }
@@ -499,6 +579,21 @@ impl EmailSender for SendGridEmailSender {
 
         self.send_email(to_email, subject, &html, &text).await
     }
+
+    async fn send_team_invite_email(
+        &self,
+        to_email: &str,
+        team_name: &str,
+        inviter_name: &str,
+        role: &str,
+        invite_url: &str,
+    ) -> Result<(), String> {
+        let subject = format!("You've been invited to join {} on Synvya", team_name);
+        let html = team_invite_html(team_name, inviter_name, role, invite_url);
+        let text = team_invite_text(team_name, inviter_name, role, invite_url);
+
+        self.send_email(to_email, &subject, &html, &text).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -655,6 +750,21 @@ impl EmailSender for SesEmailSender {
 
         self.send_email(to_email, subject, &html, &text).await
     }
+
+    async fn send_team_invite_email(
+        &self,
+        to_email: &str,
+        team_name: &str,
+        inviter_name: &str,
+        role: &str,
+        invite_url: &str,
+    ) -> Result<(), String> {
+        let subject = format!("You've been invited to join {} on Synvya", team_name);
+        let html = team_invite_html(team_name, inviter_name, role, invite_url);
+        let text = team_invite_text(team_name, inviter_name, role, invite_url);
+
+        self.send_email(to_email, &subject, &html, &text).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -742,5 +852,18 @@ impl EmailService {
 
     pub async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
         self.inner.send_claim_email(to_email, claim_url).await
+    }
+
+    pub async fn send_team_invite_email(
+        &self,
+        to_email: &str,
+        team_name: &str,
+        inviter_name: &str,
+        role: &str,
+        invite_url: &str,
+    ) -> Result<(), String> {
+        self.inner
+            .send_team_invite_email(to_email, team_name, inviter_name, role, invite_url)
+            .await
     }
 }

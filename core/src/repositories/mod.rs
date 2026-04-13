@@ -13,6 +13,7 @@ mod refresh_token;
 mod registered_client;
 mod stored_key;
 mod team;
+mod team_invitation;
 mod user;
 
 pub use atproto_oauth_session::{
@@ -32,4 +33,5 @@ pub use refresh_token::RefreshTokenRepository;
 pub use registered_client::RegisteredClientRepository;
 pub use stored_key::StoredKeyRepository;
 pub use team::TeamRepository;
+pub use team_invitation::TeamInvitationRepository;
 pub use user::{AdminUserDetails, DeleteAccountResult, UserRepository, VerificationTokenData};
