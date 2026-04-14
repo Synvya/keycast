@@ -850,7 +850,8 @@ impl UnifiedSigner {
             // Load regular authorization
             let auth_data: Option<(i32, String, i64)> = sqlx::query_as(
                 "SELECT id, secret_hash, stored_key_id FROM authorizations
-                 WHERE tenant_id = $1 AND bunker_public_key = $2",
+                 WHERE tenant_id = $1 AND bunker_public_key = $2
+                   AND revoked_at IS NULL",
             )
             .bind(tenant_id)
             .bind(bunker_pubkey)

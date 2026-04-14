@@ -1062,6 +1062,92 @@ pub async fn get_user_teams(
 }
 
 // ============================================================================
+// POST /api/admin/authorizations/:id/revoke - Soft-delete a team authorization
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeAuthorizationRequest {
+    /// Optional free-text reason (e.g. "superseded", "admin_revoke", "client_revoke").
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RevokeAuthorizationResponse {
+    pub revoked: bool,
+    pub authorization_id: i32,
+}
+
+/// Soft-delete a team authorization by setting `revoked_at = NOW()` and
+/// notifying the signer daemon so it drops the in-memory handler.
+/// Support admin only; tenant-scoped.
+pub async fn revoke_authorization(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(authorization_id): Path<i32>,
+    Json(req): Json<RevokeAuthorizationRequest>,
+) -> ApiResult<Json<RevokeAuthorizationResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    let reason = req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let repo = keycast_core::repositories::AuthorizationRepository::new(pool.clone());
+    let bunker_pubkey = repo
+        .revoke(tenant_id, authorization_id, reason)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to revoke authorization: {}", e)))?;
+
+    let Some(bunker_pubkey) = bunker_pubkey else {
+        // Either not found in this tenant, or already revoked.
+        return Err(ApiError::not_found(
+            "Authorization not found or already revoked",
+        ));
+    };
+
+    // Notify the signer daemon to drop the in-memory handler. If the channel
+    // send fails, the DB write still stands; a daemon restart will pick up the
+    // revoked state on next lazy load.
+    if let Some(tx) = &auth_state.auth_tx {
+        use keycast_core::authorization_channel::AuthorizationCommand;
+        if let Err(e) = tx
+            .send(AuthorizationCommand::Remove {
+                bunker_pubkey: bunker_pubkey.clone(),
+            })
+            .await
+        {
+            tracing::warn!(
+                "Failed to notify signer of revocation for {}: {}",
+                bunker_pubkey,
+                e
+            );
+        }
+    }
+
+    tracing::info!(
+        "Authorization {} revoked by admin {} (tenant {}, reason: {:?})",
+        authorization_id,
+        &auth.pubkey[..8.min(auth.pubkey.len())],
+        tenant_id,
+        reason,
+    );
+
+    Ok(Json(RevokeAuthorizationResponse {
+        revoked: true,
+        authorization_id,
+    }))
+}
+
+// ============================================================================
 // Support Admin Management (Redis-backed)
 // ============================================================================
 

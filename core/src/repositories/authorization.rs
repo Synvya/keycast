@@ -17,7 +17,8 @@ impl AuthorizationRepository {
         Self { pool }
     }
 
-    /// Find an authorization by ID.
+    /// Find an authorization by ID (includes revoked rows — callers that need to
+    /// exclude revoked should check `revoked_at`).
     pub async fn find(
         &self,
         tenant_id: i64,
@@ -26,7 +27,8 @@ impl AuthorizationRepository {
         sqlx::query_as::<_, Authorization>(
             "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
                     relays, policy_id, max_uses, expires_at, connected_client_pubkey,
-                    connected_at, label, created_at, updated_at
+                    connected_at, label, created_at, updated_at,
+                    revoked_at, revoked_reason
              FROM authorizations WHERE tenant_id = $1 AND id = $2",
         )
         .bind(tenant_id)
@@ -36,40 +38,97 @@ impl AuthorizationRepository {
         .map_err(Into::into)
     }
 
-    /// Find all authorizations for a stored key.
+    /// Find active authorizations for a stored key (excludes revoked rows).
     pub async fn find_by_stored_key(
         &self,
         tenant_id: i64,
         stored_key_id: i32,
     ) -> Result<Vec<Authorization>, RepositoryError> {
-        sqlx::query_as::<_, Authorization>(
-            "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
+        self.find_by_stored_key_inner(tenant_id, stored_key_id, false)
+            .await
+    }
+
+    /// Find authorizations for a stored key, optionally including revoked rows
+    /// (for admin views that need to surface soft-deleted history).
+    pub async fn find_by_stored_key_with_revoked(
+        &self,
+        tenant_id: i64,
+        stored_key_id: i32,
+        include_revoked: bool,
+    ) -> Result<Vec<Authorization>, RepositoryError> {
+        self.find_by_stored_key_inner(tenant_id, stored_key_id, include_revoked)
+            .await
+    }
+
+    async fn find_by_stored_key_inner(
+        &self,
+        tenant_id: i64,
+        stored_key_id: i32,
+        include_revoked: bool,
+    ) -> Result<Vec<Authorization>, RepositoryError> {
+        let base = "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
                     relays, policy_id, max_uses, expires_at, connected_client_pubkey,
-                    connected_at, label, created_at, updated_at
-             FROM authorizations WHERE tenant_id = $1 AND stored_key_id = $2",
+                    connected_at, label, created_at, updated_at,
+                    revoked_at, revoked_reason
+             FROM authorizations WHERE tenant_id = $1 AND stored_key_id = $2";
+        let sql = if include_revoked {
+            base.to_string()
+        } else {
+            format!("{} AND revoked_at IS NULL", base)
+        };
+        sqlx::query_as::<_, Authorization>(&sql)
+            .bind(tenant_id)
+            .bind(stored_key_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Get all active authorization IDs for a tenant (excludes revoked rows).
+    pub async fn all_ids(&self, tenant_id: i64) -> Result<Vec<i32>, RepositoryError> {
+        sqlx::query_scalar::<_, i32>(
+            "SELECT id FROM authorizations WHERE tenant_id = $1 AND revoked_at IS NULL",
         )
         .bind(tenant_id)
-        .bind(stored_key_id)
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
     }
 
-    /// Get all authorization IDs for a tenant.
-    pub async fn all_ids(&self, tenant_id: i64) -> Result<Vec<i32>, RepositoryError> {
-        sqlx::query_scalar::<_, i32>("SELECT id FROM authorizations WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into)
+    /// Get all active authorization IDs for all tenants (excludes revoked rows).
+    pub async fn all_ids_for_all_tenants(&self) -> Result<Vec<(i64, i32)>, RepositoryError> {
+        sqlx::query_as::<_, (i64, i32)>(
+            "SELECT tenant_id, id FROM authorizations WHERE revoked_at IS NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
     }
 
-    /// Get all authorization IDs for all tenants.
-    pub async fn all_ids_for_all_tenants(&self) -> Result<Vec<(i64, i32)>, RepositoryError> {
-        sqlx::query_as::<_, (i64, i32)>("SELECT tenant_id, id FROM authorizations")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Into::into)
+    /// Soft-delete an authorization by setting `revoked_at = NOW()`.
+    /// Returns the bunker_public_key of the revoked row (used by the caller to
+    /// notify the signer daemon via the authorization channel), or `None` if
+    /// the authorization didn't exist or was already revoked.
+    pub async fn revoke(
+        &self,
+        tenant_id: i64,
+        authorization_id: i32,
+        reason: Option<&str>,
+    ) -> Result<Option<String>, RepositoryError> {
+        let bunker_pubkey: Option<String> = sqlx::query_scalar(
+            "UPDATE authorizations
+             SET revoked_at = NOW(),
+                 revoked_reason = $3,
+                 updated_at = NOW()
+             WHERE tenant_id = $1 AND id = $2 AND revoked_at IS NULL
+             RETURNING bunker_public_key",
+        )
+        .bind(tenant_id)
+        .bind(authorization_id)
+        .bind(reason)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(bunker_pubkey)
     }
 
     /// Create a new authorization.
@@ -92,7 +151,7 @@ impl AuthorizationRepository {
         sqlx::query_as::<_, Authorization>(
             "INSERT INTO authorizations (tenant_id, stored_key_id, policy_id, secret_hash, bunker_public_key, relays, max_uses, expires_at, label, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-             RETURNING id, tenant_id, stored_key_id, secret_hash, bunker_public_key, relays, policy_id, max_uses, expires_at, connected_client_pubkey, connected_at, label, created_at, updated_at",
+             RETURNING id, tenant_id, stored_key_id, secret_hash, bunker_public_key, relays, policy_id, max_uses, expires_at, connected_client_pubkey, connected_at, label, created_at, updated_at, revoked_at, revoked_reason",
         )
         .bind(tenant_id)
         .bind(stored_key_id)
