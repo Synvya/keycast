@@ -6,6 +6,7 @@
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { BRAND } from '$lib/brand';
 	import { getLoginUrl } from '$lib/utils/env';
+	import { CheckCircle, XCircle, Warning, CircleNotch } from 'phosphor-svelte';
 
 	const api = new KeycastApi();
 	const loginUrl = getLoginUrl();
@@ -162,20 +163,14 @@
 
 		{#if status === 'loading'}
 			<div class="status-icon loading">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256" class="spin">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,176A72,72,0,1,1,200,128,72.08,72.08,0,0,1,128,200Z" opacity="0.2"></path>
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,16a88,88,0,0,1,88,88h-16a72,72,0,0,0-72-72Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<CircleNotch size={32} weight="regular" class="synvya-spin" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256" class="spin"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,176A72,72,0,1,1,200,128,72.08,72.08,0,0,1,128,200Z" opacity="0.2"></path> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,16a88,88,0,0,1,88,88h-16a72,72,0,0,0-72-72Z"></path> </svg>{/if}
 			</div>
 			<h1>Verifying your email...</h1>
 			<p class="subtitle">Please wait</p>
 
 		{:else if status === 'processing'}
 			<div class="status-icon loading">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256" class="spin">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,176A72,72,0,1,1,200,128,72.08,72.08,0,0,1,128,200Z" opacity="0.2"></path>
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,16a88,88,0,0,1,88,88h-16a72,72,0,0,0-72-72Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<CircleNotch size={32} weight="regular" class="synvya-spin" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256" class="spin"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,176A72,72,0,1,1,200,128,72.08,72.08,0,0,1,128,200Z" opacity="0.2"></path> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,16a88,88,0,0,1,88,88h-16a72,72,0,0,0-72-72Z"></path> </svg>{/if}
 			</div>
 			<h1>Almost there...</h1>
 			<p class="subtitle">{message}</p>
@@ -183,9 +178,7 @@
 
 		{:else if status === 'oauth_redirect'}
 			<div class="status-icon success">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<CheckCircle size={32} weight="regular" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path> </svg>{/if}
 			</div>
 			<h1>Email Verified!</h1>
 			<p class="subtitle">{message}</p>
@@ -193,18 +186,14 @@
 
 		{:else if status === 'headless_verified'}
 			<div class="status-icon success">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<CheckCircle size={32} weight="regular" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path> </svg>{/if}
 			</div>
 			<h1>Email Verified!</h1>
 			<p class="subtitle">{message}</p>
 
 		{:else if status === 'success'}
 			<div class="status-icon success">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<CheckCircle size={32} weight="regular" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path> </svg>{/if}
 			</div>
 			<h1>Email Verified!</h1>
 			<p class="subtitle">{message}</p>
@@ -213,9 +202,7 @@
 
 		{:else if status === 'error'}
 			<div class="status-icon error">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm37.66,130.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32L139.31,128Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<XCircle size={32} weight="regular" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm37.66,130.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32L139.31,128Z"></path> </svg>{/if}
 			</div>
 			<h1>Verification Failed</h1>
 			<p class="subtitle">{message}</p>
@@ -226,9 +213,7 @@
 
 		{:else if status === 'no-token'}
 			<div class="status-icon error">
-				<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-					<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-8,56a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm8,104a12,12,0,1,1,12-12A12,12,0,0,1,128,184Z"></path>
-				</svg>
+				{#if isSynvyaManaged}<Warning size={32} weight="regular" />{:else}<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256"> <path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-8,56a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm8,104a12,12,0,1,1,12-12A12,12,0,0,1,128,184Z"></path> </svg>{/if}
 			</div>
 			<h1>Invalid Link</h1>
 			<p class="subtitle">This verification link is invalid or incomplete.</p>
@@ -369,6 +354,37 @@
 	.synvya-container .redirect-notice,
 	.synvya-container .processing-notice {
 		color: #475569;
+	}
+
+	/* Synvya-themed status icons: small chip with soft background instead of
+	   a large filled-circle SVG. */
+	.synvya-container .status-icon {
+		margin-bottom: 1rem;
+	}
+
+	.synvya-container .status-icon :global(svg) {
+		padding: 0.45rem;
+		border-radius: 999px;
+		background: rgba(15, 23, 42, 0.04);
+	}
+
+	.synvya-container .status-icon.success :global(svg) {
+		color: #16a34a;
+		background: rgba(22, 163, 74, 0.1);
+	}
+
+	.synvya-container .status-icon.error :global(svg) {
+		color: #dc2626;
+		background: rgba(220, 38, 38, 0.08);
+	}
+
+	.synvya-container .status-icon.loading :global(svg) {
+		color: #0f172a;
+		background: rgba(15, 23, 42, 0.04);
+	}
+
+	.synvya-container .status-icon :global(.synvya-spin) {
+		animation: spin 1s linear infinite;
 	}
 
 	.redirect-notice {
