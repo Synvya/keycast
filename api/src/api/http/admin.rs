@@ -973,9 +973,7 @@ pub async fn get_user_teams(
 
     let pubkey = query.pubkey.trim().to_lowercase();
     if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ApiError::bad_request(
-            "pubkey must be a 64-char hex string",
-        ));
+        return Err(ApiError::bad_request("pubkey must be a 64-char hex string"));
     }
 
     // Teams the user belongs to (tenant-scoped)
@@ -1027,8 +1025,7 @@ pub async fn get_user_teams(
             let authorizations = auth_rows
                 .into_iter()
                 .map(|row| {
-                    let relays: Vec<String> =
-                        serde_json::from_str(&row.relays).unwrap_or_default();
+                    let relays: Vec<String> = serde_json::from_str(&row.relays).unwrap_or_default();
                     AdminAuthorization {
                         id: row.id,
                         label: row.label,
