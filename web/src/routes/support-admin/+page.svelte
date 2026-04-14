@@ -3,12 +3,15 @@
 	import { BRAND } from '$lib/brand';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { goto } from '$app/navigation';
+	import { getLoginUrl } from '$lib/utils/env';
 	import Loader from '$lib/components/Loader.svelte';
-	import { ShieldCheck, Warning, MagnifyingGlass, User, Key, Calendar, Globe, Copy, Check, CheckCircle, XCircle, Link, CaretDown, CaretRight } from 'phosphor-svelte';
+	import { ShieldCheck, Warning, MagnifyingGlass, User, Key, Calendar, Globe, Copy, Check, CheckCircle, XCircle, Link, CaretDown, CaretRight, Storefront, UsersThree, Plug } from 'phosphor-svelte';
 	import { nip19 } from 'nostr-tools';
 	import { toast } from 'svelte-hot-french-toast';
 
 	const api = new KeycastApi();
+	const isSynvyaManaged = getLoginUrl() !== '/login';
+	const brandName = isSynvyaManaged ? 'Synvya' : BRAND.name;
 
 	let status = $state<'loading' | 'not-admin' | 'ready'>('loading');
 	let adminRole = $state<string | null>(null);
@@ -31,6 +34,39 @@
 	let isLoadingClaimToken = $state(false);
 	let isGeneratingClaimToken = $state(false);
 	let copiedClaimUrl = $state(false);
+
+	// Teams / restaurants / authorizations state (lazy-loaded per expand)
+	let userTeams = $state<TeamDetails[] | null>(null);
+	let isLoadingTeams = $state(false);
+	let teamsError = $state('');
+
+	interface AdminAuthorization {
+		id: number;
+		label: string | null;
+		bunker_public_key: string;
+		relays: string[];
+		connected_client_pubkey: string | null;
+		connected_at: string | null;
+		expires_at: string | null;
+		created_at: string;
+		updated_at: string;
+	}
+
+	interface RestaurantKey {
+		id: number;
+		name: string;
+		pubkey: string;
+		created_at: string;
+		authorizations: AdminAuthorization[];
+	}
+
+	interface TeamDetails {
+		id: number;
+		name: string;
+		role: string;
+		joined_at: string;
+		restaurant_keys: RestaurantKey[];
+	}
 
 	interface UserDetails {
 		pubkey: string;
@@ -173,6 +209,34 @@
 		expandedPubkey = expandedPubkey === pubkey ? null : pubkey;
 	}
 
+	async function loadUserTeams(pubkey: string) {
+		isLoadingTeams = true;
+		teamsError = '';
+		userTeams = null;
+		try {
+			const result = await api.get<{ teams: TeamDetails[] }>(
+				`/admin/user-teams?pubkey=${encodeURIComponent(pubkey)}`
+			);
+			userTeams = result.teams;
+		} catch (err: any) {
+			teamsError = err.message || 'Failed to load teams';
+		} finally {
+			isLoadingTeams = false;
+		}
+	}
+
+	function formatAuthLabel(a: AdminAuthorization): string {
+		return a.label && a.label.trim() ? a.label : `Authorization #${a.id}`;
+	}
+
+	function isSynvyaServerAuth(label: string | null): boolean {
+		return !!label && /synvya\s+server/i.test(label);
+	}
+
+	function isSynvyaClientAuth(label: string | null): boolean {
+		return !!label && /synvya\s+client/i.test(label);
+	}
+
 	$effect(() => {
 		if (expandedPubkey && searchResult) {
 			const user = searchResult.results.find(u => u.pubkey === expandedPubkey);
@@ -181,17 +245,26 @@
 			} else {
 				claimToken = null;
 			}
+			loadUserTeams(expandedPubkey);
 		} else {
 			claimToken = null;
+			userTeams = null;
+			teamsError = '';
 		}
 	});
 </script>
 
 <svelte:head>
-	<title>Support Admin - {BRAND.name}</title>
+	<title>Support Admin - {brandName}</title>
 </svelte:head>
 
-<div class="support-page">
+<div class:support-page={true} class:synvya-admin={isSynvyaManaged}>
+	{#if isSynvyaManaged}
+		<div class="synvya-brand">
+			<img src="/synvya-logo.png" alt="Synvya" class="synvya-brand-logo" />
+			<span class="synvya-brand-sub">Support Admin</span>
+		</div>
+	{/if}
 	{#if status === 'loading'}
 		<div class="status-card">
 			<Loader />
@@ -385,6 +458,111 @@
 													>
 														{isGeneratingClaimToken ? 'Generating...' : 'Generate Claim Link'}
 													</button>
+												{/if}
+											</div>
+										{/if}
+
+										{#if isSynvyaManaged}
+											<div class="teams-section">
+												<div class="section-header">
+													<UsersThree size={16} />
+													<span class="section-title">Teams & Restaurants</span>
+												</div>
+
+												{#if isLoadingTeams}
+													<p class="muted-text">Loading teams…</p>
+												{:else if teamsError}
+													<div class="inline-error"><Warning size={14} /><span>{teamsError}</span></div>
+												{:else if userTeams && userTeams.length === 0}
+													<p class="muted-text">This user is not a member of any team.</p>
+												{:else if userTeams}
+													<div class="teams-list">
+														{#each userTeams as team (team.id)}
+															<div class="team-card">
+																<div class="team-header">
+																	<div class="team-header-main">
+																		<Storefront size={16} weight="fill" />
+																		<span class="team-name">{team.name}</span>
+																	</div>
+																	<div class="team-header-meta">
+																		<span class="pill pill-role">{team.role}</span>
+																		<span class="team-joined">joined {formatDate(team.joined_at)}</span>
+																	</div>
+																</div>
+
+																{#if team.restaurant_keys.length === 0}
+																	<p class="muted-text indent">No restaurant keys in this team.</p>
+																{:else}
+																	{#each team.restaurant_keys as key (key.id)}
+																		<div class="restaurant-block">
+																			<div class="restaurant-row">
+																				<span class="restaurant-label">Restaurant</span>
+																				<span class="restaurant-name">{key.name}</span>
+																			</div>
+																			<div class="restaurant-row">
+																				<span class="restaurant-label"><Key size={12} /> Pubkey</span>
+																				<span class="field-value mono">
+																					<span title={formatPubkey(key.pubkey)}>{truncateFormatted(key.pubkey)}</span>
+																					<button class="icon-btn" onclick={() => copyPubkey(key.pubkey)} title="Copy restaurant pubkey">
+																						<Copy size={12} />
+																					</button>
+																				</span>
+																			</div>
+
+																			<div class="auth-header">
+																				<Plug size={14} />
+																				<span>Authorizations</span>
+																				<span class="auth-scope-hint">shared across the team</span>
+																			</div>
+
+																			{#if key.authorizations.length === 0}
+																				<p class="muted-text indent">No authorizations on this key.</p>
+																			{:else}
+																				<div class="auth-list">
+																					{#each key.authorizations as a (a.id)}
+																						{@const serverAuth = isSynvyaServerAuth(a.label)}
+																						{@const clientAuth = isSynvyaClientAuth(a.label)}
+																						<div class="auth-card" class:auth-server={serverAuth} class:auth-client={clientAuth}>
+																							<div class="auth-card-header">
+																								<span class="auth-label">{formatAuthLabel(a)}</span>
+																								{#if serverAuth}
+																									<span class="pill pill-server">24/7</span>
+																								{:else if clientAuth}
+																									<span class="pill pill-client">interactive</span>
+																								{/if}
+																							</div>
+																							<div class="auth-meta">
+																								<div class="auth-meta-row">
+																									<span class="auth-meta-label">Bunker</span>
+																									<span class="mono auth-meta-value" title={a.bunker_public_key}>{truncateFormatted(a.bunker_public_key)}</span>
+																								</div>
+																								<div class="auth-meta-row">
+																									<span class="auth-meta-label">Created</span>
+																									<span class="auth-meta-value">{formatDate(a.created_at)}</span>
+																								</div>
+																								<div class="auth-meta-row">
+																									<span class="auth-meta-label">Connected</span>
+																									<span class="auth-meta-value">{a.connected_at ? formatDate(a.connected_at) : '—'}</span>
+																								</div>
+																								<div class="auth-meta-row">
+																									<span class="auth-meta-label">Expires</span>
+																									<span class="auth-meta-value">{a.expires_at ? formatDate(a.expires_at) : 'Never'}</span>
+																								</div>
+																								<div class="auth-meta-row">
+																									<span class="auth-meta-label">Relays</span>
+																									<span class="auth-meta-value relays">{a.relays.length === 0 ? '—' : a.relays.join(', ')}</span>
+																								</div>
+																							</div>
+																						</div>
+																					{/each}
+																				</div>
+																			{/if}
+																		</div>
+																	{/each}
+																{/if}
+															</div>
+														{/each}
+													</div>
 												{/if}
 											</div>
 										{/if}
@@ -908,5 +1086,372 @@
 	.link-desc {
 		color: var(--color-divine-text-tertiary);
 		font-size: 0.8rem;
+	}
+
+	/* =========================================================
+	   Teams & Authorizations (shared markup, inherits dark theme)
+	   ========================================================= */
+	.teams-section {
+		padding: 0.875rem 1.25rem 1rem;
+		border-top: 1px solid var(--color-divine-border);
+	}
+
+	.section-header {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		color: var(--color-divine-text);
+		margin-bottom: 0.625rem;
+	}
+
+	.section-title {
+		font-size: 0.825rem;
+		font-weight: 600;
+	}
+
+	.muted-text {
+		font-size: 0.8rem;
+		color: var(--color-divine-text-tertiary);
+		margin: 0.25rem 0;
+	}
+
+	.muted-text.indent {
+		padding-left: 0.5rem;
+	}
+
+	.inline-error {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		font-size: 0.8rem;
+		color: var(--color-divine-error);
+	}
+
+	.teams-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.625rem;
+	}
+
+	.team-card {
+		background: var(--color-divine-bg);
+		border: 1px solid var(--color-divine-border);
+		border-radius: 10px;
+		padding: 0.75rem 0.875rem;
+	}
+
+	.team-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.5rem;
+	}
+
+	.team-header-main {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		color: var(--color-divine-green);
+	}
+
+	.team-name {
+		color: var(--color-divine-text);
+		font-weight: 600;
+		font-size: 0.9rem;
+	}
+
+	.team-header-meta {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.team-joined {
+		font-size: 0.7rem;
+		color: var(--color-divine-text-tertiary);
+	}
+
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.1rem 0.5rem;
+		font-size: 0.65rem;
+		font-weight: 600;
+		border-radius: 9999px;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.pill-role {
+		background: color-mix(in srgb, var(--color-divine-purple, #8b5cf6) 18%, transparent);
+		color: var(--color-divine-purple, #8b5cf6);
+	}
+
+	.pill-server {
+		background: color-mix(in srgb, var(--color-divine-green) 20%, transparent);
+		color: var(--color-divine-green);
+	}
+
+	.pill-client {
+		background: color-mix(in srgb, #3b82f6 20%, transparent);
+		color: #3b82f6;
+	}
+
+	.restaurant-block {
+		margin-top: 0.5rem;
+		padding: 0.625rem 0.75rem;
+		background: var(--color-divine-surface);
+		border: 1px solid var(--color-divine-border);
+		border-radius: 8px;
+	}
+
+	.restaurant-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.2rem 0;
+		font-size: 0.8rem;
+	}
+
+	.restaurant-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		color: var(--color-divine-text-secondary);
+	}
+
+	.restaurant-name {
+		color: var(--color-divine-text);
+		font-weight: 500;
+	}
+
+	.auth-header {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		margin-top: 0.625rem;
+		margin-bottom: 0.375rem;
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--color-divine-text-secondary);
+	}
+
+	.auth-scope-hint {
+		margin-left: auto;
+		font-weight: 400;
+		font-size: 0.7rem;
+		color: var(--color-divine-text-tertiary);
+		font-style: italic;
+	}
+
+	.auth-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.auth-card {
+		border: 1px solid var(--color-divine-border);
+		border-radius: 8px;
+		padding: 0.5rem 0.625rem;
+		background: var(--color-divine-bg);
+	}
+
+	.auth-card.auth-server {
+		border-left: 3px solid var(--color-divine-green);
+	}
+
+	.auth-card.auth-client {
+		border-left: 3px solid #3b82f6;
+	}
+
+	.auth-card-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 0.375rem;
+	}
+
+	.auth-label {
+		font-size: 0.825rem;
+		font-weight: 600;
+		color: var(--color-divine-text);
+	}
+
+	.auth-meta {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		column-gap: 0.75rem;
+		row-gap: 0.2rem;
+	}
+
+	.auth-meta-row {
+		display: contents;
+	}
+
+	.auth-meta-label {
+		font-size: 0.7rem;
+		color: var(--color-divine-text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+
+	.auth-meta-value {
+		font-size: 0.75rem;
+		color: var(--color-divine-text);
+		word-break: break-all;
+	}
+
+	.auth-meta-value.relays {
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		color: var(--color-divine-text-secondary);
+	}
+
+	/* =========================================================
+	   Synvya light admin variant (overrides when .synvya-admin)
+	   ========================================================= */
+	.support-page.synvya-admin {
+		max-width: 720px;
+		padding: 2rem 1.5rem 3rem;
+		background: transparent;
+	}
+
+	:global(body:has(.support-page.synvya-admin)) {
+		background: #f7f9f8;
+	}
+
+	.synvya-brand {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		margin-bottom: 1.5rem;
+	}
+
+	.synvya-brand-logo {
+		height: 26px;
+	}
+
+	.synvya-brand-sub {
+		font-size: 0.85rem;
+		color: #5a6b6a;
+		font-weight: 500;
+	}
+
+	/* Card surfaces → white with subtle border */
+	.support-page.synvya-admin .admin-header,
+	.support-page.synvya-admin .status-card,
+	.support-page.synvya-admin .no-result,
+	.support-page.synvya-admin .user-list,
+	.support-page.synvya-admin .link-card,
+	.support-page.synvya-admin .results-banner,
+	.support-page.synvya-admin .search-input-wrap {
+		background: #ffffff;
+		border-color: #e2e8e6;
+		color: #1f2937;
+	}
+
+	.support-page.synvya-admin .tools-section h2,
+	.support-page.synvya-admin .admin-label,
+	.support-page.synvya-admin .list-name,
+	.support-page.synvya-admin .field-value,
+	.support-page.synvya-admin .team-name,
+	.support-page.synvya-admin .restaurant-name,
+	.support-page.synvya-admin .auth-label,
+	.support-page.synvya-admin .section-title,
+	.support-page.synvya-admin .link-title,
+	.support-page.synvya-admin .claim-title,
+	.support-page.synvya-admin .auth-meta-value {
+		color: #0f1f1c;
+	}
+
+	.support-page.synvya-admin .field-label,
+	.support-page.synvya-admin .restaurant-label,
+	.support-page.synvya-admin .auth-header {
+		color: #4b5e5a;
+	}
+
+	.support-page.synvya-admin .search-hint,
+	.support-page.synvya-admin .list-username,
+	.support-page.synvya-admin .list-sessions,
+	.support-page.synvya-admin .team-joined,
+	.support-page.synvya-admin .auth-meta-label,
+	.support-page.synvya-admin .auth-scope-hint,
+	.support-page.synvya-admin .muted-text,
+	.support-page.synvya-admin .link-desc,
+	.support-page.synvya-admin .status-text,
+	.support-page.synvya-admin .status-neutral,
+	.support-page.synvya-admin .auth-meta-value.relays {
+		color: #7a8a86;
+	}
+
+	.support-page.synvya-admin .search-input {
+		color: #0f1f1c;
+	}
+
+	.support-page.synvya-admin .search-input::placeholder {
+		color: #9ba8a4;
+	}
+
+	.support-page.synvya-admin .user-list-item {
+		border-bottom-color: #e9efed;
+	}
+
+	.support-page.synvya-admin .user-list-item.expanded {
+		background: #f4f9f7;
+	}
+
+	.support-page.synvya-admin .user-list-row:hover {
+		background: #eff5f3;
+	}
+
+	.support-page.synvya-admin .user-card,
+	.support-page.synvya-admin .status-strip,
+	.support-page.synvya-admin .teams-section,
+	.support-page.synvya-admin .claim-section {
+		border-top-color: #e9efed;
+	}
+
+	.support-page.synvya-admin .status-strip {
+		background: #f4f9f7;
+	}
+
+	.support-page.synvya-admin .team-card,
+	.support-page.synvya-admin .auth-card {
+		background: #ffffff;
+		border-color: #e2e8e6;
+	}
+
+	.support-page.synvya-admin .restaurant-block {
+		background: #f7fbf9;
+		border-color: #dbe7e3;
+	}
+
+	.support-page.synvya-admin .claim-section {
+		background: #f1faf5;
+	}
+
+	.support-page.synvya-admin .claim-url-input {
+		background: #ffffff;
+		border-color: #dbe7e3;
+		color: #0f1f1c;
+	}
+
+	.support-page.synvya-admin .format-toggle {
+		background: #eef4f1;
+		border-color: #dbe7e3;
+		color: #4b5e5a;
+	}
+
+	.support-page.synvya-admin .icon-btn {
+		color: #7a8a86;
+	}
+	.support-page.synvya-admin .icon-btn:hover {
+		color: var(--color-divine-green);
+		background: #eef4f1;
 	}
 </style>

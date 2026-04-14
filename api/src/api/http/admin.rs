@@ -899,6 +899,181 @@ pub async fn get_user_lookup(
 }
 
 // ============================================================================
+// GET /api/admin/user-teams?pubkey=<hex> - Teams, restaurant keys, and authorizations
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct UserTeamsQuery {
+    pub pubkey: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserTeamsResponse {
+    pub teams: Vec<AdminTeamDetails>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminTeamDetails {
+    pub id: i32,
+    pub name: String,
+    pub role: String,
+    pub joined_at: String,
+    pub restaurant_keys: Vec<AdminRestaurantKey>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminRestaurantKey {
+    pub id: i32,
+    pub name: String,
+    pub pubkey: String,
+    pub created_at: String,
+    pub authorizations: Vec<AdminAuthorization>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminAuthorization {
+    pub id: i32,
+    pub label: Option<String>,
+    pub bunker_public_key: String,
+    pub relays: Vec<String>,
+    pub connected_client_pubkey: Option<String>,
+    pub connected_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Return all teams the user is a member of, with the team-owned stored (restaurant)
+/// keys and their authorizations. Support admin only. Tenant-scoped.
+pub async fn get_user_teams(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    axum::extract::Query(query): axum::extract::Query<UserTeamsQuery>,
+) -> ApiResult<Json<UserTeamsResponse>> {
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let pubkey = query.pubkey.trim().to_lowercase();
+    if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::bad_request(
+            "pubkey must be a 64-char hex string",
+        ));
+    }
+
+    // Teams the user belongs to (tenant-scoped)
+    let team_rows: Vec<(i32, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT t.id, t.name, tu.role, tu.created_at
+         FROM teams t
+         INNER JOIN team_users tu ON tu.team_id = t.id
+         WHERE tu.user_pubkey = $1 AND t.tenant_id = $2
+         ORDER BY tu.created_at ASC",
+    )
+    .bind(&pubkey)
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to load teams: {}", e)))?;
+
+    let mut teams = Vec::with_capacity(team_rows.len());
+
+    for (team_id, team_name, role, joined_at) in team_rows {
+        // Stored (restaurant) keys owned by this team
+        let key_rows: Vec<(i32, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "SELECT id, name, pubkey, created_at
+             FROM stored_keys
+             WHERE team_id = $1 AND tenant_id = $2
+             ORDER BY created_at ASC",
+        )
+        .bind(team_id)
+        .bind(tenant_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load stored keys: {}", e)))?;
+
+        let mut restaurant_keys = Vec::with_capacity(key_rows.len());
+
+        for (key_id, key_name, key_pubkey, key_created_at) in key_rows {
+            let auth_rows: Vec<(
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                Option<chrono::DateTime<chrono::Utc>>,
+                Option<chrono::DateTime<chrono::Utc>>,
+                chrono::DateTime<chrono::Utc>,
+                chrono::DateTime<chrono::Utc>,
+            )> = sqlx::query_as(
+                "SELECT id, label, bunker_public_key, relays, connected_client_pubkey,
+                        connected_at, expires_at, created_at, updated_at
+                 FROM authorizations
+                 WHERE stored_key_id = $1 AND tenant_id = $2
+                 ORDER BY created_at ASC",
+            )
+            .bind(key_id)
+            .bind(tenant_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to load authorizations: {}", e)))?;
+
+            let authorizations = auth_rows
+                .into_iter()
+                .map(
+                    |(
+                        id,
+                        label,
+                        bunker_public_key,
+                        relays_json,
+                        connected_client_pubkey,
+                        connected_at,
+                        expires_at,
+                        created_at,
+                        updated_at,
+                    )| {
+                        let relays: Vec<String> =
+                            serde_json::from_str(&relays_json).unwrap_or_default();
+                        AdminAuthorization {
+                            id,
+                            label,
+                            bunker_public_key,
+                            relays,
+                            connected_client_pubkey,
+                            connected_at: connected_at.map(|d| d.to_rfc3339()),
+                            expires_at: expires_at.map(|d| d.to_rfc3339()),
+                            created_at: created_at.to_rfc3339(),
+                            updated_at: updated_at.to_rfc3339(),
+                        }
+                    },
+                )
+                .collect();
+
+            restaurant_keys.push(AdminRestaurantKey {
+                id: key_id,
+                name: key_name,
+                pubkey: key_pubkey,
+                created_at: key_created_at.to_rfc3339(),
+                authorizations,
+            });
+        }
+
+        teams.push(AdminTeamDetails {
+            id: team_id,
+            name: team_name,
+            role,
+            joined_at: joined_at.to_rfc3339(),
+            restaurant_keys,
+        });
+    }
+
+    Ok(Json(UserTeamsResponse { teams }))
+}
+
+// ============================================================================
 // Support Admin Management (Redis-backed)
 // ============================================================================
 
