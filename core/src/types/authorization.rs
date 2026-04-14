@@ -89,6 +89,10 @@ pub struct Authorization {
     pub created_at: DateTime<chrono::Utc>,
     /// The date and time the authorization was last updated
     pub updated_at: DateTime<chrono::Utc>,
+    /// When this authorization was soft-deleted (NULL = active).
+    pub revoked_at: Option<DateTime<chrono::Utc>>,
+    /// Optional free-text reason for revocation (e.g. "superseded", "admin_revoke").
+    pub revoked_reason: Option<String>,
 }
 
 #[derive(Debug, FromRow, Serialize, Deserialize)]
@@ -107,7 +111,8 @@ impl Authorization {
         let authorization = sqlx::query_as::<_, Authorization>(
             "SELECT id, tenant_id, stored_key_id, secret_hash, bunker_public_key,
                     relays, policy_id, max_uses, expires_at, connected_client_pubkey,
-                    connected_at, label, created_at, updated_at
+                    connected_at, label, created_at, updated_at,
+                    revoked_at, revoked_reason
              FROM authorizations WHERE tenant_id = $1 AND id = $2",
         )
         .bind(tenant_id)
@@ -120,7 +125,7 @@ impl Authorization {
     pub async fn all_ids(pool: &PgPool, tenant_id: i64) -> Result<Vec<i32>, AuthorizationError> {
         let authorizations = sqlx::query_scalar::<_, i32>(
             r#"
-            SELECT id FROM authorizations WHERE tenant_id = $1
+            SELECT id FROM authorizations WHERE tenant_id = $1 AND revoked_at IS NULL
             "#,
         )
         .bind(tenant_id)
@@ -134,7 +139,7 @@ impl Authorization {
     ) -> Result<Vec<(i64, i32)>, AuthorizationError> {
         let authorizations = sqlx::query_as::<_, (i64, i32)>(
             r#"
-            SELECT tenant_id, id FROM authorizations
+            SELECT tenant_id, id FROM authorizations WHERE revoked_at IS NULL
             "#,
         )
         .fetch_all(pool)
