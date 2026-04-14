@@ -197,6 +197,7 @@ pub fn api_routes(
             get(admin::get_claim_token_stats),
         )
         .route("/admin/user-lookup", get(admin::get_user_lookup))
+        .route("/admin/user-teams", get(admin::get_user_teams))
         .route(
             "/admin/support-admins",
             get(admin::list_support_admins).post(admin::add_support_admin),
