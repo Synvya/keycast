@@ -237,6 +237,67 @@
 		return !!label && /synvya\s+client/i.test(label);
 	}
 
+	interface AuthGroup {
+		key: string; // group key for UI (`(no label)` for empty labels)
+		label: string | null;
+		displayLabel: string;
+		serverAuth: boolean;
+		clientAuth: boolean;
+		authorizations: AdminAuthorization[]; // newest-first
+	}
+
+	/** Group authorizations by label, newest-first within each group. */
+	function groupAuthorizations(auths: AdminAuthorization[]): AuthGroup[] {
+		const groups = new Map<string, AuthGroup>();
+		for (const a of auths) {
+			const labelNorm = a.label && a.label.trim() ? a.label.trim() : '';
+			const key = labelNorm || '(no label)';
+			let group = groups.get(key);
+			if (!group) {
+				group = {
+					key,
+					label: labelNorm || null,
+					displayLabel: labelNorm || '(no label)',
+					serverAuth: isSynvyaServerAuth(labelNorm || null),
+					clientAuth: isSynvyaClientAuth(labelNorm || null),
+					authorizations: [],
+				};
+				groups.set(key, group);
+			}
+			group.authorizations.push(a);
+		}
+		for (const group of groups.values()) {
+			group.authorizations.sort(
+				(x, y) => new Date(y.created_at).getTime() - new Date(x.created_at).getTime(),
+			);
+		}
+		// Order groups by the most recent authorization within each group (newest first).
+		return Array.from(groups.values()).sort(
+			(a, b) =>
+				new Date(b.authorizations[0].created_at).getTime() -
+				new Date(a.authorizations[0].created_at).getTime(),
+		);
+	}
+
+	// Per-group expand/collapse for older authorizations in the Synvya admin view.
+	// Keyed by `${restaurantKeyId}|${groupKey}`; presence = expanded.
+	let expandedAuthGroups = $state<Set<string>>(new Set());
+
+	function authGroupExpandKey(keyId: number, groupKey: string): string {
+		return `${keyId}|${groupKey}`;
+	}
+
+	function toggleAuthGroup(keyId: number, groupKey: string) {
+		const k = authGroupExpandKey(keyId, groupKey);
+		const next = new Set(expandedAuthGroups);
+		if (next.has(k)) {
+			next.delete(k);
+		} else {
+			next.add(k);
+		}
+		expandedAuthGroups = next;
+	}
+
 	$effect(() => {
 		if (expandedPubkey && searchResult) {
 			const user = searchResult.results.find(u => u.pubkey === expandedPubkey);
@@ -517,6 +578,94 @@
 
 																			{#if key.authorizations.length === 0}
 																				<p class="muted-text indent">No authorizations on this key.</p>
+																			{:else if isSynvyaManaged}
+																				<div class="auth-list">
+																					{#each groupAuthorizations(key.authorizations) as group (group.key)}
+																						{@const expanded = expandedAuthGroups.has(authGroupExpandKey(key.id, group.key))}
+																						{@const newest = group.authorizations[0]}
+																						{@const olderCount = group.authorizations.length - 1}
+																						<div class="auth-group" class:auth-server={group.serverAuth} class:auth-client={group.clientAuth}>
+																							<div class="auth-group-header">
+																								<span class="auth-label">{group.displayLabel}</span>
+																								<span class="auth-count-badge">· {group.authorizations.length}</span>
+																								{#if group.serverAuth}
+																									<span class="pill pill-server">24/7</span>
+																								{:else if group.clientAuth}
+																									<span class="pill pill-client">interactive</span>
+																								{/if}
+																							</div>
+																							<div class="auth-card auth-card-plain">
+																								<div class="auth-card-header">
+																									<span class="auth-sub-label">Authorization #{newest.id} <span class="muted-text">· newest</span></span>
+																								</div>
+																								<div class="auth-meta">
+																									<div class="auth-meta-row">
+																										<span class="auth-meta-label">Bunker</span>
+																										<span class="mono auth-meta-value" title={newest.bunker_public_key}>{truncateFormatted(newest.bunker_public_key)}</span>
+																									</div>
+																									<div class="auth-meta-row">
+																										<span class="auth-meta-label">Created</span>
+																										<span class="auth-meta-value">{formatDate(newest.created_at)}</span>
+																									</div>
+																									<div class="auth-meta-row">
+																										<span class="auth-meta-label">Connected</span>
+																										<span class="auth-meta-value">{newest.connected_at ? formatDate(newest.connected_at) : '—'}</span>
+																									</div>
+																									<div class="auth-meta-row">
+																										<span class="auth-meta-label">Expires</span>
+																										<span class="auth-meta-value">{newest.expires_at ? formatDate(newest.expires_at) : 'Never'}</span>
+																									</div>
+																									<div class="auth-meta-row">
+																										<span class="auth-meta-label">Relays</span>
+																										<span class="auth-meta-value relays">{newest.relays.length === 0 ? '—' : newest.relays.join(', ')}</span>
+																									</div>
+																								</div>
+																							</div>
+																							{#if olderCount > 0}
+																								<button type="button" class="auth-older-toggle" onclick={() => toggleAuthGroup(key.id, group.key)}>
+																									{#if expanded}
+																										<CaretDown size={14} /> Hide {olderCount} older
+																									{:else}
+																										<CaretRight size={14} /> {olderCount} older {group.displayLabel} authorization{olderCount === 1 ? '' : 's'}
+																									{/if}
+																								</button>
+																								{#if expanded}
+																									<div class="auth-older-list">
+																										{#each group.authorizations.slice(1) as a (a.id)}
+																											<div class="auth-card auth-card-plain auth-card-older">
+																												<div class="auth-card-header">
+																													<span class="auth-sub-label">Authorization #{a.id}</span>
+																												</div>
+																												<div class="auth-meta">
+																													<div class="auth-meta-row">
+																														<span class="auth-meta-label">Bunker</span>
+																														<span class="mono auth-meta-value" title={a.bunker_public_key}>{truncateFormatted(a.bunker_public_key)}</span>
+																													</div>
+																													<div class="auth-meta-row">
+																														<span class="auth-meta-label">Created</span>
+																														<span class="auth-meta-value">{formatDate(a.created_at)}</span>
+																													</div>
+																													<div class="auth-meta-row">
+																														<span class="auth-meta-label">Connected</span>
+																														<span class="auth-meta-value">{a.connected_at ? formatDate(a.connected_at) : '—'}</span>
+																													</div>
+																													<div class="auth-meta-row">
+																														<span class="auth-meta-label">Expires</span>
+																														<span class="auth-meta-value">{a.expires_at ? formatDate(a.expires_at) : 'Never'}</span>
+																													</div>
+																													<div class="auth-meta-row">
+																														<span class="auth-meta-label">Relays</span>
+																														<span class="auth-meta-value relays">{a.relays.length === 0 ? '—' : a.relays.join(', ')}</span>
+																													</div>
+																												</div>
+																											</div>
+																										{/each}
+																									</div>
+																								{/if}
+																							{/if}
+																						</div>
+																					{/each}
+																				</div>
 																			{:else}
 																				<div class="auth-list">
 																					{#each key.authorizations as a (a.id)}
@@ -1266,6 +1415,83 @@
 
 	.auth-card.auth-client {
 		border-left: 3px solid #3b82f6;
+	}
+
+	/* Grouped authorizations (Synvya admin view) */
+	.auth-group {
+		border: 1px solid var(--color-divine-border);
+		border-radius: 8px;
+		background: var(--color-divine-bg);
+		padding: 0.5rem 0.625rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.auth-group.auth-server {
+		border-left: 3px solid var(--color-divine-green);
+	}
+
+	.auth-group.auth-client {
+		border-left: 3px solid #3b82f6;
+	}
+
+	.auth-group-header {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.auth-count-badge {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--color-divine-text-secondary);
+	}
+
+	.auth-card-plain {
+		border: none;
+		border-left: none;
+		padding: 0.375rem 0;
+		background: transparent;
+		border-radius: 0;
+	}
+
+	.auth-sub-label {
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--color-divine-text-secondary);
+	}
+
+	.auth-older-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		background: transparent;
+		border: 1px dashed var(--color-divine-border);
+		border-radius: 6px;
+		padding: 0.25rem 0.5rem;
+		font-size: 0.75rem;
+		color: var(--color-divine-text-secondary);
+		cursor: pointer;
+		align-self: flex-start;
+	}
+
+	.auth-older-toggle:hover {
+		background: var(--color-divine-surface);
+		color: var(--color-divine-text);
+	}
+
+	.auth-older-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		border-top: 1px dashed var(--color-divine-border);
+		padding-top: 0.375rem;
+	}
+
+	.auth-card-older {
+		opacity: 0.75;
 	}
 
 	.auth-card-header {
