@@ -939,6 +939,8 @@ pub struct AdminAuthorization {
     pub connected_client_pubkey: Option<String>,
     pub connected_at: Option<String>,
     pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub revoked_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -952,6 +954,8 @@ struct AuthorizationRow {
     connected_client_pubkey: Option<String>,
     connected_at: Option<chrono::DateTime<chrono::Utc>>,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    revoked_reason: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -1011,7 +1015,8 @@ pub async fn get_user_teams(
         for (key_id, key_name, key_pubkey, key_created_at) in key_rows {
             let auth_rows: Vec<AuthorizationRow> = sqlx::query_as(
                 "SELECT id, label, bunker_public_key, relays, connected_client_pubkey,
-                        connected_at, expires_at, created_at, updated_at
+                        connected_at, expires_at, revoked_at, revoked_reason,
+                        created_at, updated_at
                  FROM authorizations
                  WHERE stored_key_id = $1 AND tenant_id = $2
                  ORDER BY created_at ASC",
@@ -1034,6 +1039,8 @@ pub async fn get_user_teams(
                         connected_client_pubkey: row.connected_client_pubkey,
                         connected_at: row.connected_at.map(|d| d.to_rfc3339()),
                         expires_at: row.expires_at.map(|d| d.to_rfc3339()),
+                        revoked_at: row.revoked_at.map(|d| d.to_rfc3339()),
+                        revoked_reason: row.revoked_reason,
                         created_at: row.created_at.to_rfc3339(),
                         updated_at: row.updated_at.to_rfc3339(),
                     }

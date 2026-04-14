@@ -48,6 +48,8 @@
 		connected_client_pubkey: string | null;
 		connected_at: string | null;
 		expires_at: string | null;
+		revoked_at: string | null;
+		revoked_reason: string | null;
 		created_at: string;
 		updated_at: string;
 	}
@@ -296,6 +298,59 @@
 			next.add(k);
 		}
 		expandedAuthGroups = next;
+	}
+
+	// Show revoked authorizations per restaurant key (keyed by RestaurantKey.id).
+	let showRevokedKeys = $state<Set<number>>(new Set());
+	function toggleShowRevoked(keyId: number) {
+		const next = new Set(showRevokedKeys);
+		if (next.has(keyId)) next.delete(keyId); else next.add(keyId);
+		showRevokedKeys = next;
+	}
+
+	function isRevoked(a: AdminAuthorization): boolean {
+		return a.revoked_at !== null && a.revoked_at !== undefined;
+	}
+
+	function countRevoked(auths: AdminAuthorization[]): number {
+		return auths.filter(isRevoked).length;
+	}
+
+	function visibleAuthorizations(key: RestaurantKey): AdminAuthorization[] {
+		if (showRevokedKeys.has(key.id)) return key.authorizations;
+		return key.authorizations.filter(a => !isRevoked(a));
+	}
+
+	let revokingAuthIds = $state<Set<number>>(new Set());
+
+	async function revokeAuthorization(authId: number) {
+		const reason = window.prompt(
+			`Revoke authorization #${authId}?\n\nOptional: enter a reason (visible in admin audit).`,
+			'',
+		);
+		// prompt returns null if user cancels; empty string is OK (reason optional).
+		if (reason === null) return;
+		const trimmed = reason.trim();
+
+		const next = new Set(revokingAuthIds);
+		next.add(authId);
+		revokingAuthIds = next;
+		try {
+			await api.post(`/admin/authorizations/${authId}/revoke`, {
+				reason: trimmed.length > 0 ? trimmed : null,
+			});
+			toast.success(`Authorization #${authId} revoked`);
+			if (expandedPubkey) {
+				await loadUserTeams(expandedPubkey);
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			toast.error(`Failed to revoke: ${msg}`);
+		} finally {
+			const after = new Set(revokingAuthIds);
+			after.delete(authId);
+			revokingAuthIds = after;
+		}
 	}
 
 	$effect(() => {
@@ -574,13 +629,22 @@
 																				<Plug size={14} />
 																				<span>Authorizations</span>
 																				<span class="auth-scope-hint">shared across the team</span>
+																				{#if isSynvyaManaged && countRevoked(key.authorizations) > 0}
+																					<button type="button" class="show-revoked-toggle" onclick={() => toggleShowRevoked(key.id)}>
+																						{showRevokedKeys.has(key.id) ? 'Hide' : 'Show'} revoked ({countRevoked(key.authorizations)})
+																					</button>
+																				{/if}
 																			</div>
 
 																			{#if key.authorizations.length === 0}
 																				<p class="muted-text indent">No authorizations on this key.</p>
 																			{:else if isSynvyaManaged}
+																				{@const visibleAuths = visibleAuthorizations(key)}
 																				<div class="auth-list">
-																					{#each groupAuthorizations(key.authorizations) as group (group.key)}
+																					{#if visibleAuths.length === 0}
+																						<p class="muted-text indent">All authorizations on this key are revoked. Click "Show revoked" above to view them.</p>
+																					{/if}
+																					{#each groupAuthorizations(visibleAuths) as group (group.key)}
 																						{@const expanded = expandedAuthGroups.has(authGroupExpandKey(key.id, group.key))}
 																						{@const newest = group.authorizations[0]}
 																						{@const olderCount = group.authorizations.length - 1}
@@ -594,9 +658,12 @@
 																									<span class="pill pill-client">interactive</span>
 																								{/if}
 																							</div>
-																							<div class="auth-card auth-card-plain">
+																							<div class="auth-card auth-card-plain" class:auth-card-revoked={isRevoked(newest)}>
 																								<div class="auth-card-header">
 																									<span class="auth-sub-label">Authorization #{newest.id} <span class="muted-text">· newest</span></span>
+																									{#if isRevoked(newest)}
+																										<span class="pill pill-revoked">revoked</span>
+																									{/if}
 																								</div>
 																								<div class="auth-meta">
 																									<div class="auth-meta-row">
@@ -620,6 +687,20 @@
 																										<span class="auth-meta-value relays">{newest.relays.length === 0 ? '—' : newest.relays.join(', ')}</span>
 																									</div>
 																								</div>
+																								{#if isRevoked(newest)}
+																									<div class="auth-revoked-info">
+																										<span class="auth-revoked-label">Revoked {formatDate(newest.revoked_at!)}</span>
+																										{#if newest.revoked_reason}
+																											<span class="auth-revoked-reason">"{newest.revoked_reason}"</span>
+																										{/if}
+																									</div>
+																								{:else}
+																									<div class="auth-card-actions">
+																										<button type="button" class="btn-revoke" disabled={revokingAuthIds.has(newest.id)} onclick={() => revokeAuthorization(newest.id)}>
+																											{revokingAuthIds.has(newest.id) ? 'Revoking…' : 'Revoke'}
+																										</button>
+																									</div>
+																								{/if}
 																							</div>
 																							{#if olderCount > 0}
 																								<button type="button" class="auth-older-toggle" onclick={() => toggleAuthGroup(key.id, group.key)}>
@@ -632,9 +713,12 @@
 																								{#if expanded}
 																									<div class="auth-older-list">
 																										{#each group.authorizations.slice(1) as a (a.id)}
-																											<div class="auth-card auth-card-plain auth-card-older">
+																											<div class="auth-card auth-card-plain auth-card-older" class:auth-card-revoked={isRevoked(a)}>
 																												<div class="auth-card-header">
 																													<span class="auth-sub-label">Authorization #{a.id}</span>
+																													{#if isRevoked(a)}
+																														<span class="pill pill-revoked">revoked</span>
+																													{/if}
 																												</div>
 																												<div class="auth-meta">
 																													<div class="auth-meta-row">
@@ -658,6 +742,20 @@
 																														<span class="auth-meta-value relays">{a.relays.length === 0 ? '—' : a.relays.join(', ')}</span>
 																													</div>
 																												</div>
+																												{#if isRevoked(a)}
+																													<div class="auth-revoked-info">
+																														<span class="auth-revoked-label">Revoked {formatDate(a.revoked_at!)}</span>
+																														{#if a.revoked_reason}
+																															<span class="auth-revoked-reason">"{a.revoked_reason}"</span>
+																														{/if}
+																													</div>
+																												{:else}
+																													<div class="auth-card-actions">
+																														<button type="button" class="btn-revoke" disabled={revokingAuthIds.has(a.id)} onclick={() => revokeAuthorization(a.id)}>
+																															{revokingAuthIds.has(a.id) ? 'Revoking…' : 'Revoke'}
+																														</button>
+																													</div>
+																												{/if}
 																											</div>
 																										{/each}
 																									</div>
@@ -1346,6 +1444,85 @@
 	.pill-client {
 		background: color-mix(in srgb, #3b82f6 20%, transparent);
 		color: #3b82f6;
+	}
+
+	.pill-revoked {
+		background: color-mix(in srgb, #dc2626 18%, transparent);
+		color: #dc2626;
+	}
+
+	.auth-card-revoked {
+		opacity: 0.65;
+		border-color: color-mix(in srgb, #dc2626 40%, var(--color-divine-border));
+		background: color-mix(in srgb, #dc2626 4%, transparent);
+	}
+
+	.auth-card-revoked .auth-sub-label {
+		text-decoration: line-through;
+	}
+
+	.auth-revoked-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		padding: 0.4rem 0.6rem;
+		margin-top: 0.35rem;
+		border-top: 1px dashed color-mix(in srgb, #dc2626 40%, var(--color-divine-border));
+		font-size: 0.78rem;
+	}
+
+	.auth-revoked-label {
+		color: #dc2626;
+		font-weight: 600;
+	}
+
+	.auth-revoked-reason {
+		color: var(--color-divine-text-muted, #64748b);
+		font-style: italic;
+	}
+
+	.auth-card-actions {
+		display: flex;
+		justify-content: flex-end;
+		padding: 0.35rem 0.5rem 0.5rem;
+	}
+
+	.btn-revoke {
+		background: transparent;
+		border: 1px solid color-mix(in srgb, #dc2626 60%, transparent);
+		color: #dc2626;
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.2rem 0.55rem;
+		border-radius: 6px;
+		cursor: pointer;
+		transition: background 0.15s, color 0.15s;
+	}
+
+	.btn-revoke:hover:not(:disabled) {
+		background: #dc2626;
+		color: white;
+	}
+
+	.btn-revoke:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.show-revoked-toggle {
+		margin-left: auto;
+		background: transparent;
+		border: 1px solid var(--color-divine-border);
+		color: var(--color-divine-text-muted, #64748b);
+		font-size: 0.72rem;
+		padding: 0.12rem 0.45rem;
+		border-radius: 5px;
+		cursor: pointer;
+	}
+
+	.show-revoked-toggle:hover {
+		background: var(--color-divine-surface);
+		color: var(--color-divine-text, inherit);
 	}
 
 	.restaurant-block {
