@@ -4,9 +4,13 @@
 	import { KeycastApi } from '$lib/keycast_api.svelte';
 	import { setCurrentUser } from '$lib/current_user.svelte';
 	import { BRAND } from '$lib/brand';
+	import { getLoginUrl } from '$lib/utils/env';
 	import { onMount } from 'svelte';
 
 	const api = new KeycastApi();
+	const loginUrl = getLoginUrl();
+	const isSynvyaManaged = loginUrl !== '/login';
+	const pageTitle = isSynvyaManaged ? 'Create Account - Synvya' : `Register - ${BRAND.name}`;
 	let hasExtension = $state(false);
 
 	onMount(() => {
@@ -76,19 +80,27 @@
 </script>
 
 <svelte:head>
-	<title>Register - {BRAND.name}</title>
+	<title>{pageTitle}</title>
 </svelte:head>
 
-<div class="auth-page">
-	<div class="auth-container">
+<div class:auth-page={true} class:synvya-page={isSynvyaManaged}>
+	<div class:auth-container={true} class:synvya-container={isSynvyaManaged}>
 		<!-- Logo/Branding -->
-		<a href="/" class="auth-branding">
-			<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
-			<span class="auth-logo-sub">Login</span>
+		<a href={isSynvyaManaged ? loginUrl : '/'} class="auth-branding">
+			{#if isSynvyaManaged}
+				<img src="/synvya-logo.png" alt="Synvya" class="synvya-logo-img" />
+			{:else}
+				<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
+				<span class="auth-logo-sub">Login</span>
+			{/if}
 		</a>
 
-		<h1>Create your account</h1>
-		<p class="subtitle">Your Nostr identity, simplified</p>
+		{#if !showVerificationNotice}
+			<div class="auth-copy">
+				<h1>{isSynvyaManaged ? 'Create your account' : 'Create your account'}</h1>
+				<p class="subtitle">{isSynvyaManaged ? 'Enter your details below to get started.' : 'Your Nostr identity, simplified'}</p>
+			</div>
+		{/if}
 
 		{#if showVerificationNotice}
 			<div class="verification-notice">
@@ -100,7 +112,7 @@
 				<h2>Check your email</h2>
 				<p>We've sent a verification link to <strong>{registeredEmail}</strong></p>
 				<p class="subtext">Click the link in the email to verify your account and sign&nbsp;in.</p>
-				<a href="/login" class="btn-secondary">Go to Login</a>
+				<a href={loginUrl} class="btn-secondary">Go to Login</a>
 			</div>
 		{:else}
 			<form onsubmit={(e) => { e.preventDefault(); handleRegister(); }}>
@@ -142,6 +154,7 @@
 				/>
 			</div>
 
+			{#if !isSynvyaManaged}
 			<button
 				type="button"
 				class="advanced-toggle"
@@ -167,6 +180,7 @@
 				</div>
 			</div>
 			{/if}
+			{/if}
 
 			<button type="submit" class="btn-primary" disabled={isLoading}>
 				{isLoading ? 'Creating account...' : 'Create Account'}
@@ -174,10 +188,10 @@
 		</form>
 
 			<p class="auth-link">
-				Already have an account? <a href="/login">Sign in</a>
+				Already have an account? <a href={loginUrl}>Sign in</a>
 			</p>
 
-			{#if hasExtension}
+			{#if !isSynvyaManaged && hasExtension}
 			<p class="auth-note">
 				Admin? <a href="/login">Sign in with your Nostr extension</a>
 			</p>
@@ -196,6 +210,11 @@
 		background: var(--color-divine-bg);
 	}
 
+	.synvya-page {
+		padding: 1.5rem;
+		background: #ffffff;
+	}
+
 	.auth-container {
 		background: var(--color-divine-surface);
 		border: 1px solid var(--color-divine-border);
@@ -204,6 +223,18 @@
 		max-width: 420px;
 		width: 100%;
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.08);
+	}
+
+	.synvya-container {
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		padding: 0;
+		box-shadow: none;
+		max-width: 24rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
 	}
 
 	.auth-branding {
@@ -216,12 +247,21 @@
 		margin-bottom: 1.5rem;
 	}
 
+	.synvya-container .auth-branding {
+		margin-bottom: 0;
+	}
+
 	.auth-branding:hover {
 		opacity: 0.85;
 	}
 
 	.auth-logo-img {
 		height: 28px;
+	}
+
+	.synvya-logo-img {
+		height: 2.75rem;
+		width: auto;
 	}
 
 	.auth-logo-sub {
@@ -234,6 +274,12 @@
 		opacity: 0.6;
 	}
 
+	.auth-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
 	h1 {
 		margin: 0 0 0.5rem 0;
 		color: var(--color-divine-text);
@@ -244,6 +290,15 @@
 		letter-spacing: -0.02em;
 	}
 
+	.synvya-container h1 {
+		color: #0f172a;
+		font-family: var(--font-sans);
+		font-size: 1.875rem;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		line-height: 1.15;
+	}
+
 	.subtitle {
 		color: var(--color-divine-text-secondary);
 		margin: 0 0 1.5rem 0;
@@ -251,8 +306,23 @@
 		font-size: 0.95rem;
 	}
 
+	.synvya-container .subtitle,
+	.synvya-container .auth-link {
+		color: #64748b;
+	}
+
+	.synvya-container .subtitle {
+		margin: 0;
+		font-size: 0.975rem;
+		line-height: 1.5;
+	}
+
 	.form-group {
 		margin-bottom: 1rem;
+	}
+
+	.synvya-container .form-group {
+		margin-bottom: 0;
 	}
 
 	label {
@@ -261,6 +331,11 @@
 		color: var(--color-divine-text-secondary);
 		font-size: 0.875rem;
 		font-weight: 500;
+	}
+
+	.synvya-container label {
+		margin-bottom: 0.5rem;
+		color: #0f172a;
 	}
 
 	input {
@@ -289,6 +364,30 @@
 	input:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.synvya-container input {
+		background: #eff6ff;
+		border-color: #dbe4f0;
+		border-radius: 0.75rem;
+		color: #0f172a;
+		padding: 0.875rem 1rem;
+	}
+
+	.synvya-container input::placeholder {
+		color: #9aa7b8;
+		opacity: 1;
+	}
+
+	.synvya-container input:focus {
+		border-color: #22c55e;
+		box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+	}
+
+	.synvya-container form {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
 	}
 
 	.advanced-toggle {
@@ -346,9 +445,20 @@
 		margin-top: 0.5rem;
 	}
 
+	.synvya-container .btn-primary {
+		margin-top: 0.25rem;
+		border-radius: 0.75rem;
+		background: #22c55e;
+		box-shadow: none;
+	}
+
 	.btn-primary:hover:not(:disabled) {
 		background: var(--color-divine-green-dark);
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.16);
+	}
+
+	.synvya-container .btn-primary:hover:not(:disabled) {
+		background: #16a34a;
 	}
 
 	.btn-primary:disabled {
@@ -371,6 +481,13 @@
 
 	.auth-link a:hover {
 		text-decoration: underline;
+	}
+
+	.synvya-container .auth-link a {
+		color: #334155;
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		font-weight: 400;
 	}
 
 	.auth-note {
@@ -406,11 +523,20 @@
 		color: var(--color-divine-green);
 	}
 
+	.synvya-container .verification-notice .notice-icon.success {
+		color: #22c55e;
+	}
+
 	.verification-notice h2 {
 		font-size: 1.25rem;
 		font-weight: 600;
 		color: var(--color-divine-text);
 		margin-bottom: 0.5rem;
+	}
+
+	.synvya-container .verification-notice h2 {
+		color: #0f172a;
+		font-size: 1.5rem;
 	}
 
 	.verification-notice p {
@@ -420,8 +546,16 @@
 		margin-bottom: 0.5rem;
 	}
 
+	.synvya-container .verification-notice p {
+		color: #64748b;
+	}
+
 	.verification-notice strong {
 		color: var(--color-divine-text);
+	}
+
+	.synvya-container .verification-notice strong {
+		color: #0f172a;
 	}
 
 	.verification-notice .subtext {
@@ -443,8 +577,29 @@
 		transition: all 0.2s;
 	}
 
+	.synvya-container .btn-secondary {
+		border-radius: 0.75rem;
+		color: #334155;
+		border-color: #dbe4f0;
+	}
+
 	.btn-secondary:hover {
 		background: var(--color-divine-muted);
 		color: var(--color-divine-text);
+	}
+
+	.synvya-container .btn-secondary:hover {
+		background: #f8fafc;
+		border-color: #94a3b8;
+	}
+
+	@media (max-width: 640px) {
+		.synvya-page {
+			padding: 1.25rem;
+		}
+
+		.synvya-container h1 {
+			font-size: 1.625rem;
+		}
 	}
 </style>

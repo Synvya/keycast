@@ -14,6 +14,7 @@
 	let password = $state('');
 	let confirmPassword = $state('');
 	let isLoading = $state(false);
+	let showSuccess = $state(false);
 
 	const token = $derived($page.url.searchParams.get('token'));
 
@@ -51,7 +52,7 @@
 			});
 
 			toast.success('Password reset successfully!');
-			redirectToLogin();
+			showSuccess = true;
 		} catch (err: any) {
 			console.error('Reset password error:', err);
 			toast.error(err.message || 'Failed to reset password. The link may have expired.');
@@ -76,54 +77,71 @@
 			{/if}
 		</a>
 
-		<div class="auth-copy">
-			<h1>{isSynvyaManaged ? 'Set new password' : 'Reset Password'}</h1>
-			<p class="subtitle">{isSynvyaManaged ? 'Enter your new password below.' : 'Enter your new password'}</p>
-		</div>
-
-		{#if !token}
-			<div class="error-message">
-				<p>Invalid or missing reset token.</p>
-				<p>Please request a new password reset link.</p>
+		{#if showSuccess}
+			<div class="success-notice">
+				<div class="notice-icon success">
+					<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
+						<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"></path>
+					</svg>
+				</div>
+				<h1>Password updated</h1>
+				<p class="subtitle">Your password has been reset successfully. You can now sign in with your new password.</p>
+				{#if isSynvyaManaged && loginUrl.startsWith('http')}
+					<a href={loginUrl} class="btn-primary">Sign in</a>
+				{:else}
+					<a href={loginUrl} class="btn-primary">Sign in</a>
+				{/if}
 			</div>
-			<a href={loginUrl} class="btn-primary">Request New Link</a>
 		{:else}
-			<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-				<div class="form-group">
-					<label for="password">New Password</label>
-					<input
-						id="password"
-						type="password"
-						bind:value={password}
-						placeholder="At least 8 characters"
-						required
-						minlength="8"
-						disabled={isLoading}
-					/>
-				</div>
+			<div class="auth-copy">
+				<h1>{isSynvyaManaged ? 'Set new password' : 'Reset Password'}</h1>
+				<p class="subtitle">{isSynvyaManaged ? 'Enter your new password below.' : 'Enter your new password'}</p>
+			</div>
 
-				<div class="form-group">
-					<label for="confirmPassword">Confirm Password</label>
-					<input
-						id="confirmPassword"
-						type="password"
-						bind:value={confirmPassword}
-						placeholder="Confirm your password"
-						required
-						minlength="8"
-						disabled={isLoading}
-					/>
+			{#if !token}
+				<div class="error-message">
+					<p>Invalid or missing reset token.</p>
+					<p>Please request a new password reset link.</p>
 				</div>
+				<a href={loginUrl} class="btn-primary">Request New Link</a>
+			{:else}
+				<form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
+					<div class="form-group">
+						<label for="password">New Password</label>
+						<input
+							id="password"
+							type="password"
+							bind:value={password}
+							placeholder="At least 8 characters"
+							required
+							minlength="8"
+							disabled={isLoading}
+						/>
+					</div>
 
-				<button type="submit" class="btn-primary" disabled={isLoading}>
-					{isLoading ? 'Resetting...' : 'Reset Password'}
-				</button>
-			</form>
+					<div class="form-group">
+						<label for="confirmPassword">Confirm Password</label>
+						<input
+							id="confirmPassword"
+							type="password"
+							bind:value={confirmPassword}
+							placeholder="Confirm your password"
+							required
+							minlength="8"
+							disabled={isLoading}
+						/>
+					</div>
+
+					<button type="submit" class="btn-primary" disabled={isLoading}>
+						{isLoading ? 'Resetting...' : 'Reset Password'}
+					</button>
+				</form>
+			{/if}
+
+			<p class="auth-link">
+				<a href={loginUrl}>Back to Login</a>
+			</p>
 		{/if}
-
-		<p class="auth-link">
-			<a href={loginUrl}>Back to Login</a>
-		</p>
 	</div>
 </div>
 
@@ -397,6 +415,38 @@
 		background: #fef2f2;
 		border-color: #fecaca;
 		color: #b91c1c;
+	}
+
+	.success-notice {
+		text-align: center;
+		padding: 1rem 0;
+	}
+
+	.success-notice .notice-icon {
+		display: flex;
+		justify-content: center;
+		margin-bottom: 1rem;
+	}
+
+	.success-notice .notice-icon.success {
+		color: var(--color-divine-green);
+	}
+
+	.synvya-container .success-notice .notice-icon.success {
+		color: #22c55e;
+	}
+
+	.success-notice h1 {
+		margin-bottom: 0.5rem;
+	}
+
+	.success-notice .subtitle {
+		margin-bottom: 1.5rem;
+	}
+
+	.synvya-container .success-notice .subtitle {
+		color: #64748b;
+		margin-bottom: 1.5rem;
 	}
 
 	@media (max-width: 640px) {
