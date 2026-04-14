@@ -943,6 +943,19 @@ pub struct AdminAuthorization {
     pub updated_at: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct AuthorizationRow {
+    id: i32,
+    label: Option<String>,
+    bunker_public_key: String,
+    relays: String,
+    connected_client_pubkey: Option<String>,
+    connected_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Return all teams the user is a member of, with the team-owned stored (restaurant)
 /// keys and their authorizations. Support admin only. Tenant-scoped.
 pub async fn get_user_teams(
@@ -998,17 +1011,7 @@ pub async fn get_user_teams(
         let mut restaurant_keys = Vec::with_capacity(key_rows.len());
 
         for (key_id, key_name, key_pubkey, key_created_at) in key_rows {
-            let auth_rows: Vec<(
-                i32,
-                Option<String>,
-                String,
-                String,
-                Option<String>,
-                Option<chrono::DateTime<chrono::Utc>>,
-                Option<chrono::DateTime<chrono::Utc>>,
-                chrono::DateTime<chrono::Utc>,
-                chrono::DateTime<chrono::Utc>,
-            )> = sqlx::query_as(
+            let auth_rows: Vec<AuthorizationRow> = sqlx::query_as(
                 "SELECT id, label, bunker_public_key, relays, connected_client_pubkey,
                         connected_at, expires_at, created_at, updated_at
                  FROM authorizations
@@ -1023,33 +1026,21 @@ pub async fn get_user_teams(
 
             let authorizations = auth_rows
                 .into_iter()
-                .map(
-                    |(
-                        id,
-                        label,
-                        bunker_public_key,
-                        relays_json,
-                        connected_client_pubkey,
-                        connected_at,
-                        expires_at,
-                        created_at,
-                        updated_at,
-                    )| {
-                        let relays: Vec<String> =
-                            serde_json::from_str(&relays_json).unwrap_or_default();
-                        AdminAuthorization {
-                            id,
-                            label,
-                            bunker_public_key,
-                            relays,
-                            connected_client_pubkey,
-                            connected_at: connected_at.map(|d| d.to_rfc3339()),
-                            expires_at: expires_at.map(|d| d.to_rfc3339()),
-                            created_at: created_at.to_rfc3339(),
-                            updated_at: updated_at.to_rfc3339(),
-                        }
-                    },
-                )
+                .map(|row| {
+                    let relays: Vec<String> =
+                        serde_json::from_str(&row.relays).unwrap_or_default();
+                    AdminAuthorization {
+                        id: row.id,
+                        label: row.label,
+                        bunker_public_key: row.bunker_public_key,
+                        relays,
+                        connected_client_pubkey: row.connected_client_pubkey,
+                        connected_at: row.connected_at.map(|d| d.to_rfc3339()),
+                        expires_at: row.expires_at.map(|d| d.to_rfc3339()),
+                        created_at: row.created_at.to_rfc3339(),
+                        updated_at: row.updated_at.to_rfc3339(),
+                    }
+                })
                 .collect();
 
             restaurant_keys.push(AdminRestaurantKey {
