@@ -1824,9 +1824,15 @@
 	}
 
 	.support-page.synvya-admin .team-card,
-	.support-page.synvya-admin .auth-card {
+	.support-page.synvya-admin .auth-card,
+	.support-page.synvya-admin .auth-group {
 		background: #ffffff;
 		border-color: #e2e8e6;
+	}
+
+	.support-page.synvya-admin .auth-sub-label,
+	.support-page.synvya-admin .auth-count-badge {
+		color: #4b5e5a;
 	}
 
 	.support-page.synvya-admin .restaurant-block {
