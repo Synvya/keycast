@@ -201,6 +201,8 @@ Optional:
 - `SQLX_POOL_SIZE`: Database connection pool size (should match Cloud Run concurrency, default: `50`)
 - `VITE_ALLOWED_PUBKEYS`: Comma-separated pubkeys for whitelist access (web frontend)
 - `ENABLE_EXAMPLES`: Enable `/examples` directory serving (default: `false`, set to `true` for development)
+- `DISABLE_WEB_UI`: Disable the SvelteKit web frontend (default: `false`). When `true`, non-API requests return 404 or redirect to `WEB_UI_REDIRECT_URL`. Use for deployments (e.g. Synvya) where end users should not access a keycast personal UI. `/api/*`, `/.well-known/*`, `/health*`, and the server-rendered `/api/oauth/authorize` approval page remain available.
+- `WEB_UI_REDIRECT_URL`: When `DISABLE_WEB_UI=true`, redirect non-API requests to this URL (e.g. `https://synvya.com`). If unset, non-API requests return 404.
 
 Development (`.env` in `/web`):
 - `VITE_ALLOWED_PUBKEYS`: Comma-separated pubkeys for dev access
