@@ -730,65 +730,96 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    // SvelteKit frontend - explicitly handle root and index.html with injection
-    // This ensures index.html always goes through injection, not served as static file
-    let index_path = PathBuf::from(&web_build_dir).join("index.html");
-    let index_path_for_root = index_path.clone();
-    let index_path_for_index = index_path.clone();
+    // SvelteKit frontend serving is optional.
+    //
+    // In deployments where end users should never see a keycast personal UI
+    // (e.g. Synvya, where identity is managed by the parent product and keycast
+    // only needs to expose its OAuth/API surface), set DISABLE_WEB_UI=true.
+    // Non-API requests then redirect to WEB_UI_REDIRECT_URL (if set) or 404.
+    //
+    // /api/*, /.well-known/*, /health*, and the server-rendered
+    // /api/oauth/authorize approval page are unaffected.
+    let disable_web_ui = env::var("DISABLE_WEB_UI")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
 
-    // Handler that injects runtime env vars into index.html
-    let inject_handler = move || {
-        let index_path = index_path_for_root.clone();
-        async move {
-            match tokio::fs::read_to_string(&index_path).await {
-                Ok(content) => {
-                    // Inject runtime environment variables into HTML
-                    let injected_content = inject_runtime_env(&content);
-                    Html(injected_content).into_response()
-                }
-                Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+    let app = if disable_web_ui {
+        let redirect_url = env::var("WEB_UI_REDIRECT_URL").ok();
+        tracing::info!(
+            "✔︎ Web UI disabled (DISABLE_WEB_UI=true). Non-API requests will {}",
+            match &redirect_url {
+                Some(url) => format!("redirect to {}", url),
+                None => "return 404".to_string(),
             }
-        }
-    };
+        );
 
-    let inject_handler_index = move || {
-        let index_path = index_path_for_index.clone();
-        async move {
-            match tokio::fs::read_to_string(&index_path).await {
-                Ok(content) => {
-                    // Inject runtime environment variables into HTML
-                    let injected_content = inject_runtime_env(&content);
-                    Html(injected_content).into_response()
+        app.fallback(axum::routing::any(move || {
+            let redirect_url = redirect_url.clone();
+            async move {
+                match redirect_url {
+                    Some(url) => axum::response::Redirect::temporary(&url).into_response(),
+                    None => (StatusCode::NOT_FOUND, "Not found").into_response(),
                 }
-                Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
             }
-        }
-    };
+        }))
+    } else {
+        // SvelteKit frontend - explicitly handle root and index.html with injection
+        // This ensures index.html always goes through injection, not served as static file
+        let index_path = PathBuf::from(&web_build_dir).join("index.html");
+        let index_path_for_root = index_path.clone();
+        let index_path_for_index = index_path.clone();
 
-    // Explicitly route root and index.html to injection handler
-    let app = app
-        .route("/", axum::routing::get(inject_handler))
-        .route("/index.html", axum::routing::get(inject_handler_index));
-
-    // Serve other static files, with fallback for SPA routes (non-file routes)
-    let web_build_dir_for_fallback = web_build_dir.clone();
-    let index_path_for_fallback = PathBuf::from(&web_build_dir).join("index.html");
-    let app = app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::get(
-        move || {
-            let index_path = index_path_for_fallback.clone();
-            let _web_build_dir = web_build_dir_for_fallback.clone();
+        // Handler that injects runtime env vars into index.html
+        let inject_handler = move || {
+            let index_path = index_path_for_root.clone();
             async move {
                 match tokio::fs::read_to_string(&index_path).await {
                     Ok(content) => {
-                        // Inject runtime environment variables into HTML
                         let injected_content = inject_runtime_env(&content);
                         Html(injected_content).into_response()
                     }
                     Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
                 }
             }
-        },
-    )));
+        };
+
+        let inject_handler_index = move || {
+            let index_path = index_path_for_index.clone();
+            async move {
+                match tokio::fs::read_to_string(&index_path).await {
+                    Ok(content) => {
+                        let injected_content = inject_runtime_env(&content);
+                        Html(injected_content).into_response()
+                    }
+                    Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                }
+            }
+        };
+
+        let app = app
+            .route("/", axum::routing::get(inject_handler))
+            .route("/index.html", axum::routing::get(inject_handler_index));
+
+        // Serve other static files, with fallback for SPA routes (non-file routes)
+        let web_build_dir_for_fallback = web_build_dir.clone();
+        let index_path_for_fallback = PathBuf::from(&web_build_dir).join("index.html");
+        app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::get(
+            move || {
+                let index_path = index_path_for_fallback.clone();
+                let _web_build_dir = web_build_dir_for_fallback.clone();
+                async move {
+                    match tokio::fs::read_to_string(&index_path).await {
+                        Ok(content) => {
+                            let injected_content = inject_runtime_env(&content);
+                            Html(injected_content).into_response()
+                        }
+                        Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                    }
+                }
+            },
+        )))
+    };
 
     // Add request tracing with trace_id for debugging
     // TraceLayer creates a span for each request with method, uri, and trace_id

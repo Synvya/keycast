@@ -81,6 +81,10 @@ services:
       VITE_NDK_BUNKER_RELAYS: ${VITE_NDK_BUNKER_RELAYS:-}
       # Performance
       SQLX_POOL_SIZE: ${SQLX_POOL_SIZE:-10}
+      # Disable keycast web UI in Synvya deployments — users manage identity
+      # via Synvya, not via keycast. See issue #24.
+      DISABLE_WEB_UI: ${DISABLE_WEB_UI:-true}
+      WEB_UI_REDIRECT_URL: ${WEB_UI_REDIRECT_URL:-https://www.synvya.com}
     depends_on:
       postgres:
         condition: service_healthy
