@@ -50,6 +50,10 @@ pub struct InvitationPreview {
     pub role: String,
     pub invited_by_display_name: String,
     pub expires_at: DateTime<Utc>,
+    /// The email address the invitation was sent to. Returned so the client can
+    /// prefill and lock the email field on the signup/login forms, preventing
+    /// the "registered with a different email" → 403-at-accept-time footgun.
+    pub email: String,
 }
 
 /// Generate a cryptographically random invitation token (32 bytes, hex-encoded = 64 chars)

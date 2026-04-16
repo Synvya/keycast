@@ -187,13 +187,16 @@ Returns enough data for the client to render the invite landing page without aut
   "team_name": "Taqueria La Estrella",
   "role": "Member",
   "invited_by_display_name": "Alejandro",
-  "expires_at": "2026-04-19T..."
+  "expires_at": "2026-04-19T...",
+  "email": "muralirk@gmail.com"
 }
 ```
 
-Returns 404 if the token is invalid, expired, accepted, or revoked. The response intentionally omits the token itself (it's in the query string already) and the email (privacy — the link holder may not be the intended recipient).
+Returns 404 if the token is invalid, expired, accepted, or revoked. The response intentionally omits the token itself (it's already in the query string).
 
-**Security**: This endpoint leaks the team name and inviter name to anyone with the token. Since tokens are 256-bit random, this is acceptable. The token URL is only sent via email.
+The `email` field echoes the invitation's stored email so the client can prefill and lock the email field on the signup/login forms. This prevents the invitee from registering a Synvya account with a different address and hitting a 403 at `POST /api/invitations/accept`.
+
+**Security**: This endpoint leaks the team name, inviter name, and invited email to anyone holding the token. Since tokens are 256-bit random and only delivered via email, the token holder is already authorized to act on the invitation — echoing the email does not widen the threat model.
 
 ### 3.5 `POST /api/invitations/accept`
 
