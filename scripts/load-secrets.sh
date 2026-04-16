@@ -17,9 +17,11 @@ get_secret() {
 if [ "$ENV" = "staging" ]; then
     DOMAIN=auth.staging.synvya.com
     KMS_KEY_ID=alias/keycast-master-key
+    INVITE_BASE_URL=https://account.staging.synvya.com
 elif [ "$ENV" = "production" ]; then
     DOMAIN=auth.synvya.com
     KMS_KEY_ID=alias/synvya-production-keycast-masterkey
+    INVITE_BASE_URL=https://account.synvya.com
 else
     echo "Error: environment must be 'staging' or 'production'" >&2
     exit 1
@@ -40,6 +42,7 @@ BUNKER_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.snort.social
 ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS
 BASE_URL=https://$DOMAIN
 APP_URL=https://$DOMAIN
+INVITE_BASE_URL=$INVITE_BASE_URL
 VITE_DOMAIN=https://$DOMAIN
 FROM_EMAIL=noreply@synvya.com
 FROM_NAME=Synvya

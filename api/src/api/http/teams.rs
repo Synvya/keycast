@@ -801,6 +801,7 @@ pub async fn preview_invitation(
         role: invitation.role,
         invited_by_display_name: inviter_name,
         expires_at: invitation.expires_at,
+        email: invitation.email,
     }))
 }
 
