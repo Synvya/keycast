@@ -74,6 +74,9 @@ services:
       BASE_URL: ${BASE_URL:?error}
       APP_URL: ${APP_URL:?error}
       INVITE_BASE_URL: ${INVITE_BASE_URL:?error}
+      # Synvya hosts the password reset page on a different domain
+      # (account.synvya.com / account.staging.synvya.com) from the auth host.
+      PASSWORD_RESET_BASE_URL: ${PASSWORD_RESET_BASE_URL:?error}
       DISABLE_EMAILS:
       # Frontend
       VITE_DOMAIN: ${VITE_DOMAIN:-}

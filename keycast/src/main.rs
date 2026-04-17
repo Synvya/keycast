@@ -754,15 +754,37 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
             }
         );
 
-        app.fallback(axum::routing::any(move || {
-            let redirect_url = redirect_url.clone();
+        // Email verification links land on /verify-email, a SvelteKit SPA route.
+        // Even in DISABLE_WEB_UI deployments we must serve this page (plus its JS/CSS
+        // assets) so the client can POST the token to /api/auth/verify-email.
+        let index_path = PathBuf::from(&web_build_dir).join("index.html");
+        let verify_index_path = index_path.clone();
+        let verify_email_handler = move || {
+            let index_path = verify_index_path.clone();
             async move {
-                match redirect_url {
-                    Some(url) => axum::response::Redirect::temporary(&url).into_response(),
-                    None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                match tokio::fs::read_to_string(&index_path).await {
+                    Ok(content) => Html(inject_runtime_env(&content)).into_response(),
+                    Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
                 }
             }
-        }))
+        };
+
+        let app = app.route("/verify-email", axum::routing::get(verify_email_handler));
+
+        // Serve SvelteKit static assets (/_app/*, favicon, logos) needed by the
+        // verify-email page; unmatched routes redirect to WEB_UI_REDIRECT_URL.
+        let redirect_url_for_fallback = redirect_url.clone();
+        app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::any(
+            move || {
+                let redirect_url = redirect_url_for_fallback.clone();
+                async move {
+                    match redirect_url {
+                        Some(url) => axum::response::Redirect::temporary(&url).into_response(),
+                        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                    }
+                }
+            },
+        )))
     } else {
         // SvelteKit frontend - explicitly handle root and index.html with injection
         // This ensures index.html always goes through injection, not served as static file

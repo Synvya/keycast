@@ -53,6 +53,16 @@ pub trait EmailSender: Send + Sync {
     }
 }
 
+/// Resolve the base URL used in password reset links.
+///
+/// Defaults to `BASE_URL` but may be overridden via `PASSWORD_RESET_BASE_URL`
+/// when the password reset page is hosted on a different domain than the
+/// rest of the email flow (e.g. Synvya deployments host the reset form on
+/// `account.synvya.com` while verification stays on `auth.synvya.com`).
+fn password_reset_base_url(default: &str) -> String {
+    env::var("PASSWORD_RESET_BASE_URL").unwrap_or_else(|_| default.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Shared email templates (used by SendGrid, SES, and any future providers)
 // ---------------------------------------------------------------------------
@@ -198,6 +208,7 @@ fn team_invite_text(team_name: &str, inviter_name: &str, role: &str, invite_url:
 /// Development email sender - logs URLs to console and captures emails for testing
 pub struct DevEmailSender {
     base_url: String,
+    password_reset_base_url: String,
     captured: Arc<Mutex<Vec<CapturedEmail>>>,
 }
 
@@ -206,15 +217,18 @@ impl DevEmailSender {
         let base_url = env::var("BASE_URL")
             .or_else(|_| env::var("APP_URL"))
             .unwrap_or_else(|_| "http://localhost:5173".to_string());
+        let password_reset_base_url = password_reset_base_url(&base_url);
 
         tracing::info!("===========================================");
         tracing::info!("  EMAIL SERVICE: Development Mode");
         tracing::info!("  Emails will be logged to console");
         tracing::info!("  Base URL: {}", base_url);
+        tracing::info!("  Password reset base URL: {}", password_reset_base_url);
         tracing::info!("===========================================");
 
         Self {
             base_url,
+            password_reset_base_url,
             captured: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -279,7 +293,10 @@ impl EmailSender for DevEmailSender {
         to_email: &str,
         reset_token: &str,
     ) -> Result<(), String> {
-        let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
+        let reset_url = format!(
+            "{}/reset-password?token={}",
+            self.password_reset_base_url, reset_token
+        );
 
         tracing::info!("");
         tracing::info!("==================================================");
@@ -449,6 +466,7 @@ pub struct SendGridEmailSender {
     from_email: String,
     from_name: String,
     base_url: String,
+    password_reset_base_url: String,
 }
 
 impl SendGridEmailSender {
@@ -459,14 +477,19 @@ impl SendGridEmailSender {
         let base_url = env::var("BASE_URL")
             .or_else(|_| env::var("APP_URL"))
             .unwrap_or_else(|_| "http://localhost:5173".to_string());
+        let password_reset_base_url = password_reset_base_url(&base_url);
 
-        tracing::info!("Email service initialized with SendGrid");
+        tracing::info!(
+            "Email service initialized with SendGrid (reset base URL: {})",
+            password_reset_base_url
+        );
 
         Self {
             api_key,
             from_email,
             from_name,
             base_url,
+            password_reset_base_url,
         }
     }
 
@@ -564,7 +587,10 @@ impl EmailSender for SendGridEmailSender {
         to_email: &str,
         reset_token: &str,
     ) -> Result<(), String> {
-        let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
+        let reset_url = format!(
+            "{}/reset-password?token={}",
+            self.password_reset_base_url, reset_token
+        );
         let subject = "Reset your Synvya password";
         let html = password_reset_html(&reset_url);
         let text = password_reset_text(&reset_url);
@@ -606,6 +632,7 @@ pub struct SesEmailSender {
     from_email: String,
     from_name: String,
     base_url: String,
+    password_reset_base_url: String,
 }
 
 #[cfg(feature = "aws")]
@@ -626,11 +653,13 @@ impl SesEmailSender {
         let base_url = env::var("BASE_URL")
             .or_else(|_| env::var("APP_URL"))
             .unwrap_or_else(|_| "http://localhost:5173".to_string());
+        let password_reset_base_url = password_reset_base_url(&base_url);
 
         tracing::info!(
-            "AWS SES email sender initialized (region: {}, from: {})",
+            "AWS SES email sender initialized (region: {}, from: {}, reset base URL: {})",
             region,
-            from_email
+            from_email,
+            password_reset_base_url
         );
 
         Ok(Self {
@@ -638,6 +667,7 @@ impl SesEmailSender {
             from_email,
             from_name,
             base_url,
+            password_reset_base_url,
         })
     }
 
@@ -735,7 +765,10 @@ impl EmailSender for SesEmailSender {
         to_email: &str,
         reset_token: &str,
     ) -> Result<(), String> {
-        let reset_url = format!("{}/reset-password?token={}", self.base_url, reset_token);
+        let reset_url = format!(
+            "{}/reset-password?token={}",
+            self.password_reset_base_url, reset_token
+        );
         let subject = "Reset your Synvya password";
         let html = password_reset_html(&reset_url);
         let text = password_reset_text(&reset_url);
