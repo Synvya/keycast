@@ -201,8 +201,9 @@ Optional:
 - `SQLX_POOL_SIZE`: Database connection pool size (should match Cloud Run concurrency, default: `50`)
 - `VITE_ALLOWED_PUBKEYS`: Comma-separated pubkeys for whitelist access (web frontend)
 - `ENABLE_EXAMPLES`: Enable `/examples` directory serving (default: `false`, set to `true` for development)
-- `DISABLE_WEB_UI`: Disable the SvelteKit web frontend (default: `false`). When `true`, non-API requests return 404 or redirect to `WEB_UI_REDIRECT_URL`. Use for deployments (e.g. Synvya) where end users should not access a keycast personal UI. `/api/*`, `/.well-known/*`, `/health*`, and the server-rendered `/api/oauth/authorize` approval page remain available.
+- `DISABLE_WEB_UI`: Disable the SvelteKit web frontend (default: `false`). When `true`, non-API requests return 404 or redirect to `WEB_UI_REDIRECT_URL`. Use for deployments (e.g. Synvya) where end users should not access a keycast personal UI. `/api/*`, `/.well-known/*`, `/health*`, `/verify-email` (plus the `/_app/*` static assets it needs), and the server-rendered `/api/oauth/authorize` approval page remain available.
 - `WEB_UI_REDIRECT_URL`: When `DISABLE_WEB_UI=true`, redirect non-API requests to this URL (e.g. `https://synvya.com`). If unset, non-API requests return 404.
+- `PASSWORD_RESET_BASE_URL`: Base URL used when constructing password reset links in emails (default: `BASE_URL`). Set when the reset page is hosted on a different domain than `BASE_URL` — e.g. Synvya sets this to `https://account.synvya.com` in production and `https://account.staging.synvya.com` in staging, so the link points at the Synvya-hosted reset form that POSTs to keycast's `/api/auth/reset-password`.
 
 Development (`.env` in `/web`):
 - `VITE_ALLOWED_PUBKEYS`: Comma-separated pubkeys for dev access
