@@ -47,8 +47,16 @@ pub struct InvitationListItem {
 #[derive(Debug, Serialize)]
 pub struct InvitationPreview {
     pub team_name: String,
+    /// Hex pubkey of the team's primary stored key. `None` if the team has no
+    /// stored keys yet. Lets the client fetch the team's kind-0 profile from
+    /// relays to render a display name and avatar instead of the raw team_name.
+    pub team_key_pubkey: Option<String>,
     pub role: String,
     pub invited_by_display_name: String,
+    /// Email address of the inviter (Keycast user). `None` if the inviter's
+    /// account is missing an email. Lets the client render a human-readable
+    /// "invited you" line instead of a truncated pubkey.
+    pub invited_by_email: Option<String>,
     pub expires_at: DateTime<Utc>,
     /// The email address the invitation was sent to. Returned so the client can
     /// prefill and lock the email field on the signup/login forms, preventing

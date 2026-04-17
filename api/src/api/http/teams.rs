@@ -793,13 +793,34 @@ pub async fn preview_invitation(
     let team_repo = TeamRepository::new(pool.clone());
     let team = team_repo.find(tenant_id, invitation.team_id).await?;
 
-    // Resolve inviter display name
+    // Resolve team's primary stored key pubkey (deterministic: earliest id wins).
+    // `None` if the team has no stored keys — keeps field shape stable for clients.
+    let team_key_pubkey: Option<String> = sqlx::query_scalar(
+        "SELECT pubkey FROM stored_keys
+         WHERE tenant_id = $1 AND team_id = $2
+         ORDER BY id ASC
+         LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(invitation.team_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Failed to load team key: {}", e)))?;
+
+    // Resolve inviter display name and email
     let inviter_name = resolve_display_name(&pool, &invitation.invited_by, tenant_id).await;
+    let user_repo = UserRepository::new(pool.clone());
+    let invited_by_email = user_repo
+        .get_email(&invitation.invited_by, tenant_id)
+        .await
+        .ok();
 
     Ok(Json(InvitationPreview {
         team_name: team.name,
+        team_key_pubkey,
         role: invitation.role,
         invited_by_display_name: inviter_name,
+        invited_by_email,
         expires_at: invitation.expires_at,
         email: invitation.email,
     }))
