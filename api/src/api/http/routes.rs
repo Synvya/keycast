@@ -289,7 +289,7 @@ pub fn api_routes(
         .merge(signing_routes.layer(public_cors.clone()))
         .merge(nostr_rpc_routes.layer(public_cors.clone())) // NIP-46 RPC for OAuth apps
         .merge(team_routes.layer(auth_cors.clone())) // Team routes need credentials
-        .merge(invitation_preview_route.layer(public_cors.clone())) // Public - preview invite without auth
+        .merge(invitation_preview_route.layer(auth_cors.clone())) // Auth CORS - token-gated but clients may send credentials
         .merge(invitation_accept_route.layer(auth_cors.clone())) // Auth - accept invite needs session
         .merge(discovery_route.layer(public_cors.clone()))
         .merge(policy_routes.layer(public_cors.clone())) // Public - available to third-party OAuth apps
