@@ -185,8 +185,10 @@ Returns enough data for the client to render the invite landing page without aut
 ```json
 {
   "team_name": "Taqueria La Estrella",
+  "team_key_pubkey": "5e7f...",
   "role": "Member",
   "invited_by_display_name": "Alejandro",
+  "invited_by_email": "alejandro@synvya.com",
   "expires_at": "2026-04-19T...",
   "email": "muralirk@gmail.com"
 }
@@ -196,7 +198,11 @@ Returns 404 if the token is invalid, expired, accepted, or revoked. The response
 
 The `email` field echoes the invitation's stored email so the client can prefill and lock the email field on the signup/login forms. This prevents the invitee from registering a Synvya account with a different address and hitting a 403 at `POST /api/invitations/accept`.
 
-**Security**: This endpoint leaks the team name, inviter name, and invited email to anyone holding the token. Since tokens are 256-bit random and only delivered via email, the token holder is already authorized to act on the invitation — echoing the email does not widen the threat model.
+The `team_key_pubkey` field is the hex pubkey of the team's primary stored key (the signer behind the team's Nostr identity). The client uses it to fetch the team's kind-0 profile from relays and render a display name + avatar instead of the raw `team_name` handle. `null` if the team has no stored key yet.
+
+The `invited_by_email` field is the inviter's Keycast user email. Lets the client render `"alejandro@synvya.com invited you to join..."` instead of a truncated pubkey. `null` if the inviter's account has no email on file.
+
+**Security**: This endpoint leaks the team name, team signing pubkey, inviter name, inviter email, and invited email to anyone holding the token. Since tokens are 256-bit random and only delivered via email, the token holder is already authorized to act on the invitation. Exposing `invited_by_email` is acceptable in this flow — the inviter explicitly chose to invite this person — but is a deliberate widening relative to the prior response shape.
 
 ### 3.5 `POST /api/invitations/accept`
 
