@@ -302,7 +302,88 @@ let invitation_accept_route = Router::new()
 - The claim-token system (`/claim`, `/admin/claim-tokens`) is separate — it's for Vine-imported preloaded accounts, not team invitations.
 - The `EmailSender` trait gains one new method; existing email types are untouched.
 
-## 9. Implementation Order
+## 9. Team Member Email in Roster Responses
+
+Follow-on to the invitation flow. Once a member joins (either instantly via the "added" branch of `POST /teams/:id/invite` or after accepting an invitation), the client's Team Settings view needs to identify them by email instead of by truncated pubkey. See the client-side spec [§ 9](https://github.com/Synvya/client/blob/main/docs/specs/team-invite-by-email.md) for the UI rendering.
+
+### 9.1 Scope
+
+Extend the `TeamUser` serialization returned by team-membership endpoints to include the member's email. No new endpoints, no new permissions, no new auth surface.
+
+### 9.2 Wire Change
+
+Add `email` to every response that currently serializes `TeamUser`:
+
+```json
+{
+  "team_id": 5,
+  "user_pubkey": "abc...",
+  "role": "Admin",
+  "email": "manager@restaurant.com",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+Affected endpoints (all already team-admin or team-member authenticated):
+
+| Endpoint | Where `TeamUser` appears |
+|---|---|
+| `GET /api/teams` | `team_users[]` inside each team |
+| `POST /api/teams/:id/users` | Response body |
+| `POST /api/teams/:id/invite` | `member` field of `{ status: "added", member: ... }` |
+| `GET /api/teams/:id/keys/:pubkey` | Indirectly if membership is echoed (verify per-handler) |
+
+### 9.3 Source of the Email
+
+The team_users row stores `user_pubkey`. The user's email lives on the `users` (or equivalent account) table keyed by pubkey. Serializing `TeamUser` requires a JOIN `team_users → users` or a batched lookup in the handler.
+
+Implementation note: where roster serialization is in a hot path (e.g. `GET /api/teams` for a user on many teams), a single JOIN at the SQL level is cheaper than N lookups in Rust.
+
+### 9.4 Privacy and Authorization
+
+- Callers already prove team membership to reach these endpoints; no new authorization layer is required.
+- Adding `email` to this surface does **not** widen the audience: everyone who currently sees the roster already sees the pubkey. Email is the same trust scope.
+- The privacy boundary is the team. Do not surface emails via any endpoint that returns team membership to non-members (if such an endpoint ever exists, it must strip `email`).
+
+### 9.5 Rust Type Change
+
+```rust
+// Whichever module defines the serialization DTO for team membership:
+
+#[derive(Serialize)]
+pub struct TeamUserResponse {
+    pub team_id: i32,
+    pub user_pubkey: String,
+    pub role: String,           // "Admin" | "Member"
+    pub email: String,          // ← new
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+Repository method (or query builder) adjusted to fetch email alongside membership.
+
+### 9.6 Back-compat
+
+The field is additive. Older clients that don't know about `email` will ignore it. The current client (pre-release of this change) already tolerates the old shape; post-release it prefers `email` and falls back to the short npub label if absent.
+
+### 9.7 Edge Cases
+
+| Scenario | Behavior |
+|---|---|
+| Member account deleted but team_users row lingers | Should not happen if CASCADE is in place; if it does, serialize with empty email (or filter the row out — whichever matches existing invariants). |
+| User has no email (claim-token-only account) | Serialize empty string. Client falls back to npub label. |
+| Tenant isolation | Email lookup must respect the same tenant boundary as the existing `users` query — never cross tenants. |
+
+### 9.8 Tests
+
+- Repository/query test: roster fetch returns email populated for a normal user.
+- Handler test: `GET /api/teams` response snapshot includes `email` on each `team_users` entry.
+- Handler test: `POST /api/teams/:id/invite` "added" branch response includes `email` on `member`.
+- Tenant isolation test: a user's email from tenant A never appears in tenant B's roster response.
+
+## 10. Implementation Order
 
 1. Migration: create `team_invitations` table
 2. Core: `TeamInvitation` type + `TeamInvitationRepository`
