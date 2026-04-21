@@ -121,7 +121,7 @@ jobs:
         env:
           AWS_SES_TEST_RECIPIENT: ${{ vars.AWS_SES_TEST_RECIPIENT }}
           FROM_EMAIL: ${{ vars.AWS_SES_FROM_EMAIL || 'noreply@divine.video' }}
-          FROM_NAME: ${{ vars.AWS_SES_FROM_NAME || 'diVine' }}
+          FROM_NAME: ${{ vars.AWS_SES_FROM_NAME || 'Synvya' }}
           BASE_URL: https://example.com
         run: |
           cargo test -p keycast_api --features aws --test aws_ses_test -- --test-threads=1

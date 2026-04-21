@@ -1207,7 +1207,7 @@ pub async fn authorize_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <img src="/divine-logo.svg" alt="diVine" />
+                <img src="/synvya-logo.svg" alt="Synvya" />
                 <span class="logo-sub">Login</span>
             </div>
             <h1>Authorize App</h1>
@@ -1238,7 +1238,7 @@ pub async fn authorize_get(
             </div>
 
             <p class="disclaimer">
-                By authorizing, you agree to diVine's <a href="https://divine.video/terms" target="_blank">terms</a> and <a href="https://divine.video/privacy" target="_blank">privacy policy</a>.
+                By authorizing, you agree to Synvya's <a href="https://divine.video/terms" target="_blank">terms</a> and <a href="https://divine.video/privacy" target="_blank">privacy policy</a>.
             </p>
 
             <div class="buttons">
@@ -1491,7 +1491,7 @@ pub async fn authorize_get(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sign in - diVine Login</title>
+    <title>Sign in - Synvya Login</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
@@ -1801,7 +1801,7 @@ pub async fn authorize_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <img src="/divine-logo.svg" alt="diVine" />
+                <img src="/synvya-logo.svg" alt="Synvya" />
                 <span class="logo-sub">Login</span>
             </div>
             <h1>Sign in</h1>
@@ -1918,11 +1918,11 @@ pub async fn authorize_get(
             if (form === 'login') {{
                 document.getElementById('login_view').classList.add('active');
                 if (headerTitle) headerTitle.textContent = 'Sign in';
-                document.title = 'Sign in - diVine Login';
+                document.title = 'Sign in - Synvya Login';
             }} else {{
                 document.getElementById('register_view').classList.add('active');
                 if (headerTitle) headerTitle.textContent = 'Create account';
-                document.title = 'Create account - diVine Login';
+                document.title = 'Create account - Synvya Login';
             }}
 
             hideError();
@@ -3391,7 +3391,7 @@ pub async fn connect_get(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Authorize Connection - diVine Login</title>
+    <title>Authorize Connection - Synvya Login</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
@@ -3613,7 +3613,7 @@ pub async fn connect_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <img src="/divine-logo.svg" alt="diVine" />
+                <img src="/synvya-logo.svg" alt="Synvya" />
                 <span class="logo-sub">Login</span>
             </div>
             <h1>Authorize Connection</h1>
@@ -3635,7 +3635,7 @@ pub async fn connect_get(
         </div>
 
         <div class="warning">
-            This will allow the app to sign events on your behalf using your diVine-managed keys.
+            This will allow the app to sign events on your behalf using your Synvya-managed keys.
         </div>
 
         <form method="POST" action="/api/oauth/connect">

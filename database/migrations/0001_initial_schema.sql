@@ -627,7 +627,7 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 INSERT INTO tenants (id, domain, name, created_at, updated_at)
-VALUES (1, 'login.divine.video', 'diVine', NOW(), NOW())
+VALUES (1, 'login.divine.video', 'Synvya', NOW(), NOW())
 ON CONFLICT DO NOTHING;
 
 -- Fix sequence after explicit ID insert

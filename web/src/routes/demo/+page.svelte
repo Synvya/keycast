@@ -22,13 +22,8 @@
 
   // Configuration
   const SERVER_URL = getViteDomain();
-  const CLIENT_ID = "diVine Login Demo";
-  console.log(
-    "SERVER_URL:",
-    SERVER_URL,
-    "VITE_DOMAIN:",
-    getViteDomain(),
-  );
+  const CLIENT_ID = "Synvya Login Demo";
+  console.log("SERVER_URL:", SERVER_URL, "VITE_DOMAIN:", getViteDomain());
 
   // Create Keycast client (initialized in onMount for SSR safety)
   let client: ReturnType<typeof createKeycastClient> | null = null;
@@ -437,7 +432,7 @@
       <p class="hint-text">
         To test the OAuth approval flow again, first <a
           href="/"
-          class="text-link">revoke the "diVine Login Demo" authorization</a
+          class="text-link">revoke the "Synvya Login Demo" authorization</a
         > in your dashboard, then click Disconnect above.
       </p>
 
@@ -793,7 +788,6 @@ const signed = await signer.signEvent(unsignedEvent);</code
     background: var(--color-divine-surface);
     border-color: var(--color-divine-text-tertiary);
   }
-
 
   .btn-ghost {
     background: transparent;

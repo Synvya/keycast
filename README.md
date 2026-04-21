@@ -197,7 +197,7 @@ For detailed instructions on environment management, native development, and tes
 |----------|---------|-------------|
 | `SENDGRID_API_KEY` | *(none)* | If set, uses SendGrid; otherwise logs emails to console |
 | `FROM_EMAIL` | `noreply@keycast.app` | Sender email address |
-| `FROM_NAME` | `diVine` | Sender display name |
+| `FROM_NAME` | `Synvya` | Sender display name |
 | `BASE_URL` | `https://login.divine.video` | Base URL for email verification links |
 | `DISABLE_EMAILS` | *(none)* | If set (any value), skips sending emails |
 

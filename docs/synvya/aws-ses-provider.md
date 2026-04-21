@@ -57,7 +57,7 @@ pub trait EmailSender: Send + Sync {
 
 - Templates are hardcoded HTML/text strings in Rust (not external template files)
 - Click tracking and open tracking are **disabled** for security-sensitive emails
-- From address configurable via `FROM_EMAIL` (default: `noreply@divine.video`) and `FROM_NAME` (default: `diVine`)
+- From address configurable via `FROM_EMAIL` (default: `noreply@divine.video`) and `FROM_NAME` (default: `Synvya`)
 - Base URL for links configurable via `BASE_URL` (verification/reset) and `APP_URL` (claim)
 - Brand color: `#00B488`
 
@@ -136,7 +136,7 @@ impl SesEmailSender {
         let client = SesClient::new(&config);
 
         let from_email = env::var("FROM_EMAIL").unwrap_or_else(|_| "noreply@divine.video".to_string());
-        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "diVine".to_string());
+        let from_name = env::var("FROM_NAME").unwrap_or_else(|_| "Synvya".to_string());
         let base_url = env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:5173".to_string());
         let app_url = env::var("APP_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
 

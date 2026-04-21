@@ -159,7 +159,7 @@
 	<div class="auth-container">
 		<!-- Logo/Branding -->
 		<a href="/" class="auth-branding">
-			<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
+			<img src="/synvya-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
 			<span class="auth-logo-sub">Login</span>
 		</a>
 
