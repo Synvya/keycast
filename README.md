@@ -160,25 +160,26 @@ POST to `/api/nostr` with `Authorization: Bearer <access_token>`:
 | `nip44_encrypt` / `nip44_decrypt` | NIP-44 encryption |
 | `nip04_encrypt` / `nip04_decrypt` | NIP-04 encryption |
 
-## Self-Hosting
+## Development & Self-Hosting
+
+The fastest way to get started is using the provided `Makefile`.
 
 ```bash
 git clone https://github.com/ArcadeLabsInc/keycast.git
 cd keycast
-bun install
 
-# Generate encryption key
-bun run key:generate
+# 1. Interactive setup (generates keys, .env.local, etc.)
+make setup
 
-# Configure environment
-cp .env.example .env
-# Edit DATABASE_URL, SERVER_NSEC, ALLOWED_ORIGINS
+# 2. Run with Docker
+make docker-build
+make docker-up
 
-# Run with Docker
-docker compose up -d --build
+# 3. Run tests
+make test
 ```
 
-See [DEVELOPMENT.md](./docs/DEVELOPMENT.md) for local development setup.
+For detailed instructions on environment management, native development, and testing architecture, see **[build.README.md](./build.README.md)**.
 
 ### Environment Variables
 

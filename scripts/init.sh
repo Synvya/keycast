@@ -7,19 +7,20 @@ chmod +x "$0"
 
 # Function to print usage
 print_usage() {
-    echo "Usage: $0 --domain <domain> [--allowed-pubkeys <pubkeys>]"
+    echo "Usage: $0 --domain <domain> [--allowed-pubkeys <pubkeys>] [--file <filename>]"
     echo "Example:"
     echo "  $0 --domain keycast.example.com"
-    echo "  $0 --domain keycast.example.com --allowed-pubkeys \"hexpubkey1,hexpubkey2\""
-    echo "If you don't provide allowed pubkeys, the default is to allow all pubkeys."
+    echo "  $0 --domain keycast.example.com --file .env.local"
     exit 1
 }
 
 # Parse named arguments
+ENV_FILE=".env"
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --domain) DOMAIN="$2"; shift ;;
         --allowed-pubkeys) ALLOWED_PUBKEYS="$2"; shift ;;
+        --file) ENV_FILE="$2"; shift ;;
         *) echo "Unknown parameter: $1"; print_usage ;;
     esac
     shift
@@ -50,30 +51,30 @@ fi
 # Create database directory if it doesn't exist
 mkdir -p database
 
-# Create .env from example if it doesn't exist
-if [ ! -f ".env" ]; then
-    echo "Creating .env file..."
-    cp .env.example .env
+# Create env file from example if it doesn't exist
+if [ ! -f "$ENV_FILE" ]; then
+    echo "Creating $ENV_FILE file..."
+    cp .env.example "$ENV_FILE"
 
-    # Update domain in .env file
+    # Update domain in environment file
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS requires an empty string after -i
-        sed -i '' "s/DOMAIN=.*/DOMAIN=$DOMAIN/" .env
+        sed -i '' "s/DOMAIN=.*/DOMAIN=$DOMAIN/" "$ENV_FILE"
         # Update allowed pubkeys (escape for sed)
         ESCAPED_PUBKEYS=$(echo "${ALLOWED_PUBKEYS:-}" | sed 's/[\/&]/\\&/g')
-        sed -i '' "s/ALLOWED_PUBKEYS=.*/ALLOWED_PUBKEYS=$ESCAPED_PUBKEYS/" .env
+        sed -i '' "s/ALLOWED_PUBKEYS=.*/ALLOWED_PUBKEYS=$ESCAPED_PUBKEYS/" "$ENV_FILE"
     else
         # Linux version
-        sed -i "s/DOMAIN=.*/DOMAIN=$DOMAIN/" .env
+        sed -i "s/DOMAIN=.*/DOMAIN=$DOMAIN/" "$ENV_FILE"
         # Update allowed pubkeys (escape for sed)
         ESCAPED_PUBKEYS=$(echo "${ALLOWED_PUBKEYS:-}" | sed 's/[\/&]/\\&/g')
-        sed -i "s/ALLOWED_PUBKEYS=.*/ALLOWED_PUBKEYS=$ESCAPED_PUBKEYS/" .env
+        sed -i "s/ALLOWED_PUBKEYS=.*/ALLOWED_PUBKEYS=$ESCAPED_PUBKEYS/" "$ENV_FILE"
     fi
-    echo "Updated DOMAIN in .env to: $DOMAIN"
-    echo "Updated ALLOWED_PUBKEYS in .env to: ${ALLOWED_PUBKEYS:-<empty>}"
+    echo "Updated DOMAIN in $ENV_FILE to: $DOMAIN"
+    echo "Updated ALLOWED_PUBKEYS in $ENV_FILE to: ${ALLOWED_PUBKEYS:-<empty>}"
 else
-    echo "Note: .env file already exists. Skipping .env creation."
-    echo "If you need to update the values, edit the .env file manually."
+    echo "Note: $ENV_FILE file already exists. Skipping file creation."
+    echo "If you need to update the values, edit the $ENV_FILE file manually."
 fi
 
 echo "✅ Initialization complete!"

@@ -32,7 +32,10 @@ api/oauth-ui/
 specs/
 examples/auth-flows-demo/
 
-# Machine-specific Kamal deployment (Pi homelab only, not for production)
+# Machine-specific Kamal deployment# Environment variables
+.env
+.env.*
+!.env.example
 config/deploy.yml
 .kamal/
 scripts/deploy-to-pi.sh
