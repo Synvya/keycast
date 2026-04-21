@@ -136,6 +136,13 @@ The testing workflow is designed for both speed and absolute isolation:
     - **Integration Tests**: These share the test database, so they are automatically serialized (`-j 1`) by the runner. This prevents "duplicate key" errors while maintaining the convenience of a single command.
 4.  **Credential Safety**: The test suite includes an `assert_test_database_url` guard that refuses to run if the database hostname looks like a production environment (e.g., Cloud SQL or GCP IPs).
 
+### Branding & Naming
+When updating rebranding the application (e.g., from "diVine" to "Synvya"), follow these rules:
+1.  **Code & UI**: You can safely rename strings in `.rs`, `.svelte`, and `.ts` files.
+2.  **Database Migrations**: **NEVER** edit existing migration files in `database/migrations/`. These files are checksummed; changing them will prevent the Docker environment from starting.
+    - Instead, create a **NEW** migration file to update existing data: `UPDATE tenants SET name = 'New Name' WHERE id = 1;`.
+3.  **Environment Variables**: Update `FROM_NAME` and other display-related variables in your `.env.local`.
+
 ### Code Quality Check (Formatting & Linting)
 ```bash
 bun run check

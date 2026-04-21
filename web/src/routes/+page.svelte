@@ -1927,7 +1927,7 @@
 	}
 
 	.landing-logo-img {
-		height: 36px;
+		height: 64px;
 	}
 
 	.landing-logo-sub {
