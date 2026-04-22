@@ -1,44 +1,46 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { toast } from 'svelte-hot-french-toast';
-	import { KeycastApi } from '$lib/keycast_api.svelte';
-	import { setCurrentUser } from '$lib/current_user.svelte';
-	import { BRAND } from '$lib/brand';
-	import { getLoginUrl } from '$lib/utils/env';
-	import { onMount } from 'svelte';
+	import { goto } from "$app/navigation";
+	import { toast } from "svelte-hot-french-toast";
+	import { KeycastApi } from "$lib/keycast_api.svelte";
+	import { setCurrentUser } from "$lib/current_user.svelte";
+	import { BRAND } from "$lib/brand";
+	import { getLoginUrl } from "$lib/utils/env";
+	import { onMount } from "svelte";
 
 	const api = new KeycastApi();
 	const loginUrl = getLoginUrl();
-	const isSynvyaManaged = loginUrl !== '/login';
-	const pageTitle = isSynvyaManaged ? 'Create Account - Synvya' : `Register - ${BRAND.name}`;
+	const isSynvyaManaged = loginUrl !== "/login";
+	const pageTitle = isSynvyaManaged
+		? "Create Account - Synvya"
+		: `Register - ${BRAND.name}`;
 	let hasExtension = $state(false);
 
 	onMount(() => {
-		hasExtension = typeof window !== 'undefined' && !!window.nostr;
+		hasExtension = typeof window !== "undefined" && !!window.nostr;
 	});
 
-	let email = $state('');
-	let password = $state('');
-	let confirmPassword = $state('');
-	let nsec = $state('');
+	let email = $state("");
+	let password = $state("");
+	let confirmPassword = $state("");
+	let nsec = $state("");
 	let showAdvanced = $state(false);
 	let isLoading = $state(false);
 	let showVerificationNotice = $state(false);
-	let registeredEmail = $state('');
+	let registeredEmail = $state("");
 
 	async function handleRegister() {
 		if (!email || !password) {
-			toast.error('Please enter email and password');
+			toast.error("Please enter email and password");
 			return;
 		}
 
 		if (password.length < 8) {
-			toast.error('Password must be at least 8 characters');
+			toast.error("Password must be at least 8 characters");
 			return;
 		}
 
 		if (password !== confirmPassword) {
-			toast.error('Passwords do not match');
+			toast.error("Passwords do not match");
 			return;
 		}
 
@@ -54,25 +56,27 @@
 				token?: string;
 				pubkey?: string;
 				email?: string;
-			}>('/auth/register', body);
+			}>("/auth/register", body);
 
 			// Check if email verification is required
 			if (response.verification_required) {
 				showVerificationNotice = true;
 				registeredEmail = response.email || email;
-				toast.success('Account created! Please verify your email.');
+				toast.success("Account created! Please verify your email.");
 				return;
 			}
 
 			// Legacy flow: immediate login
 			if (response.pubkey) {
 				toast.success(`Account created! Welcome ${email}`);
-				setCurrentUser(response.pubkey, 'cookie');
-				goto('/');
+				setCurrentUser(response.pubkey, "cookie");
+				goto("/");
 			}
 		} catch (err: any) {
-			console.error('Registration error:', err);
-			toast.error(err.message || 'Registration failed. Please try again.');
+			console.error("Registration error:", err);
+			toast.error(
+				err.message || "Registration failed. Please try again.",
+			);
 		} finally {
 			isLoading = false;
 		}
@@ -86,115 +90,158 @@
 <div class:auth-page={true} class:synvya-page={isSynvyaManaged}>
 	<div class:auth-container={true} class:synvya-container={isSynvyaManaged}>
 		<!-- Logo/Branding -->
-		<a href={isSynvyaManaged ? loginUrl : '/'} class="auth-branding">
+		<a href={isSynvyaManaged ? loginUrl : "/"} class="auth-branding">
 			{#if isSynvyaManaged}
-				<img src="/synvya-logo.png" alt="Synvya" class="synvya-logo-img" />
+				<img
+					src="/synvya-logo.png"
+					alt="Synvya"
+					class="synvya-logo-img"
+				/>
 			{:else}
-				<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
+				<img
+					src="/synvya-logo.svg"
+					alt={BRAND.shortName}
+					class="auth-logo-img"
+				/>
 				<span class="auth-logo-sub">Login</span>
 			{/if}
 		</a>
 
 		{#if !showVerificationNotice}
 			<div class="auth-copy">
-				<h1>{isSynvyaManaged ? 'Create your account' : 'Create your account'}</h1>
-				<p class="subtitle">{isSynvyaManaged ? 'Enter your details below to get started.' : 'Your Nostr identity, simplified'}</p>
+				<h1>
+					{isSynvyaManaged
+						? "Create your account"
+						: "Create your account"}
+				</h1>
+				<p class="subtitle">
+					{isSynvyaManaged
+						? "Enter your details below to get started."
+						: "Your Nostr identity, simplified"}
+				</p>
 			</div>
 		{/if}
 
 		{#if showVerificationNotice}
 			<div class="verification-notice">
 				<div class="notice-icon success">
-					<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-						<path d="M224,48H32a8,8,0,0,0-8,8V192a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A8,8,0,0,0,224,48ZM203.43,64,128,133.15,52.57,64ZM216,192H40V74.19l82.59,75.71a8,8,0,0,0,10.82,0L216,74.19V192Z"></path>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						width="48"
+						height="48"
+						fill="currentColor"
+						viewBox="0 0 256 256"
+					>
+						<path
+							d="M224,48H32a8,8,0,0,0-8,8V192a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A8,8,0,0,0,224,48ZM203.43,64,128,133.15,52.57,64ZM216,192H40V74.19l82.59,75.71a8,8,0,0,0,10.82,0L216,74.19V192Z"
+						></path>
 					</svg>
 				</div>
 				<h2>Check your email</h2>
-				<p>We've sent a verification link to <strong>{registeredEmail}</strong></p>
-				<p class="subtext">Click the link in the email to verify your account and sign&nbsp;in.</p>
+				<p>
+					We've sent a verification link to <strong
+						>{registeredEmail}</strong
+					>
+				</p>
+				<p class="subtext">
+					Click the link in the email to verify your account and
+					sign&nbsp;in.
+				</p>
 				<a href={loginUrl} class="btn-secondary">Go to Login</a>
 			</div>
 		{:else}
-			<form onsubmit={(e) => { e.preventDefault(); handleRegister(); }}>
-			<div class="form-group">
-				<label for="email">Email</label>
-				<input
-					id="email"
-					type="email"
-					bind:value={email}
-					placeholder="you@example.com"
-					required
-					disabled={isLoading}
-				/>
-			</div>
-
-			<div class="form-group">
-				<label for="password">Password</label>
-				<input
-					id="password"
-					type="password"
-					bind:value={password}
-					placeholder="At least 8 characters"
-					required
-					minlength="8"
-					disabled={isLoading}
-				/>
-			</div>
-
-			<div class="form-group">
-				<label for="confirm-password">Confirm Password</label>
-				<input
-					id="confirm-password"
-					type="password"
-					bind:value={confirmPassword}
-					placeholder="Re-enter password"
-					required
-					minlength="8"
-					disabled={isLoading}
-				/>
-			</div>
-
-			{#if !isSynvyaManaged}
-			<button
-				type="button"
-				class="advanced-toggle"
-				onclick={() => showAdvanced = !showAdvanced}
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					handleRegister();
+				}}
 			>
-				Already have a Nostr account?
-				<span class="toggle-arrow" class:open={showAdvanced}>&rsaquo;</span>
-			</button>
-
-			{#if showAdvanced}
-			<div class="advanced-section">
 				<div class="form-group">
-					<label for="nsec">Your Nostr private key</label>
+					<label for="email">Email</label>
 					<input
-						id="nsec"
-						type="password"
-						bind:value={nsec}
-						placeholder="nsec1... or hex format"
-						autocomplete="off"
+						id="email"
+						type="email"
+						bind:value={email}
+						placeholder="you@example.com"
+						required
 						disabled={isLoading}
 					/>
-					<p class="field-hint">Import your existing key to use it with diVine Login. Leave empty to create a new one.</p>
 				</div>
-			</div>
-			{/if}
-			{/if}
 
-			<button type="submit" class="btn-primary" disabled={isLoading}>
-				{isLoading ? 'Creating account...' : 'Create Account'}
-			</button>
-		</form>
+				<div class="form-group">
+					<label for="password">Password</label>
+					<input
+						id="password"
+						type="password"
+						bind:value={password}
+						placeholder="At least 8 characters"
+						required
+						minlength="8"
+						disabled={isLoading}
+					/>
+				</div>
+
+				<div class="form-group">
+					<label for="confirm-password">Confirm Password</label>
+					<input
+						id="confirm-password"
+						type="password"
+						bind:value={confirmPassword}
+						placeholder="Re-enter password"
+						required
+						minlength="8"
+						disabled={isLoading}
+					/>
+				</div>
+
+				{#if !isSynvyaManaged}
+					<button
+						type="button"
+						class="advanced-toggle"
+						onclick={() => (showAdvanced = !showAdvanced)}
+					>
+						Already have a Nostr account?
+						<span class="toggle-arrow" class:open={showAdvanced}
+							>&rsaquo;</span
+						>
+					</button>
+
+					{#if showAdvanced}
+						<div class="advanced-section">
+							<div class="form-group">
+								<label for="nsec">Your Nostr private key</label>
+								<input
+									id="nsec"
+									type="password"
+									bind:value={nsec}
+									placeholder="nsec1... or hex format"
+									autocomplete="off"
+									disabled={isLoading}
+								/>
+								<p class="field-hint">
+									Import your existing key to use it with
+									Synvya Login. Leave empty to create a new
+									one.
+								</p>
+							</div>
+						</div>
+					{/if}
+				{/if}
+
+				<button type="submit" class="btn-primary" disabled={isLoading}>
+					{isLoading ? "Creating account..." : "Create Account"}
+				</button>
+			</form>
 
 			<p class="auth-link">
 				Already have an account? <a href={loginUrl}>Sign in</a>
 			</p>
 
 			{#if !isSynvyaManaged && hasExtension}
-			<p class="auth-note">
-				Admin? <a href="/login">Sign in with your Nostr extension</a>
-			</p>
+				<p class="auth-note">
+					Admin? <a href="/login">Sign in with your Nostr extension</a
+					>
+				</p>
 			{/if}
 		{/if}
 	</div>
@@ -265,7 +312,7 @@
 	}
 
 	.auth-logo-sub {
-		font-family: 'Inter', sans-serif;
+		font-family: "Inter", sans-serif;
 		font-weight: 500;
 		font-size: 11px;
 		letter-spacing: 3px;
@@ -347,7 +394,9 @@
 		color: var(--color-divine-text);
 		font-size: 1rem;
 		box-sizing: border-box;
-		transition: border-color 0.2s, box-shadow 0.2s;
+		transition:
+			border-color 0.2s,
+			box-shadow 0.2s;
 	}
 
 	input:focus {

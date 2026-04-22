@@ -156,7 +156,7 @@
 			{#if isSynvyaManaged}
 				<img src="/synvya-logo.png" alt="Synvya" class="synvya-logo-img" />
 			{:else}
-				<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="verify-logo-img" />
+				<img src="/synvya-logo.svg" alt="{BRAND.shortName}" class="verify-logo-img" />
 				<span class="verify-logo-sub">Login</span>
 			{/if}
 		</a>

@@ -14,6 +14,8 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     networks:
       - keycast
     logging:
@@ -26,6 +28,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: keycast-redis
+    ports:
+      - "16379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -68,7 +72,7 @@ services:
     command: unified
     ports:
       - "3000:3000"
-      - "5173:5173"
+      - "5172:5173"
     volumes:
       - ./master.key:/app/master.key:ro
     environment:
@@ -84,7 +88,7 @@ services:
       # Email configuration
       SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
       FROM_EMAIL: ${FROM_EMAIL:-noreply@divine.video}
-      FROM_NAME: ${FROM_NAME:-diVine}
+      FROM_NAME: ${FROM_NAME:-Synvya}
       BASE_URL: ${BASE_URL:-http://localhost:5173}
       # DISABLE_EMAILS: ${DISABLE_EMAILS:-}
       # Server configuration

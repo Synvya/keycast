@@ -588,6 +588,7 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         bcrypt_sender,
         redis: Some(prefixed_redis),
         secret_pool: secret_pool_receiver,
+        secure_cookies: is_production,
     });
 
     // Set global state for routes that use it

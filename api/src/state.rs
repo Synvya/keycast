@@ -46,6 +46,8 @@ pub struct KeycastState {
     /// Pre-computed secret pool for instant authorization creation
     /// Background producer generates (secret, bcrypt_hash) pairs ahead of time
     pub secret_pool: SecretPoolReceiver,
+    /// Whether to set the Secure attribute on cookies (requires HTTPS)
+    pub secure_cookies: bool,
 }
 
 pub static KEYCAST_STATE: OnceCell<Arc<KeycastState>> = OnceCell::new();

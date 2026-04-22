@@ -15,6 +15,7 @@ async function main(): Promise<void> {
     baseURL,
     extraHTTPHeaders: {
       accept: "application/json",
+      Origin: baseURL,
     },
   });
 

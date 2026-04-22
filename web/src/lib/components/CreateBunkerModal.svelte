@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { toast } from 'svelte-hot-french-toast';
-	import { KeycastApi } from '$lib/keycast_api.svelte';
-	import { onMount } from 'svelte';
+	import { toast } from "svelte-hot-french-toast";
+	import { KeycastApi } from "$lib/keycast_api.svelte";
+	import { onMount } from "svelte";
 
 	const api = new KeycastApi();
 
@@ -19,26 +19,28 @@
 
 	let { show = $bindable(false), onClose, onSuccess }: Props = $props();
 
-	let appName = $state('');
-	let selectedPolicySlug = $state('full');
+	let appName = $state("");
+	let selectedPolicySlug = $state("full");
 	let policies = $state<Policy[]>([]);
 	let isCreating = $state(false);
-	let bunkerUrl = $state('');
+	let bunkerUrl = $state("");
 	let showCopySuccess = $state(false);
 
 	onMount(async () => {
 		try {
 			// Public endpoint - no credentials needed
-			const res = await api.get<{ policies: Policy[] }>('/policies', { credentials: 'omit' });
+			const res = await api.get<{ policies: Policy[] }>("/policies", {
+				credentials: "omit",
+			});
 			policies = res.policies;
 		} catch (err) {
-			console.error('Failed to fetch policies:', err);
+			console.error("Failed to fetch policies:", err);
 		}
 	});
 
 	async function handleCreate() {
 		if (!appName.trim()) {
-			toast.error('App name is required');
+			toast.error("App name is required");
 			return;
 		}
 
@@ -51,19 +53,16 @@
 				app_name: string;
 				bunker_pubkey: string;
 				created_at: string;
-			}>(
-				'/user/bunker/create',
-				{
-					app_name: appName.trim(),
-					policy_slug: selectedPolicySlug
-				}
-			);
+			}>("/user/bunker/create", {
+				app_name: appName.trim(),
+				policy_slug: selectedPolicySlug,
+			});
 
 			bunkerUrl = response.bunker_url;
 			toast.success(`Bunker connection created for ${response.app_name}`);
 		} catch (err: any) {
-			console.error('Create bunker error:', err);
-			toast.error(err.message || 'Failed to create bunker connection');
+			console.error("Create bunker error:", err);
+			toast.error(err.message || "Failed to create bunker connection");
 		} finally {
 			isCreating = false;
 		}
@@ -74,9 +73,9 @@
 			await navigator.clipboard.writeText(bunkerUrl);
 			showCopySuccess = true;
 			setTimeout(() => (showCopySuccess = false), 2000);
-			toast.success('Bunker URL copied!');
+			toast.success("Bunker URL copied!");
 		} catch (err) {
-			toast.error('Failed to copy');
+			toast.error("Failed to copy");
 		}
 	}
 
@@ -86,9 +85,9 @@
 			onSuccess();
 		}
 		// Reset form
-		appName = '';
-		selectedPolicySlug = 'full';
-		bunkerUrl = '';
+		appName = "";
+		selectedPolicySlug = "full";
+		bunkerUrl = "";
 		showCopySuccess = false;
 		onClose();
 	}
@@ -102,26 +101,36 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="modal" onclick={(e) => e.stopPropagation()}>
 			<div class="modal-header">
-				<h2>{bunkerUrl ? 'Connection Ready!' : 'Connect to Nostr App'}</h2>
+				<h2>
+					{bunkerUrl ? "Connection Ready!" : "Connect to Nostr App"}
+				</h2>
 				<button class="close-btn" onclick={handleClose}>×</button>
 			</div>
 
 			{#if bunkerUrl}
 				<!-- Success state: Show bunker URL -->
 				<div class="modal-body">
-					<p class="success-message">Copy this connection URL and paste it into your Nostr app:</p>
+					<p class="success-message">
+						Copy this connection URL and paste it into your Nostr
+						app:
+					</p>
 
 					<div class="bunker-url-display">
 						<code>{bunkerUrl}</code>
 					</div>
 
 					<button class="btn-copy" onclick={copyBunkerUrl}>
-						{showCopySuccess ? '✓ Copied!' : 'Copy Connection URL'}
+						{showCopySuccess ? "✓ Copied!" : "Copy Connection URL"}
 					</button>
 
 					<div class="warning-box">
 						<strong>Save this URL now!</strong>
-						<p>This URL acts like a password and is shown only once. Copy it now and paste it into your Nostr app. If you lose it, revoke this connection and create a new one.</p>
+						<p>
+							This URL acts like a password and is shown only
+							once. Copy it now and paste it into your Nostr app.
+							If you lose it, revoke this connection and create a
+							new one.
+						</p>
 					</div>
 				</div>
 			{:else}
@@ -129,11 +138,21 @@
 				<div class="modal-body">
 					<div class="info-box">
 						<strong>You probably don't need this</strong>
-						<p>The diVine app and any app with "Sign in with diVine" already work with your email and password. This is only for Nostr apps that need a connection URL. Browse them at <a href="https://nostrapps.com" target="_blank" rel="noopener noreferrer">nostrapps.com</a>.</p>
+						<p>
+							The Synvya app and any app with "Sign in with
+							Synvya" already work with your email and password.
+							This is only for Nostr apps that need a connection
+							URL. Browse them at <a
+								href="https://nostrapps.com"
+								target="_blank"
+								rel="noopener noreferrer">nostrapps.com</a
+							>.
+						</p>
 					</div>
 
 					<p class="description">
-						Generate a connection URL to use your identity with a Nostr app.
+						Generate a connection URL to use your identity with a
+						Nostr app.
 					</p>
 
 					<div class="form-group">
@@ -146,7 +165,9 @@
 							required
 							disabled={isCreating}
 						/>
-						<p class="input-hint">Name of the app you're connecting to</p>
+						<p class="input-hint">
+							Name of the app you're connecting to
+						</p>
 					</div>
 
 					<div class="form-group">
@@ -157,18 +178,31 @@
 							disabled={isCreating}
 						>
 							{#each policies as policy}
-								<option value={policy.slug}>{policy.display_name}</option>
+								<option value={policy.slug}
+									>{policy.display_name}</option
+								>
 							{/each}
 						</select>
-						<p class="input-hint">What this connection is allowed to do with your identity</p>
+						<p class="input-hint">
+							What this connection is allowed to do with your
+							identity
+						</p>
 					</div>
 
 					<div class="modal-actions">
-						<button class="btn-cancel" onclick={handleClose} disabled={isCreating}>
+						<button
+							class="btn-cancel"
+							onclick={handleClose}
+							disabled={isCreating}
+						>
 							Cancel
 						</button>
-						<button class="btn-create" onclick={handleCreate} disabled={isCreating}>
-							{isCreating ? 'Creating...' : 'Create Connection'}
+						<button
+							class="btn-create"
+							onclick={handleCreate}
+							disabled={isCreating}
+						>
+							{isCreating ? "Creating..." : "Create Connection"}
 						</button>
 					</div>
 				</div>
@@ -179,13 +213,23 @@
 
 <style>
 	@keyframes overlay-in {
-		from { opacity: 0; }
-		to { opacity: 1; }
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
 	}
 
 	@keyframes modal-in {
-		from { opacity: 0; transform: translateY(8px) scale(0.98); }
-		to { opacity: 1; transform: translateY(0) scale(1); }
+		from {
+			opacity: 0;
+			transform: translateY(8px) scale(0.98);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0) scale(1);
+		}
 	}
 
 	.modal-overlay {
@@ -252,8 +296,13 @@
 	}
 
 	.info-box {
-		background: color-mix(in srgb, var(--color-divine-green) 8%, transparent);
-		border: 1px solid color-mix(in srgb, var(--color-divine-green) 25%, transparent);
+		background: color-mix(
+			in srgb,
+			var(--color-divine-green) 8%,
+			transparent
+		);
+		border: 1px solid
+			color-mix(in srgb, var(--color-divine-green) 25%, transparent);
 		border-radius: 8px;
 		padding: 0.875rem;
 		margin-bottom: 1rem;
@@ -429,7 +478,6 @@
 		box-shadow: var(--shadow-sm);
 	}
 
-
 	.warning-box {
 		background: rgba(245, 158, 11, 0.1);
 		border: 1px solid rgba(245, 158, 11, 0.3);
@@ -452,8 +500,13 @@
 	}
 
 	.info-box {
-		background: color-mix(in srgb, var(--color-divine-green) 8%, transparent);
-		border: 1px solid color-mix(in srgb, var(--color-divine-green) 20%, transparent);
+		background: color-mix(
+			in srgb,
+			var(--color-divine-green) 8%,
+			transparent
+		);
+		border: 1px solid
+			color-mix(in srgb, var(--color-divine-green) 20%, transparent);
 		border-radius: 8px;
 		padding: 1rem;
 		margin-bottom: 1.25rem;
