@@ -31,7 +31,17 @@ pub trait EmailSender: Send + Sync {
     ) -> Result<(), String>;
 
     /// Send a claim link email for a preloaded account.
-    async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String>;
+    ///
+    /// `account_display_name` and `account_picture` come from the preloaded
+    /// pubkey's kind-0 metadata when available; when both are `None` the email
+    /// falls back to the plain single-CTA layout.
+    async fn send_claim_email(
+        &self,
+        to_email: &str,
+        claim_url: &str,
+        account_display_name: Option<&str>,
+        account_picture: Option<&str>,
+    ) -> Result<(), String>;
 
     /// Send a team invitation email.
     ///
@@ -76,30 +86,56 @@ fn password_reset_base_url(default: &str) -> String {
 // Shared email templates (used by SendGrid, SES, and any future providers)
 // ---------------------------------------------------------------------------
 
-fn verification_email_html(verification_url: &str) -> String {
+/// Shared layout for single-call-to-action transactional emails (verification,
+/// password reset, claim). Keeps the same wordmark / button / footer treatment
+/// as the team invitation card, minus the card itself — there's no subject
+/// entity to present in these flows, so stylising further risks looking like
+/// phishing on what are already high-trust emails.
+fn basic_email_html(
+    heading: &str,
+    intro: &str,
+    cta_label: &str,
+    cta_url: &str,
+    footer_note: &str,
+) -> String {
+    let heading_esc = html_escape(heading);
+    let intro_esc = html_escape(intro);
+    let cta_label_esc = html_escape(cta_label);
+    let url_esc = html_escape(cta_url);
+    let footer_esc = html_escape(footer_note);
+
     format!(
-        r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Verify your Synvya email</h1>
-                <p>Thanks for signing up! Please verify your email address by clicking the button below:</p>
-                <div style="margin: 30px 0;">
-                    <a href="{}"
-                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                        Verify Email Address
-                    </a>
-                </div>
-                <p style="color: #666; font-size: 14px;">
-                    Or copy and paste this link into your browser:<br>
-                    <a href="{}" style="color: #00B488;">{}</a>
-                </p>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    If you didn't sign up for Synvya, you can safely ignore this email.
-                </p>
-            </body>
-            </html>
-            "#,
-        verification_url, verification_url, verification_url
+        r#"<!doctype html>
+<html>
+<body style="margin:0; padding:0; background:#f5f5f5; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; color:#111;">
+  <div style="max-width:520px; margin:0 auto; padding:32px 20px;">
+    <div style="text-align:center; margin-bottom:24px;">
+      <span style="color:#00B488; font-size:20px; font-weight:600; letter-spacing:0.2px;">Synvya</span>
+    </div>
+    <h2 style="text-align:center; margin:0 0 16px; font-size:20px; font-weight:600;">{heading_esc}</h2>
+    <p style="text-align:center; color:#444; font-size:15px; line-height:1.5; margin:0 12px 28px;">{intro_esc}</p>
+    <div style="margin:0 0 28px; text-align:center;">
+      <a href="{url_esc}" style="display:inline-block; background:#00B488; color:#fff; padding:14px 36px; text-decoration:none; border-radius:8px; font-weight:600; font-size:15px;">{cta_label_esc}</a>
+    </div>
+    <p style="color:#666; font-size:13px; text-align:center; line-height:1.5; margin:0 8px;">
+      Or copy and paste this link into your browser:<br>
+      <a href="{url_esc}" style="color:#00B488; word-break:break-all;">{url_esc}</a>
+    </p>
+    <p style="color:#999; font-size:12px; text-align:center; margin-top:28px;">{footer_esc}</p>
+  </div>
+</body>
+</html>
+"#
+    )
+}
+
+fn verification_email_html(verification_url: &str) -> String {
+    basic_email_html(
+        "Verify your Synvya email",
+        "Thanks for signing up! Confirm your email address to finish creating your account.",
+        "Verify Email Address",
+        verification_url,
+        "If you didn't sign up for Synvya, you can safely ignore this email.",
     )
 }
 
@@ -111,29 +147,12 @@ fn verification_email_text(verification_url: &str) -> String {
 }
 
 fn password_reset_html(reset_url: &str) -> String {
-    format!(
-        r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Reset your Synvya password</h1>
-                <p>We received a request to reset your password. Click the button below to set a new password:</p>
-                <div style="margin: 30px 0;">
-                    <a href="{}"
-                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                        Reset Password
-                    </a>
-                </div>
-                <p style="color: #666; font-size: 14px;">
-                    Or copy and paste this link into your browser:<br>
-                    <a href="{}" style="color: #00B488;">{}</a>
-                </p>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    This link will expire in 1 hour. If you didn't request a password reset, you can safely ignore this email.
-                </p>
-            </body>
-            </html>
-            "#,
-        reset_url, reset_url, reset_url
+    basic_email_html(
+        "Reset your Synvya password",
+        "We received a request to reset your password. Click the button below to set a new one.",
+        "Reset Password",
+        reset_url,
+        "This link will expire in 1 hour. If you didn't request a password reset, you can safely ignore this email.",
     )
 }
 
@@ -144,30 +163,71 @@ fn password_reset_text(reset_url: &str) -> String {
     )
 }
 
-fn claim_email_html(claim_url: &str) -> String {
+fn claim_email_html(
+    claim_url: &str,
+    recipient_email: &str,
+    account_display_name: Option<&str>,
+    account_picture: Option<&str>,
+) -> String {
+    // Without a display name or picture there's nothing to show in a card —
+    // fall back to the shared plain layout.
+    if account_display_name.is_none() && account_picture.is_none() {
+        return basic_email_html(
+            "Your Synvya account is ready",
+            "Your Synvya account is ready. Click the button below to claim it and set up your login.",
+            "Claim Your Account",
+            claim_url,
+            "This link will expire in 7 days. If you didn't request this, you can safely ignore this email.",
+        );
+    }
+
+    let name_esc = html_escape(account_display_name.unwrap_or(""));
+    let recipient_esc = html_escape(recipient_email);
+    let url_esc = html_escape(claim_url);
+
+    let avatar_html = account_picture
+        .and_then(safe_http_url)
+        .map(|url| {
+            format!(
+                r#"<img src="{url}" alt="" width="72" height="72" style="width:72px; height:72px; border-radius:50%; object-fit:cover; display:block; margin:0 auto 16px;" />"#
+            )
+        })
+        .unwrap_or_default();
+
+    let name_html = if name_esc.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div style="font-size:18px; font-weight:600; margin-bottom:12px;">{name_esc}</div>"#
+        )
+    };
+
     format!(
-        r#"
-            <html>
-            <body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-                <h1 style="color: #00B488;">Your Synvya account is ready!</h1>
-                <p>Your Synvya account is ready. Click the button below to claim it and set up your login:</p>
-                <div style="margin: 30px 0;">
-                    <a href="{}"
-                       style="background: #00B488; color: #fff; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                        Claim Your Account
-                    </a>
-                </div>
-                <p style="color: #666; font-size: 14px;">
-                    Or copy and paste this link into your browser:<br>
-                    <a href="{}" style="color: #00B488;">{}</a>
-                </p>
-                <p style="color: #666; font-size: 14px; margin-top: 30px;">
-                    This link will expire in 7 days. If you didn't request this, you can safely ignore this email.
-                </p>
-            </body>
-            </html>
-            "#,
-        claim_url, claim_url, claim_url
+        r#"<!doctype html>
+<html>
+<body style="margin:0; padding:0; background:#f5f5f5; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; color:#111;">
+  <div style="max-width:520px; margin:0 auto; padding:32px 20px;">
+    <div style="text-align:center; margin-bottom:24px;">
+      <span style="color:#00B488; font-size:20px; font-weight:600; letter-spacing:0.2px;">Synvya</span>
+    </div>
+    <h2 style="text-align:center; margin:0 0 20px; font-size:20px; font-weight:600;">Your Synvya account is ready</h2>
+    <div style="background:#fff; border-radius:12px; padding:28px 24px; text-align:center; border:1px solid #ececec;">
+      {avatar_html}{name_html}<div style="color:#444; font-size:14px;">Claim your login for <strong>{recipient_esc}</strong>.</div>
+    </div>
+    <div style="margin:28px 0; text-align:center;">
+      <a href="{url_esc}" style="display:inline-block; background:#00B488; color:#fff; padding:14px 36px; text-decoration:none; border-radius:8px; font-weight:600; font-size:15px;">Claim Your Account</a>
+    </div>
+    <p style="color:#666; font-size:13px; text-align:center; line-height:1.5; margin:0 8px;">
+      Or copy and paste this link into your browser:<br>
+      <a href="{url_esc}" style="color:#00B488; word-break:break-all;">{url_esc}</a>
+    </p>
+    <p style="color:#999; font-size:12px; text-align:center; margin-top:28px;">
+      This link will expire in 7 days. If you didn't request this, you can safely ignore this email.
+    </p>
+  </div>
+</body>
+</html>
+"#
     )
 }
 
@@ -418,13 +478,21 @@ impl EmailSender for DevEmailSender {
         Ok(())
     }
 
-    async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
+    async fn send_claim_email(
+        &self,
+        to_email: &str,
+        claim_url: &str,
+        account_display_name: Option<&str>,
+        account_picture: Option<&str>,
+    ) -> Result<(), String> {
         tracing::info!("");
         tracing::info!("==================================================");
         tracing::info!("  SYNVYA CLAIM EMAIL");
         tracing::info!("==================================================");
         tracing::info!("  To: {}", to_email);
         tracing::info!("  Subject: Your Synvya account is ready to claim");
+        tracing::info!("  Display name: {:?}", account_display_name);
+        tracing::info!("  Picture: {:?}", account_picture);
         tracing::info!("");
         tracing::info!("  Claim link:");
         tracing::info!("  {}", claim_url);
@@ -694,9 +762,15 @@ impl EmailSender for SendGridEmailSender {
         self.send_email(to_email, subject, &html, &text).await
     }
 
-    async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
+    async fn send_claim_email(
+        &self,
+        to_email: &str,
+        claim_url: &str,
+        account_display_name: Option<&str>,
+        account_picture: Option<&str>,
+    ) -> Result<(), String> {
         let subject = "Your Synvya account is ready to claim";
-        let html = claim_email_html(claim_url);
+        let html = claim_email_html(claim_url, to_email, account_display_name, account_picture);
         let text = claim_email_text(claim_url);
 
         self.send_email(to_email, subject, &html, &text).await
@@ -892,9 +966,15 @@ impl EmailSender for SesEmailSender {
         self.send_email(to_email, subject, &html, &text).await
     }
 
-    async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
+    async fn send_claim_email(
+        &self,
+        to_email: &str,
+        claim_url: &str,
+        account_display_name: Option<&str>,
+        account_picture: Option<&str>,
+    ) -> Result<(), String> {
         let subject = "Your Synvya account is ready to claim";
-        let html = claim_email_html(claim_url);
+        let html = claim_email_html(claim_url, to_email, account_display_name, account_picture);
         let text = claim_email_text(claim_url);
 
         self.send_email(to_email, subject, &html, &text).await
@@ -1019,8 +1099,16 @@ impl EmailService {
             .await
     }
 
-    pub async fn send_claim_email(&self, to_email: &str, claim_url: &str) -> Result<(), String> {
-        self.inner.send_claim_email(to_email, claim_url).await
+    pub async fn send_claim_email(
+        &self,
+        to_email: &str,
+        claim_url: &str,
+        account_display_name: Option<&str>,
+        account_picture: Option<&str>,
+    ) -> Result<(), String> {
+        self.inner
+            .send_claim_email(to_email, claim_url, account_display_name, account_picture)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
