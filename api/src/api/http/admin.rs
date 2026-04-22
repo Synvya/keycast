@@ -729,7 +729,19 @@ pub async fn batch_create_claim_tokens(
 
         // Send email if requested
         if let (Some(email), Some(svc)) = (&req.delivery_email, &email_service) {
-            if let Err(e) = svc.send_claim_email(email, &claim_url).await {
+            // Best-effort kind-0 fetch for the preloaded account so the email
+            // can show the restaurant's display name + logo on the claim card.
+            // Falls back to the plain layout on any failure.
+            let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
+            let profile =
+                crate::nostr_profile::fetch_profile_metadata(&user_pubkey, &relays).await;
+            let account_display_name = profile.as_ref().and_then(|p| p.display_name.as_deref());
+            let account_picture = profile.as_ref().and_then(|p| p.picture.as_deref());
+
+            if let Err(e) = svc
+                .send_claim_email(email, &claim_url, account_display_name, account_picture)
+                .await
+            {
                 tracing::warn!(
                     "Failed to send claim email for vine_id={} to {}: {}",
                     vine_id,
