@@ -703,8 +703,7 @@ pub async fn invite_user(
             // Best-effort kind-0 fetch so the email can show the team's real display
             // name and avatar (same as the accept page). Falls back to the DB handle.
             let profile = if let Some(ref pk) = team_key_pubkey {
-                let relays =
-                    keycast_core::types::authorization::Authorization::get_bunker_relays();
+                let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
                 crate::nostr_profile::fetch_profile_metadata(pk, &relays).await
             } else {
                 None

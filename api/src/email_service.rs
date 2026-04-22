@@ -481,7 +481,10 @@ impl EmailSender for DevEmailSender {
         if let Ok(mut captured) = self.captured.lock() {
             captured.push(CapturedEmail {
                 to: to_email.to_string(),
-                subject: format!("You've been invited to join {} on Synvya", team_display_name),
+                subject: format!(
+                    "You've been invited to join {} on Synvya",
+                    team_display_name
+                ),
                 verification_url: Some(invite_url.to_string()),
                 reset_url: None,
             });

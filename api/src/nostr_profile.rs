@@ -43,7 +43,11 @@ pub async fn fetch_profile_metadata(
     let public_key = match PublicKey::from_hex(pubkey_hex) {
         Ok(pk) => pk,
         Err(e) => {
-            tracing::warn!("fetch_profile_metadata: invalid pubkey {}: {}", pubkey_hex, e);
+            tracing::warn!(
+                "fetch_profile_metadata: invalid pubkey {}: {}",
+                pubkey_hex,
+                e
+            );
             return None;
         }
     };
