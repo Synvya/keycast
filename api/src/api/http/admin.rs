@@ -733,8 +733,7 @@ pub async fn batch_create_claim_tokens(
             // can show the restaurant's display name + logo on the claim card.
             // Falls back to the plain layout on any failure.
             let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
-            let profile =
-                crate::nostr_profile::fetch_profile_metadata(&user_pubkey, &relays).await;
+            let profile = crate::nostr_profile::fetch_profile_metadata(&user_pubkey, &relays).await;
             let account_display_name = profile.as_ref().and_then(|p| p.display_name.as_deref());
             let account_picture = profile.as_ref().and_then(|p| p.picture.as_deref());
 
