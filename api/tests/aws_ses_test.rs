@@ -77,7 +77,12 @@ async fn test_ses_send_claim_email() {
     let sender = SesEmailSender::new().await.expect("SES init failed");
 
     let result = sender
-        .send_claim_email(&recipient, "https://example.com/claim?token=abc123")
+        .send_claim_email(
+            &recipient,
+            "https://example.com/claim?token=abc123",
+            None,
+            None,
+        )
         .await;
 
     assert!(result.is_ok(), "Claim email failed: {:?}", result.err());

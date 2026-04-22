@@ -659,11 +659,60 @@ pub async fn invite_user(
                 )
                 .await?;
 
-            // Resolve inviter display name
+            // Resolve inviter display name (used for the list response regardless of email outcome)
             let inviter_name = resolve_display_name(&pool, &user_pubkey_hex, tenant_id).await;
+
+            // For the email body we prefer a real display name → email → pubkey prefix.
+            // The admin's email is the most useful fallback when no kind-0 display name exists.
+            let inviter_real_display: Option<String> =
+                sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                    "SELECT display_name, username FROM users WHERE pubkey = $1 AND tenant_id = $2",
+                )
+                .bind(&user_pubkey_hex)
+                .bind(tenant_id)
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|(dn, un)| {
+                    dn.filter(|s| !s.is_empty())
+                        .or_else(|| un.filter(|s| !s.is_empty()))
+                });
+            let inviter_email_opt = user_repo.get_email(&user_pubkey_hex, tenant_id).await.ok();
+            let inviter_label = inviter_real_display
+                .clone()
+                .or_else(|| inviter_email_opt.clone())
+                .unwrap_or_else(|| inviter_name.clone());
 
             // Resolve team name
             let team = team_repo.find(tenant_id, team_id).await?;
+
+            // Resolve team's primary stored key (used for kind-0 profile lookup).
+            let team_key_pubkey: Option<String> = sqlx::query_scalar(
+                "SELECT pubkey FROM stored_keys
+                 WHERE tenant_id = $1 AND team_id = $2
+                 ORDER BY id ASC
+                 LIMIT 1",
+            )
+            .bind(tenant_id)
+            .bind(team_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to load team key: {}", e)))?;
+
+            // Best-effort kind-0 fetch so the email can show the team's real display
+            // name and avatar (same as the accept page). Falls back to the DB handle.
+            let profile = if let Some(ref pk) = team_key_pubkey {
+                let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
+                crate::nostr_profile::fetch_profile_metadata(pk, &relays).await
+            } else {
+                None
+            };
+            let team_display_name = profile
+                .as_ref()
+                .and_then(|p| p.display_name.clone())
+                .unwrap_or_else(|| team.name.clone());
+            let team_picture = profile.as_ref().and_then(|p| p.picture.clone());
 
             // Build invite URL
             let invite_base_url = std::env::var("INVITE_BASE_URL")
@@ -678,9 +727,11 @@ pub async fn invite_user(
                     if let Err(e) = email_service
                         .send_team_invite_email(
                             &email,
-                            &team.name,
-                            &inviter_name,
+                            &team_display_name,
+                            team_picture.as_deref(),
+                            &inviter_label,
                             role_str,
+                            invitation.expires_at,
                             &invite_url,
                         )
                         .await
