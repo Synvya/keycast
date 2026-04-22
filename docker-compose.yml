@@ -72,7 +72,7 @@ services:
     command: unified
     ports:
       - "3000:3000"
-      - "5173:5173"
+      - "5172:5173"
     volumes:
       - ./master.key:/app/master.key:ro
     environment:

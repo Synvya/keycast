@@ -95,8 +95,8 @@ docker compose ps
 The `keycast-unified` container should show a status of `Up (healthy)`.
 
 ### Access the Web UI
-- **Docker Mode**: All traffic (API + Frontend) is served on **[http://localhost:3000](http://localhost:3000)**.
-- **Native Dev Mode**: The API is on port 3000, but the live-reloading frontend is on **[http://localhost:5173](http://localhost:5173)**.
+- **Docker Mode**: The API is on **[http://localhost:3000](http://localhost:3000)** and the Dashboard is on **[http://localhost:5172](http://localhost:5172)**.
+- **Native Dev Mode**: The API is on port 3000, and the live-reloading frontend is on **[http://localhost:5173](http://localhost:5173)**.
 
 ---
 
