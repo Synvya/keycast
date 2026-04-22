@@ -41,6 +41,14 @@ pub fn token_expiry_seconds() -> i64 {
         .unwrap_or(DEFAULT_TOKEN_EXPIRY_HOURS * 3600)
 }
 
+pub(crate) fn format_session_cookie(token: &str, max_age: i64, secure: bool) -> String {
+    let secure_flag = if secure { "; Secure" } else { "" };
+    format!(
+        "keycast_session={}; HttpOnly{}; SameSite=Lax; Path=/; Max-Age={}",
+        token, secure_flag, max_age
+    )
+}
+
 pub fn generate_secure_token() -> String {
     use rand::distributions::Alphanumeric;
     rand::thread_rng()
@@ -523,6 +531,7 @@ async fn nostr_auth_login(
     tenant_id: i64,
     headers: &HeaderMap,
     auth_header: &str,
+    secure_cookies: bool,
 ) -> Result<Response, AuthError> {
     // Build expected URL for this endpoint
     let expected_url = build_expected_url(headers, "/api/auth/login")?;
@@ -591,10 +600,7 @@ async fn nostr_auth_login(
     );
 
     // Create response with UCAN session cookie
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
+    let cookie = format_session_cookie(&ucan_token, 86400, secure_cookies);
 
     Ok((
         axum::http::StatusCode::OK,
@@ -787,12 +793,13 @@ pub async fn login(
     body: String,
 ) -> Result<Response, AuthError> {
     let tenant_id = tenant.0.id;
+    let secure_cookies = auth_state.state.secure_cookies;
 
     // Check for NIP-98 Authorization header first
     if let Some(auth_header) = headers.get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if auth_str.starts_with("Nostr ") {
-                return nostr_auth_login(tenant_id, &headers, auth_str).await;
+                return nostr_auth_login(tenant_id, &headers, auth_str, secure_cookies).await;
             }
         }
     }
@@ -894,10 +901,7 @@ pub async fn login(
     );
 
     // Create response with UCAN session cookie
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
+    let cookie = format_session_cookie(&ucan_token, 86400, secure_cookies);
 
     Ok((
         axum::http::StatusCode::OK,
@@ -913,11 +917,15 @@ pub async fn login(
 }
 
 /// Logout endpoint - clears the keycast_session cookie
-pub async fn logout() -> Result<impl axum::response::IntoResponse, AuthError> {
+pub async fn logout(
+    State(auth_state): State<super::routes::AuthState>,
+) -> Result<impl axum::response::IntoResponse, AuthError> {
     tracing::info!("User logging out");
 
+    let secure_cookies = auth_state.state.secure_cookies;
+
     // Clear the session cookie by setting Max-Age=0
-    let cookie = "keycast_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0";
+    let cookie = format_session_cookie("", 0, secure_cookies);
 
     let response = (
         axum::http::StatusCode::OK,
@@ -1549,10 +1557,8 @@ pub async fn verify_email(
     );
 
     // Set UCAN session cookie
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
+    let secure_cookies = auth_state.state.secure_cookies;
+    let cookie = format_session_cookie(&ucan_token, 86400, secure_cookies);
 
     // If the registration included a redirect_uri, redirect back to the client app
     let redirect_to = token_data.redirect_uri.map(|uri| {
@@ -3111,10 +3117,8 @@ pub async fn change_key(
     let ucan_token =
         generate_ucan_token(&new_keys, tenant_id, &email, &redirect_origin, None).await?;
 
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
+    let secure_cookies = auth_state.state.secure_cookies;
+    let cookie = format_session_cookie(&ucan_token, 86400, secure_cookies);
 
     let response = ChangeKeyResponse {
         success: true,

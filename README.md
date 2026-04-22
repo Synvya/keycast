@@ -209,6 +209,7 @@ For detailed instructions on environment management, native development, and tes
 | `APP_URL` | `https://login.divine.video` | Fallback URL for OAuth callbacks |
 | `ALLOWED_PUBKEYS` | *(none)* | Comma-separated admin pubkeys whitelist |
 | `ALLOWED_ORIGINS` | *(none)* | CORS origins (comma-separated) |
+| `NODE_ENV` | `development` | Set to `production` to enable mandatory HTTPS and `Secure` cookies. |
 
 #### Multi-tenancy
 

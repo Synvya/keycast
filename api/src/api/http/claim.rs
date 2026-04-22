@@ -11,6 +11,7 @@ use nostr_sdk::Keys;
 use serde::Deserialize;
 
 use super::routes::AuthState;
+use super::auth::format_session_cookie;
 use keycast_core::repositories::{ClaimTokenRepository, UserRepository};
 
 /// Get server keys from SERVER_NSEC environment variable
@@ -335,11 +336,8 @@ pub async fn claim_post(
     .map_err(|e| ClaimError::Internal(format!("Failed to generate session: {:?}", e)))?;
 
     // Set session cookie
-    let cookie_value = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
-        token,
-        60 * 60 * 24 * 7 // 7 days
-    );
+    let secure_cookies = auth_state.state.secure_cookies;
+    let cookie_value = format_session_cookie(&token, 60 * 60 * 24 * 7, secure_cookies);
 
     // Get user info for success page
     let user_repo = UserRepository::new(pool.clone());

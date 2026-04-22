@@ -100,7 +100,29 @@ The `keycast-unified` container should show a status of `Up (healthy)`.
 
 ---
 
-## 5. Advanced: Manual Building
+## 5. Cookie Security & Local Development
+
+Keycast uses a session cookie (`keycast_session`) for authentication. For security, this cookie defaults to using the `Secure` attribute, which requires an HTTPS connection.
+
+### Development Mode (HTTP)
+When running locally via Docker or in native development mode over plain HTTP (`http://localhost`), browsers will reject `Secure` cookies. To facilitate local development:
+- **Automatic Detection**: The API checks the `NODE_ENV` environment variable.
+- **Insecure Cookies**: If `NODE_ENV` is set to `development` (the default in `docker-compose.yml`), the `Secure` attribute is omitted, allowing the session to persist over HTTP.
+
+### Production Mode (HTTPS)
+In production, ensure `NODE_ENV=production` is set in your environment. This enforces the `Secure` attribute, ensuring session tokens are never transmitted over unencrypted connections.
+
+> [!IMPORTANT]
+> Because this logic is compiled into the Rust binary, any changes to authentication security settings require a Docker rebuild:
+> ```bash
+> cd keycast
+> make docker-build
+> make docker-up
+> ```
+
+---
+
+## 6. Advanced: Manual Building
 
 If you need to build the project artifacts manually outside of Docker:
 

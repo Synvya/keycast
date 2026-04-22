@@ -18,6 +18,8 @@ use keycast_core::repositories::{
 };
 use keycast_core::types::refresh_token::generate_refresh_token;
 use nostr_sdk::{Keys, ToBech32};
+
+use super::auth::format_session_cookie;
 use rand::Rng;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -2174,8 +2176,8 @@ pub async fn authorize_get(
 
     // If we detected a stale cookie, clear it
     if clear_cookie {
-        let clear_cookie_header =
-            "keycast_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0";
+        let secure_cookies = auth_state.state.secure_cookies;
+        let clear_cookie_header = format_session_cookie("", 0, secure_cookies);
         Ok((
             [(axum::http::header::SET_COOKIE, clear_cookie_header)],
             Html(html),
@@ -3024,10 +3026,8 @@ pub async fn oauth_login(
     tracing::info!("OAuth popup login successful for user: {}", public_key);
 
     // Set cookie and return success - page will reload to show approval
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
+    let secure_cookies = auth_state.state.secure_cookies;
+    let cookie = format_session_cookie(&ucan_token, 86400, secure_cookies);
 
     Ok((
         [(axum::http::header::SET_COOKIE, cookie)],
