@@ -2,35 +2,43 @@
 # Keycast Development Helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: check-prereq install-prereq setup migrate help dev
+.PHONY: check-prereq install-prereq setup migrate help dev test env-local env-staging docker-build docker-up docker-down docker-logs
 
-help:
-	@echo "Synvya Keycast Development Helper"
+# Default target: show help
+all: help
+
+help: ## Show this help message
+	@echo "🔑 \033[1;32mSynvya Keycast\033[0m"
+	@echo "Unified Nostr key management and event signing service."
 	@echo ""
-	@echo "Available targets:"
-	@echo "  check-prereq    - Verify Rust, Bun, and SQLX are installed"
-	@echo "  install-prereq  - Install sqlx-cli tool (required for migrations)"
-	@echo "  setup           - Initialize .env and generate master key"
-	@echo "  migrate         - Run database migrations"
-	@echo "  dev             - Start the local development stack (native)"
-	@echo "  docker-build    - Build the docker images"
-	@echo "  docker-up       - Start the services via docker-compose"
-	@echo "  docker-down     - Stop the services"
-	@echo "  docker-logs     - Follow docker logs"
+	@echo "\033[1;34mUsage:\033[0m"
+	@echo "  make <target>"
+	@echo ""
+	@echo "\033[1;34mSetup & Environment:\033[0m"
+	@grep -E '^[-a-zA-Z0-9_]+:.*?## (Setup|Environment).*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "\033[1;34mDevelopment & Testing:\033[0m"
+	@grep -E '^[-a-zA-Z0-9_]+:.*?## (Development|Quality).*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+	@echo "\033[1;34mDocker & Deployment:\033[0m"
+	@grep -E '^[-a-zA-Z0-9_]+:.*?## Docker.*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+	@echo ""
 
-check-prereq:
+# --- Setup & Environment ---
+
+check-prereq: ## Setup: Verify Rust, Bun, and SQLX are installed
 	@echo "==> Checking Keycast prerequisites..."
 	@command -v cargo >/dev/null 2>&1 || (echo "  ✗ cargo (Rust) not found"; exit 1)
 	@command -v bun >/dev/null 2>&1 || (echo "  ✗ bun not found"; exit 1)
 	@command -v sqlx >/dev/null 2>&1 || (echo "  ✗ sqlx-cli not found. Run 'make install-prereq'"; exit 1)
 	@echo "  ✓ All Keycast prerequisites met!"
 
-install-prereq:
+install-prereq: ## Setup: Install sqlx-cli tool (required for migrations)
 	@echo "==> Installing prerequisites..."
 	cargo install sqlx-cli --no-default-features --features postgres
 	cargo install cargo-nextest --locked
 
-setup:
+setup: ## Setup: Initialize .env and generate master key
 	@echo "==> Initializing environment configuration (.env.local)..."
 	@if [ ! -f ".env.local" ]; then bash scripts/init.sh --domain localhost --file .env.local; fi
 	@if grep -q "SERVER_NSEC=$$" .env.local; then \
@@ -42,47 +50,54 @@ setup:
 	@$(MAKE) env-local
 	@echo "  ✓ Setup complete."
 
-# Environment switching targets
-env-local:
+env-local: ## Environment: Set active environment to .env.local
 	@echo "==> Setting active environment to .env.local"
 	@ln -sf .env.local .env
 
-env-staging:
+env-staging: ## Environment: Set active environment to .env.staging
 	@echo "==> Setting active environment to .env.staging"
 	@if [ ! -f ".env.staging" ]; then echo "  ✗ .env.staging not found. Create it from .env.example"; exit 1; fi
 	@ln -sf .env.staging .env
 
-migrate:
+migrate: ## Environment: Run database migrations
 	@$(MAKE) env-check
 	@echo "==> Running migrations..."
 	bun run db:migrate
 
-dev:
+# --- Development ---
+
+dev: ## Development: Start the local development stack (native)
 	@$(MAKE) env-check
 	bun run dev
 
-env-check:
-	@if [ ! -L ".env" ] && [ ! -f ".env" ]; then echo "  ✗ No .env file or symlink found. Run 'make setup'"; exit 1; fi
+# --- Quality ---
 
-docker-build:
+test: ## Quality: Run unit and integration tests
+	@$(MAKE) env-check
+	bun run test
+
+# --- Docker ---
+
+docker-build: ## Docker: Build the docker images
 	@$(MAKE) env-check
 	@echo "==> Building Docker images..."
 	docker compose build
 
-docker-up:
+docker-up: ## Docker: Start the services via docker-compose
 	@$(MAKE) env-check
 	@echo "==> Starting Keycast stack..."
 	docker compose up -d
 
-docker-down:
+docker-down: ## Docker: Stop the services
 	@$(MAKE) env-check
 	@echo "==> Stopping Keycast stack..."
 	docker compose down
 
-docker-logs:
+docker-logs: ## Docker: Follow docker logs
 	@$(MAKE) env-check
 	docker compose logs -f
 
-test:
-	@$(MAKE) env-check
-	bun run test
+# --- Internal ---
+
+env-check:
+	@if [ ! -L ".env" ] && [ ! -f ".env" ]; then echo "  ✗ No .env file or symlink found. Run 'make setup'"; exit 1; fi
