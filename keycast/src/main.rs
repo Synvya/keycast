@@ -377,11 +377,15 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         std::process::exit(1);
     }
 
-    // Initialize tracing with JSON format in production for GCP Cloud Logging
-    let is_production = std::env::var("NODE_ENV").unwrap_or_default() == "production";
+    // Initialize tracing with JSON format in production/staging for GCP Cloud Logging
+    let node_env = std::env::var("NODE_ENV").unwrap_or_default();
+    let is_production = node_env == "production";
+    let is_staging = node_env == "staging";
+    let is_deployed = is_production || is_staging;
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if is_production {
+    if is_deployed {
         tracing_subscriber::registry()
             .with(filter)
             .with(tracing_subscriber::fmt::layer().json())
@@ -588,7 +592,7 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         bcrypt_sender,
         redis: Some(prefixed_redis),
         secret_pool: secret_pool_receiver,
-        secure_cookies: is_production,
+        secure_cookies: is_deployed,
     });
 
     // Set global state for routes that use it

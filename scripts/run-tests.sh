@@ -19,7 +19,8 @@ fi
 # We drop and recreate the test database to ensure absolute isolation between runs.
 echo "📊 Resetting test database..."
 # Use the default postgres DB to perform administrative tasks
-ADMIN_DB_URL="postgres://postgres:change-this-secure-password-in-production@localhost:5432/postgres"
+PG_PASS=${POSTGRES_PASSWORD:-pass-apr-2026-local}
+ADMIN_DB_URL="postgres://postgres:${PG_PASS}@localhost:5432/postgres"
 
 docker exec keycast-postgres psql "$ADMIN_DB_URL" -c "DROP DATABASE IF EXISTS keycast_test WITH (FORCE);" > /dev/null
 docker exec keycast-postgres createdb -U postgres keycast_test > /dev/null
@@ -27,7 +28,7 @@ docker exec keycast-postgres createdb -U postgres keycast_test > /dev/null
 # 3. Run Migrations
 # Ensure the schema is up-to-date before running tests.
 echo "🏗️  Running migrations..."
-export DATABASE_URL="postgres://postgres:change-this-secure-password-in-production@localhost:5432/keycast_test"
+export DATABASE_URL="postgres://postgres:${PG_PASS}@localhost:5432/keycast_test"
 cargo run --bin keycast -- --migrate
 
 # 4. Set Test Environment

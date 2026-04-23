@@ -3388,6 +3388,7 @@ mod tests {
                 bcrypt_sender: bcrypt_queue.sender(),
                 redis: None,
                 secret_pool: secret_pool.receiver(),
+                secure_cookies: false,
             }),
             auth_tx: None,
         }
