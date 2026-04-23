@@ -43,7 +43,7 @@ pub fn assert_test_database_url() {
     let url_lower = url.to_lowercase();
     // CRITICAL: Only check the part of the URL AFTER the credentials (if any)
     // This prevents false positives from strings like "production" in the password
-    let checkable_part = url_lower.split('@').last().unwrap_or(&url_lower);
+    let checkable_part = url_lower.split('@').next_back().unwrap_or(&url_lower);
 
     for indicator in production_indicators {
         assert!(
