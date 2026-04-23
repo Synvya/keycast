@@ -10,8 +10,8 @@ use axum::{
 use nostr_sdk::Keys;
 use serde::Deserialize;
 
-use super::routes::AuthState;
 use super::auth::format_session_cookie;
+use super::routes::AuthState;
 use keycast_core::repositories::{ClaimTokenRepository, UserRepository};
 
 /// Get server keys from SERVER_NSEC environment variable
