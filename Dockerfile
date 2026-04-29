@@ -18,6 +18,8 @@ COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
 
 ARG CARGO_FEATURES=""
+ARG CARGO_BUILD_JOBS=""
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN if [ -n "$CARGO_FEATURES" ]; then \
       cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
     else \
