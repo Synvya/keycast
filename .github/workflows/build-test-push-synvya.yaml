@@ -144,15 +144,19 @@ jobs:
               exit 1
             fi
             git pull --ff-only origin synvya-staging
+            bash scripts/ec2-prepare-host.sh
             bash scripts/load-secrets.sh staging
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
             fi
             docker system df || true
-            docker builder prune -af || true
-            docker image prune -af || true
+            # Light cleanup: drop dangling images and unreferenced build
+            # cache only. `-a` would wipe referenced layers and force a
+            # cold cargo build of all dependencies on every deploy.
+            docker image prune -f || true
+            docker builder prune -f || true
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
-              build postgres redis migrate keycast
+              build --build-arg CARGO_BUILD_JOBS=2 postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               up -d postgres redis migrate keycast
             sleep 10
@@ -182,15 +186,19 @@ jobs:
               exit 1
             fi
             git pull --ff-only origin synvya
+            bash scripts/ec2-prepare-host.sh
             bash scripts/load-secrets.sh production
             if [ -n "${{ vars.DISABLE_EMAILS }}" ]; then
               echo "DISABLE_EMAILS=${{ vars.DISABLE_EMAILS }}" >> /opt/synvya/.env
             fi
             docker system df || true
-            docker builder prune -af || true
-            docker image prune -af || true
+            # Light cleanup: drop dangling images and unreferenced build
+            # cache only. `-a` would wipe referenced layers and force a
+            # cold cargo build of all dependencies on every deploy.
+            docker image prune -f || true
+            docker builder prune -f || true
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
-              build postgres redis migrate keycast
+              build --build-arg CARGO_BUILD_JOBS=2 postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               up -d postgres redis migrate keycast
             sleep 10
@@ -222,6 +230,9 @@ jobs:
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             fi
             source "$HOME/.cargo/env"
+
+            # Ensure swap + cargo jobs limit are in place for the QA build
+            bash /opt/synvya/keycast/scripts/ec2-prepare-host.sh
 
             # Load env for POSTGRES_PASSWORD
             set -a
@@ -300,6 +311,9 @@ jobs:
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             fi
             source "$HOME/.cargo/env"
+
+            # Ensure swap + cargo jobs limit are in place for the QA build
+            bash /opt/synvya/keycast/scripts/ec2-prepare-host.sh
 
             # Load env for POSTGRES_PASSWORD
             set -a

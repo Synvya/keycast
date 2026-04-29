@@ -7,6 +7,44 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# ── Stage A: cache dependency compilation ─────────────────────────────
+# Copy only manifests + any cargo-auto-detected build scripts, then stub
+# every workspace member so dependencies compile without our source.
+# This layer is reused across pushes whenever Cargo.toml/Cargo.lock and
+# the member manifests are unchanged — saving the ~400-crate cold build.
+COPY ./Cargo.toml ./Cargo.toml
+COPY ./Cargo.lock ./Cargo.lock
+COPY ./api/Cargo.toml ./api/Cargo.toml
+COPY ./api/build.rs ./api/build.rs
+COPY ./core/Cargo.toml ./core/Cargo.toml
+COPY ./signer/Cargo.toml ./signer/Cargo.toml
+COPY ./keycast/Cargo.toml ./keycast/Cargo.toml
+COPY ./cluster-hashring/Cargo.toml ./cluster-hashring/Cargo.toml
+COPY ./tools/loadtest/Cargo.toml ./tools/loadtest/Cargo.toml
+
+RUN mkdir -p api/src core/src signer/src keycast/src cluster-hashring/src tools/loadtest/src && \
+    : > api/src/lib.rs && \
+    : > core/src/lib.rs && \
+    : > signer/src/lib.rs && \
+    : > cluster-hashring/src/lib.rs && \
+    echo 'fn main() {}' > keycast/src/main.rs && \
+    echo 'fn main() {}' > tools/loadtest/src/main.rs
+
+ARG CARGO_FEATURES=""
+ARG CARGO_BUILD_JOBS=""
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+      cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
+    else \
+      cargo build --release --bin keycast; \
+    fi
+
+# ── Stage B: real-source build ────────────────────────────────────────
+# Real sources overwrite stubs; cargo recompiles only the workspace
+# crates (their content hashes changed) and reuses dep .rlibs from
+# Stage A in target/release/deps.
 COPY ./api ./api
 COPY ./signer ./signer
 COPY ./core ./core
@@ -14,10 +52,7 @@ COPY ./keycast ./keycast
 COPY ./cluster-hashring ./cluster-hashring
 COPY ./tools ./tools
 COPY ./database/migrations ./database/migrations
-COPY ./Cargo.toml ./Cargo.toml
-COPY ./Cargo.lock ./Cargo.lock
 
-ARG CARGO_FEATURES=""
 RUN if [ -n "$CARGO_FEATURES" ]; then \
       cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
     else \
