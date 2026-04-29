@@ -44,6 +44,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # Build stage for Bun frontend
 FROM oven/bun:1 AS web-builder
 
+# Force serial execution: only start web-builder after rust-builder
+# completes. BuildKit otherwise runs the two stages in parallel, which
+# pushes a small EC2 (e.g. t3.medium) into swap thrash and locks the
+# host. This COPY creates a build-graph dependency on rust-builder.
+COPY --from=rust-builder /artifacts/keycast /tmp/.rust-builder-done
+
 # Install build essentials for native modules
 RUN apt-get update && apt-get install -y \
     python3 \
