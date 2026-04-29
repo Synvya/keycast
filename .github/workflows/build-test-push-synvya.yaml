@@ -134,7 +134,7 @@ jobs:
           host: ${{ secrets.EC2_STAGING_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_STAGING_SSH_KEY }}
-          command_timeout: 30m
+          command_timeout: 60m
           script: |
             set -euo pipefail
             cd /opt/synvya/keycast
@@ -180,7 +180,7 @@ jobs:
           host: ${{ secrets.EC2_PRODUCTION_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_PRODUCTION_SSH_KEY }}
-          command_timeout: 30m
+          command_timeout: 60m
           script: |
             set -euo pipefail
             cd /opt/synvya/keycast
@@ -226,7 +226,7 @@ jobs:
           host: ${{ secrets.EC2_STAGING_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_STAGING_SSH_KEY }}
-          command_timeout: 30m
+          command_timeout: 60m
           script: |
             set -e
 
@@ -307,7 +307,7 @@ jobs:
           host: ${{ secrets.EC2_PRODUCTION_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_PRODUCTION_SSH_KEY }}
-          command_timeout: 30m
+          command_timeout: 60m
           script: |
             set -e
 
