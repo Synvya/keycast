@@ -1,0 +1,10 @@
+<svg width="240" height="100" viewBox="0 0 240 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g fill="#1DB054">
+    <rect x="20" y="60" width="45" height="6" rx="3" />
+    <path d="M25 58 C25 35 60 35 60 58 Z" />
+    <circle cx="42.5" cy="36" r="3" />
+    <path d="M68 48 L78 58 L68 68 V62 H58 V54 H68 V48 Z" />
+  </g>
+
+  <text x="90" y="62" font-family="Arial, sans-serif" font-size="42" fill="#1DB054" font-weight="400">Synvya</text>
+</svg>

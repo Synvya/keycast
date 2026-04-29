@@ -30,7 +30,7 @@ $effect(() => {
 
 // Hide header on auth pages and support-admin (full-page experience)
 // Show header on homepage if authenticated (dashboard mode)
-const headerHiddenPaths = ['/login', '/register', '/verify-email'];
+const headerHiddenPaths = ['/login', '/register', '/verify-email', '/forgot-password', '/reset-password', '/support-admin'];
 const isHeaderHidden = $derived(headerHiddenPaths.some(p => $page.url.pathname.startsWith(p)));
 const isHomepage = $derived($page.url.pathname === '/');
 const user = $derived(getCurrentUser());
@@ -40,21 +40,27 @@ const showHeader = $derived(
 );
 </script>
 
+<svelte:body class:auth-route={isHeaderHidden} />
+
 <Toaster />
 {#if showHeader}
 <Header />
 <VerificationBanner />
 {/if}
 
-<div class="container">
-	<!-- Background orbs -->
-    <div class="fixed inset-0 -z-10">
-        <div class="absolute rounded-full mix-blend-multiply filter blur-3xl top-10 left-1/4 w-[600px] h-[600px] bg-[var(--color-divine-green)]/5 animate-blob"></div>
-        <div class="absolute rounded-full mix-blend-multiply filter blur-3xl top-1/2 -right-20 w-96 h-96 bg-[var(--color-divine-green-dark)]/5 animate-blob animation-delay-2000"></div>
-        <div class="absolute rounded-full mix-blend-multiply filter blur-3xl bottom-20 left-32 w-72 h-72 bg-[var(--color-divine-dark-green)]/10 animate-blob animation-delay-5500"></div>
-    </div>
+{#if isHeaderHidden}
 	{@render children()}
-</div>
+{:else}
+	<div class="container">
+		<!-- Background orbs -->
+		<div class="fixed inset-0 -z-10">
+			<div class="absolute rounded-full mix-blend-multiply filter blur-3xl top-10 left-1/4 w-[600px] h-[600px] bg-[var(--color-divine-green)]/5 animate-blob"></div>
+			<div class="absolute rounded-full mix-blend-multiply filter blur-3xl top-1/2 -right-20 w-96 h-96 bg-[var(--color-divine-green-dark)]/5 animate-blob animation-delay-2000"></div>
+			<div class="absolute rounded-full mix-blend-multiply filter blur-3xl bottom-20 left-32 w-72 h-72 bg-[var(--color-divine-dark-green)]/10 animate-blob animation-delay-5500"></div>
+		</div>
+		{@render children()}
+	</div>
+{/if}
 
 
 <style>
@@ -76,4 +82,20 @@ const showHeader = $derived(
     .animation-delay-5500 {
         animation-delay: 5.5s;
     }
+
+	:global(:root:has(body.auth-route)) {
+		padding: 0;
+		background: white;
+	}
+
+	:global(html:has(body.auth-route)) {
+		padding: 0;
+		background: white;
+	}
+
+	:global(body.auth-route) {
+		margin: 0;
+		min-height: 100vh;
+		background: white;
+	}
 </style>

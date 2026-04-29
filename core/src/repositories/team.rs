@@ -43,8 +43,10 @@ impl TeamRepository {
 
         // Get team_users for this team
         let team_users = sqlx::query_as::<_, TeamUser>(
-            "SELECT user_pubkey, team_id, role, created_at, updated_at
-             FROM team_users WHERE team_id = $1",
+            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, tu.created_at, tu.updated_at
+             FROM team_users tu
+             LEFT JOIN users u ON u.pubkey = tu.user_pubkey
+             WHERE tu.team_id = $1",
         )
         .bind(team_id)
         .fetch_all(&self.pool)
@@ -199,9 +201,14 @@ impl TeamRepository {
         role: &str,
     ) -> Result<TeamUser, RepositoryError> {
         sqlx::query_as::<_, TeamUser>(
-            "INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
-             VALUES ($1, $2, $3, NOW(), NOW())
-             RETURNING user_pubkey, team_id, role, created_at, updated_at",
+            "WITH ins AS (
+                 INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
+                 VALUES ($1, $2, $3, NOW(), NOW())
+                 RETURNING user_pubkey, team_id, role, created_at, updated_at
+             )
+             SELECT ins.user_pubkey, ins.team_id, ins.role, u.email, ins.created_at, ins.updated_at
+             FROM ins
+             LEFT JOIN users u ON u.pubkey = ins.user_pubkey",
         )
         .bind(team_id)
         .bind(pubkey)
@@ -213,16 +220,15 @@ impl TeamRepository {
 
     /// Check if a user is already a member of a team.
     pub async fn is_member(&self, team_id: i32, pubkey: &str) -> Result<bool, RepositoryError> {
-        let result = sqlx::query_as::<_, TeamUser>(
-            "SELECT user_pubkey, team_id, role, created_at, updated_at
-             FROM team_users WHERE team_id = $1 AND user_pubkey = $2",
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM team_users WHERE team_id = $1 AND user_pubkey = $2",
         )
         .bind(team_id)
         .bind(pubkey)
-        .fetch_optional(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(result.is_some())
+        Ok(count > 0)
     }
 
     /// Get a team member.
@@ -232,8 +238,10 @@ impl TeamRepository {
         pubkey: &str,
     ) -> Result<TeamUser, RepositoryError> {
         sqlx::query_as::<_, TeamUser>(
-            "SELECT user_pubkey, team_id, role, created_at, updated_at
-             FROM team_users WHERE team_id = $1 AND user_pubkey = $2",
+            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, tu.created_at, tu.updated_at
+             FROM team_users tu
+             LEFT JOIN users u ON u.pubkey = tu.user_pubkey
+             WHERE tu.team_id = $1 AND tu.user_pubkey = $2",
         )
         .bind(team_id)
         .bind(pubkey)
@@ -381,9 +389,14 @@ impl TeamRepository {
 
         // Add user as admin
         let team_user = sqlx::query_as::<_, TeamUser>(
-            "INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
-             VALUES ($1, $2, 'admin', $3, $4)
-             RETURNING *",
+            "WITH ins AS (
+                 INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
+                 VALUES ($1, $2, 'admin', $3, $4)
+                 RETURNING user_pubkey, team_id, role, created_at, updated_at
+             )
+             SELECT ins.user_pubkey, ins.team_id, ins.role, u.email, ins.created_at, ins.updated_at
+             FROM ins
+             LEFT JOIN users u ON u.pubkey = ins.user_pubkey",
         )
         .bind(team.id)
         .bind(admin_pubkey)
@@ -750,5 +763,66 @@ mod tests {
         let with_relations = with_relations.unwrap();
         assert_eq!(with_relations.team.id, team.id);
         assert_eq!(with_relations.team_users.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_member_populates_email() {
+        let pool = setup_pool().await;
+        let team_repo = TeamRepository::new(pool.clone());
+        let user_repo = UserRepository::new(pool.clone());
+        let suffix = test_suffix();
+
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+        user_repo.find_or_create(1, &pubkey).await.unwrap();
+
+        let email = format!("member-{}@test.local", suffix);
+        sqlx::query("UPDATE users SET email = $1 WHERE pubkey = $2")
+            .bind(&email)
+            .bind(pubkey.to_hex())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let team = team_repo
+            .create(1, &format!("Email Test {}", suffix))
+            .await
+            .unwrap();
+
+        let member = team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await
+            .unwrap();
+        assert_eq!(member.email.as_deref(), Some(email.as_str()));
+
+        let with_relations = team_repo.find_with_relations(1, team.id).await.unwrap();
+        assert_eq!(with_relations.team_users.len(), 1);
+        assert_eq!(
+            with_relations.team_users[0].email.as_deref(),
+            Some(email.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_member_without_email_returns_none() {
+        let pool = setup_pool().await;
+        let team_repo = TeamRepository::new(pool.clone());
+        let user_repo = UserRepository::new(pool.clone());
+        let suffix = test_suffix();
+
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+        user_repo.find_or_create(1, &pubkey).await.unwrap();
+
+        let team = team_repo
+            .create(1, &format!("NoEmail Test {}", suffix))
+            .await
+            .unwrap();
+
+        let member = team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await
+            .unwrap();
+        assert!(member.email.is_none());
     }
 }

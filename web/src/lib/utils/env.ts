@@ -34,6 +34,37 @@ export function getViteDomain(defaultValue: string = 'http://localhost:3000'): s
     return getEnvVar('VITE_DOMAIN') || defaultValue;
 }
 
+const CLIENT_LOGIN_URLS: Record<string, string> = {
+    'auth.staging.synvya.com': 'https://account.staging.synvya.com/login',
+    'auth.synvya.com': 'https://account.synvya.com/login'
+};
+
+function getHostFromDomain(domain: string): string | null {
+    if (!domain) return null;
+
+    const normalized = domain.startsWith('http://') || domain.startsWith('https://')
+        ? domain
+        : `https://${domain}`;
+
+    try {
+        return new URL(normalized).host;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Get the login URL for the current deployment.
+ * Synvya auth domains redirect into the account app; all other deployments
+ * keep using the local Keycast login route.
+ */
+export function getLoginUrl(defaultValue: string = '/login'): string {
+    const host = getHostFromDomain(getViteDomain(''));
+    if (!host) return defaultValue;
+
+    return CLIENT_LOGIN_URLS[host] || defaultValue;
+}
+
 /**
  * Get ALLOWED_PUBKEYS (comma-separated string)
  */

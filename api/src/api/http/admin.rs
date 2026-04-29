@@ -729,7 +729,18 @@ pub async fn batch_create_claim_tokens(
 
         // Send email if requested
         if let (Some(email), Some(svc)) = (&req.delivery_email, &email_service) {
-            if let Err(e) = svc.send_claim_email(email, &claim_url).await {
+            // Best-effort kind-0 fetch for the preloaded account so the email
+            // can show the restaurant's display name + logo on the claim card.
+            // Falls back to the plain layout on any failure.
+            let relays = keycast_core::types::authorization::Authorization::get_bunker_relays();
+            let profile = crate::nostr_profile::fetch_profile_metadata(&user_pubkey, &relays).await;
+            let account_display_name = profile.as_ref().and_then(|p| p.display_name.as_deref());
+            let account_picture = profile.as_ref().and_then(|p| p.picture.as_deref());
+
+            if let Err(e) = svc
+                .send_claim_email(email, &claim_url, account_display_name, account_picture)
+                .await
+            {
                 tracing::warn!(
                     "Failed to send claim email for vine_id={} to {}: {}",
                     vine_id,
@@ -896,6 +907,262 @@ pub async fn get_user_lookup(
     }
 
     Ok(Json(UserLookupResponse { results, total }))
+}
+
+// ============================================================================
+// GET /api/admin/user-teams?pubkey=<hex> - Teams, restaurant keys, and authorizations
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct UserTeamsQuery {
+    pub pubkey: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserTeamsResponse {
+    pub teams: Vec<AdminTeamDetails>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminTeamDetails {
+    pub id: i32,
+    pub name: String,
+    pub role: String,
+    pub joined_at: String,
+    pub restaurant_keys: Vec<AdminRestaurantKey>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminRestaurantKey {
+    pub id: i32,
+    pub name: String,
+    pub pubkey: String,
+    pub created_at: String,
+    pub authorizations: Vec<AdminAuthorization>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminAuthorization {
+    pub id: i32,
+    pub label: Option<String>,
+    pub bunker_public_key: String,
+    pub relays: Vec<String>,
+    pub connected_client_pubkey: Option<String>,
+    pub connected_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub revoked_reason: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AuthorizationRow {
+    id: i32,
+    label: Option<String>,
+    bunker_public_key: String,
+    relays: String,
+    connected_client_pubkey: Option<String>,
+    connected_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    revoked_reason: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Return all teams the user is a member of, with the team-owned stored (restaurant)
+/// keys and their authorizations. Support admin only. Tenant-scoped.
+pub async fn get_user_teams(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    axum::extract::Query(query): axum::extract::Query<UserTeamsQuery>,
+) -> ApiResult<Json<UserTeamsResponse>> {
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let pubkey = query.pubkey.trim().to_lowercase();
+    if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::bad_request("pubkey must be a 64-char hex string"));
+    }
+
+    // Teams the user belongs to (tenant-scoped)
+    let team_rows: Vec<(i32, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT t.id, t.name, tu.role, tu.created_at
+         FROM teams t
+         INNER JOIN team_users tu ON tu.team_id = t.id
+         WHERE tu.user_pubkey = $1 AND t.tenant_id = $2
+         ORDER BY tu.created_at ASC",
+    )
+    .bind(&pubkey)
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to load teams: {}", e)))?;
+
+    let mut teams = Vec::with_capacity(team_rows.len());
+
+    for (team_id, team_name, role, joined_at) in team_rows {
+        // Stored (restaurant) keys owned by this team
+        let key_rows: Vec<(i32, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+            "SELECT id, name, pubkey, created_at
+             FROM stored_keys
+             WHERE team_id = $1 AND tenant_id = $2
+             ORDER BY created_at ASC",
+        )
+        .bind(team_id)
+        .bind(tenant_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load stored keys: {}", e)))?;
+
+        let mut restaurant_keys = Vec::with_capacity(key_rows.len());
+
+        for (key_id, key_name, key_pubkey, key_created_at) in key_rows {
+            let auth_rows: Vec<AuthorizationRow> = sqlx::query_as(
+                "SELECT id, label, bunker_public_key, relays, connected_client_pubkey,
+                        connected_at, expires_at, revoked_at, revoked_reason,
+                        created_at, updated_at
+                 FROM authorizations
+                 WHERE stored_key_id = $1 AND tenant_id = $2
+                 ORDER BY created_at ASC",
+            )
+            .bind(key_id)
+            .bind(tenant_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to load authorizations: {}", e)))?;
+
+            let authorizations = auth_rows
+                .into_iter()
+                .map(|row| {
+                    let relays: Vec<String> = serde_json::from_str(&row.relays).unwrap_or_default();
+                    AdminAuthorization {
+                        id: row.id,
+                        label: row.label,
+                        bunker_public_key: row.bunker_public_key,
+                        relays,
+                        connected_client_pubkey: row.connected_client_pubkey,
+                        connected_at: row.connected_at.map(|d| d.to_rfc3339()),
+                        expires_at: row.expires_at.map(|d| d.to_rfc3339()),
+                        revoked_at: row.revoked_at.map(|d| d.to_rfc3339()),
+                        revoked_reason: row.revoked_reason,
+                        created_at: row.created_at.to_rfc3339(),
+                        updated_at: row.updated_at.to_rfc3339(),
+                    }
+                })
+                .collect();
+
+            restaurant_keys.push(AdminRestaurantKey {
+                id: key_id,
+                name: key_name,
+                pubkey: key_pubkey,
+                created_at: key_created_at.to_rfc3339(),
+                authorizations,
+            });
+        }
+
+        teams.push(AdminTeamDetails {
+            id: team_id,
+            name: team_name,
+            role,
+            joined_at: joined_at.to_rfc3339(),
+            restaurant_keys,
+        });
+    }
+
+    Ok(Json(UserTeamsResponse { teams }))
+}
+
+// ============================================================================
+// POST /api/admin/authorizations/:id/revoke - Soft-delete a team authorization
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeAuthorizationRequest {
+    /// Optional free-text reason (e.g. "superseded", "admin_revoke", "client_revoke").
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RevokeAuthorizationResponse {
+    pub revoked: bool,
+    pub authorization_id: i32,
+}
+
+/// Soft-delete a team authorization by setting `revoked_at = NOW()` and
+/// notifying the signer daemon so it drops the in-memory handler.
+/// Support admin only; tenant-scoped.
+pub async fn revoke_authorization(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(authorization_id): Path<i32>,
+    Json(req): Json<RevokeAuthorizationRequest>,
+) -> ApiResult<Json<RevokeAuthorizationResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    let reason = req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let repo = keycast_core::repositories::AuthorizationRepository::new(pool.clone());
+    let bunker_pubkey = repo
+        .revoke(tenant_id, authorization_id, reason)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to revoke authorization: {}", e)))?;
+
+    let Some(bunker_pubkey) = bunker_pubkey else {
+        // Either not found in this tenant, or already revoked.
+        return Err(ApiError::not_found(
+            "Authorization not found or already revoked",
+        ));
+    };
+
+    // Notify the signer daemon to drop the in-memory handler. If the channel
+    // send fails, the DB write still stands; a daemon restart will pick up the
+    // revoked state on next lazy load.
+    if let Some(tx) = &auth_state.auth_tx {
+        use keycast_core::authorization_channel::AuthorizationCommand;
+        if let Err(e) = tx
+            .send(AuthorizationCommand::Remove {
+                bunker_pubkey: bunker_pubkey.clone(),
+            })
+            .await
+        {
+            tracing::warn!(
+                "Failed to notify signer of revocation for {}: {}",
+                bunker_pubkey,
+                e
+            );
+        }
+    }
+
+    tracing::info!(
+        "Authorization {} revoked by admin {} (tenant {}, reason: {:?})",
+        authorization_id,
+        &auth.pubkey[..8.min(auth.pubkey.len())],
+        tenant_id,
+        reason,
+    );
+
+    Ok(Json(RevokeAuthorizationResponse {
+        revoked: true,
+        authorization_id,
+    }))
 }
 
 // ============================================================================

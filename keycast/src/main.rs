@@ -377,11 +377,15 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         std::process::exit(1);
     }
 
-    // Initialize tracing with JSON format in production for GCP Cloud Logging
-    let is_production = std::env::var("NODE_ENV").unwrap_or_default() == "production";
+    // Initialize tracing with JSON format in production/staging for GCP Cloud Logging
+    let node_env = std::env::var("NODE_ENV").unwrap_or_default();
+    let is_production = node_env == "production";
+    let is_staging = node_env == "staging";
+    let is_deployed = is_production || is_staging;
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if is_production {
+    if is_deployed {
         tracing_subscriber::registry()
             .with(filter)
             .with(tracing_subscriber::fmt::layer().json())
@@ -588,6 +592,7 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         bcrypt_sender,
         redis: Some(prefixed_redis),
         secret_pool: secret_pool_receiver,
+        secure_cookies: is_deployed,
     });
 
     // Set global state for routes that use it
@@ -730,65 +735,118 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    // SvelteKit frontend - explicitly handle root and index.html with injection
-    // This ensures index.html always goes through injection, not served as static file
-    let index_path = PathBuf::from(&web_build_dir).join("index.html");
-    let index_path_for_root = index_path.clone();
-    let index_path_for_index = index_path.clone();
+    // SvelteKit frontend serving is optional.
+    //
+    // In deployments where end users should never see a keycast personal UI
+    // (e.g. Synvya, where identity is managed by the parent product and keycast
+    // only needs to expose its OAuth/API surface), set DISABLE_WEB_UI=true.
+    // Non-API requests then redirect to WEB_UI_REDIRECT_URL (if set) or 404.
+    //
+    // /api/*, /.well-known/*, /health*, and the server-rendered
+    // /api/oauth/authorize approval page are unaffected.
+    let disable_web_ui = env::var("DISABLE_WEB_UI")
+        .unwrap_or_else(|_| "false".to_string())
+        .parse::<bool>()
+        .unwrap_or(false);
 
-    // Handler that injects runtime env vars into index.html
-    let inject_handler = move || {
-        let index_path = index_path_for_root.clone();
-        async move {
-            match tokio::fs::read_to_string(&index_path).await {
-                Ok(content) => {
-                    // Inject runtime environment variables into HTML
-                    let injected_content = inject_runtime_env(&content);
-                    Html(injected_content).into_response()
-                }
-                Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+    let app = if disable_web_ui {
+        let redirect_url = env::var("WEB_UI_REDIRECT_URL").ok();
+        tracing::info!(
+            "✔︎ Web UI disabled (DISABLE_WEB_UI=true). Non-API requests will {}",
+            match &redirect_url {
+                Some(url) => format!("redirect to {}", url),
+                None => "return 404".to_string(),
             }
-        }
-    };
+        );
 
-    let inject_handler_index = move || {
-        let index_path = index_path_for_index.clone();
-        async move {
-            match tokio::fs::read_to_string(&index_path).await {
-                Ok(content) => {
-                    // Inject runtime environment variables into HTML
-                    let injected_content = inject_runtime_env(&content);
-                    Html(injected_content).into_response()
+        // Email verification links land on /verify-email, a SvelteKit SPA route.
+        // Even in DISABLE_WEB_UI deployments we must serve this page (plus its JS/CSS
+        // assets) so the client can POST the token to /api/auth/verify-email.
+        let index_path = PathBuf::from(&web_build_dir).join("index.html");
+        let verify_index_path = index_path.clone();
+        let verify_email_handler = move || {
+            let index_path = verify_index_path.clone();
+            async move {
+                match tokio::fs::read_to_string(&index_path).await {
+                    Ok(content) => Html(inject_runtime_env(&content)).into_response(),
+                    Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
                 }
-                Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
             }
-        }
-    };
+        };
 
-    // Explicitly route root and index.html to injection handler
-    let app = app
-        .route("/", axum::routing::get(inject_handler))
-        .route("/index.html", axum::routing::get(inject_handler_index));
+        let app = app.route("/verify-email", axum::routing::get(verify_email_handler));
 
-    // Serve other static files, with fallback for SPA routes (non-file routes)
-    let web_build_dir_for_fallback = web_build_dir.clone();
-    let index_path_for_fallback = PathBuf::from(&web_build_dir).join("index.html");
-    let app = app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::get(
-        move || {
-            let index_path = index_path_for_fallback.clone();
-            let _web_build_dir = web_build_dir_for_fallback.clone();
+        // Serve SvelteKit static assets (/_app/*, favicon, logos) needed by the
+        // verify-email page; unmatched routes redirect to WEB_UI_REDIRECT_URL.
+        let redirect_url_for_fallback = redirect_url.clone();
+        app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::any(
+            move || {
+                let redirect_url = redirect_url_for_fallback.clone();
+                async move {
+                    match redirect_url {
+                        Some(url) => axum::response::Redirect::temporary(&url).into_response(),
+                        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                    }
+                }
+            },
+        )))
+    } else {
+        // SvelteKit frontend - explicitly handle root and index.html with injection
+        // This ensures index.html always goes through injection, not served as static file
+        let index_path = PathBuf::from(&web_build_dir).join("index.html");
+        let index_path_for_root = index_path.clone();
+        let index_path_for_index = index_path.clone();
+
+        // Handler that injects runtime env vars into index.html
+        let inject_handler = move || {
+            let index_path = index_path_for_root.clone();
             async move {
                 match tokio::fs::read_to_string(&index_path).await {
                     Ok(content) => {
-                        // Inject runtime environment variables into HTML
                         let injected_content = inject_runtime_env(&content);
                         Html(injected_content).into_response()
                     }
                     Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
                 }
             }
-        },
-    )));
+        };
+
+        let inject_handler_index = move || {
+            let index_path = index_path_for_index.clone();
+            async move {
+                match tokio::fs::read_to_string(&index_path).await {
+                    Ok(content) => {
+                        let injected_content = inject_runtime_env(&content);
+                        Html(injected_content).into_response()
+                    }
+                    Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                }
+            }
+        };
+
+        let app = app
+            .route("/", axum::routing::get(inject_handler))
+            .route("/index.html", axum::routing::get(inject_handler_index));
+
+        // Serve other static files, with fallback for SPA routes (non-file routes)
+        let web_build_dir_for_fallback = web_build_dir.clone();
+        let index_path_for_fallback = PathBuf::from(&web_build_dir).join("index.html");
+        app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::get(
+            move || {
+                let index_path = index_path_for_fallback.clone();
+                let _web_build_dir = web_build_dir_for_fallback.clone();
+                async move {
+                    match tokio::fs::read_to_string(&index_path).await {
+                        Ok(content) => {
+                            let injected_content = inject_runtime_env(&content);
+                            Html(injected_content).into_response()
+                        }
+                        Err(_) => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                    }
+                }
+            },
+        )))
+    };
 
     // Add request tracing with trace_id for debugging
     // TraceLayer creates a span for each request with method, uri, and trace_id

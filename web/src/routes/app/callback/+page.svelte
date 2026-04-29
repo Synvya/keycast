@@ -1,33 +1,41 @@
 <script lang="ts">
-// ABOUTME: OAuth callback fallback page for iOS/Android Universal Links
-// ABOUTME: Users only see this if Universal Link fails - tap button to retry
-import { page } from "$app/stores";
-import { browser } from "$app/environment";
+    // ABOUTME: OAuth callback fallback page for iOS/Android Universal Links
+    // ABOUTME: Users only see this if Universal Link fails - tap button to retry
+    import { page } from "$app/stores";
+    import { browser } from "$app/environment";
 
-const currentUrl = $derived(browser ? $page.url.href : "");
+    const currentUrl = $derived(browser ? $page.url.href : "");
 </script>
 
 <svelte:head>
-    <title>Returning to App - diVine Login</title>
-    <meta name="robots" content="noindex">
+    <title>Returning to App - Synvya Login</title>
+    <meta name="robots" content="noindex" />
 </svelte:head>
 
 <div class="callback-container">
     <div class="callback-card">
         <div class="icon">
-            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                <polyline points="16 17 21 12 16 7"/>
-                <line x1="21" y1="12" x2="9" y2="12"/>
+            <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="48"
+                height="48"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+            >
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
             </svg>
         </div>
 
         <h1>Authentication Complete</h1>
         <p>Tap the button below to return to the app.</p>
 
-        <a href={currentUrl} class="open-app-button">
-            Open in App
-        </a>
+        <a href={currentUrl} class="open-app-button"> Open in App </a>
 
         <p class="hint">
             If the app doesn't open, make sure the app is installed.
@@ -89,7 +97,9 @@ const currentUrl = $derived(browser ? $page.url.href : "");
         background: var(--color-divine-green);
         border-radius: 9999px;
         text-decoration: none;
-        transition: background 0.2s, box-shadow 0.2s;
+        transition:
+            background 0.2s,
+            box-shadow 0.2s;
     }
 
     .open-app-button:hover {

@@ -73,7 +73,11 @@ services:
       FROM_NAME: ${FROM_NAME:-Synvya}
       BASE_URL: ${BASE_URL:?error}
       APP_URL: ${APP_URL:?error}
-      DISABLE_EMAILS: ${DISABLE_EMAILS:-}
+      INVITE_BASE_URL: ${INVITE_BASE_URL:?error}
+      # Synvya hosts the password reset page on a different domain
+      # (account.synvya.com / account.staging.synvya.com) from the auth host.
+      PASSWORD_RESET_BASE_URL: ${PASSWORD_RESET_BASE_URL:?error}
+      DISABLE_EMAILS:
       # Frontend
       VITE_DOMAIN: ${VITE_DOMAIN:-}
       VITE_ALLOWED_PUBKEYS: ${VITE_ALLOWED_PUBKEYS:-}
@@ -81,6 +85,10 @@ services:
       VITE_NDK_BUNKER_RELAYS: ${VITE_NDK_BUNKER_RELAYS:-}
       # Performance
       SQLX_POOL_SIZE: ${SQLX_POOL_SIZE:-10}
+      # Disable keycast web UI in Synvya deployments — users manage identity
+      # via Synvya, not via keycast. See issue #24.
+      DISABLE_WEB_UI: ${DISABLE_WEB_UI:-true}
+      WEB_UI_REDIRECT_URL: ${WEB_UI_REDIRECT_URL:-https://www.synvya.com}
     depends_on:
       postgres:
         condition: service_healthy

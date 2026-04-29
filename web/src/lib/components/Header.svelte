@@ -34,7 +34,7 @@ onMount(async () => {
 
 <div class="container flex flex-row items-center justify-between mb-8">
 	<a href="/" class="flex flex-col items-start gap-0 group transition-opacity hover:opacity-85">
-		<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="h-[22px]" />
+		<img src="/synvya-logo.svg" alt="{BRAND.shortName}" class="h-[22px]" />
 		<span class="text-[10px] font-medium tracking-[3px] uppercase text-[var(--color-divine-green)] opacity-60">Login</span>
 	</a>
 

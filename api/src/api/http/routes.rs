@@ -46,10 +46,12 @@ pub fn api_routes(
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
-    // Logout route - public CORS so third-party OAuth apps can revoke sessions
-    // Protected by Bearer token (UCAN), not cookies
+    // Logout route - restricted CORS with credentials
+    // This endpoint clears the first-party session cookie, so it must use
+    // auth_cors rather than wildcard public CORS.
     let logout_route = Router::new()
         .route("/auth/logout", post(auth::logout))
+        .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
     // verify_email needs auth_state for key_manager (to decrypt keys and issue UCAN)
@@ -195,6 +197,11 @@ pub fn api_routes(
             get(admin::get_claim_token_stats),
         )
         .route("/admin/user-lookup", get(admin::get_user_lookup))
+        .route("/admin/user-teams", get(admin::get_user_teams))
+        .route(
+            "/admin/authorizations/:id/revoke",
+            post(admin::revoke_authorization),
+        )
         .route(
             "/admin/support-admins",
             get(admin::list_support_admins).post(admin::add_support_admin),
@@ -243,6 +250,21 @@ pub fn api_routes(
             delete(teams::delete_authorization),
         )
         .route("/teams/:id/policies", post(teams::add_policy))
+        .route("/teams/:id/invite", post(teams::invite_user))
+        .route("/teams/:id/invitations", get(teams::list_invitations))
+        .route(
+            "/teams/:id/invitations/:invitation_id",
+            delete(teams::revoke_invitation),
+        )
+        .with_state(pool.clone());
+
+    // Invitation routes (mixed auth: preview is public, accept requires auth)
+    let invitation_preview_route = Router::new()
+        .route("/invitations/preview", get(teams::preview_invitation))
+        .with_state(pool.clone());
+
+    let invitation_accept_route = Router::new()
+        .route("/invitations/accept", post(teams::accept_invitation))
         .with_state(pool);
 
     // Combine routes
@@ -257,7 +279,7 @@ pub fn api_routes(
         .merge(bunker_routes) // Has auth_cors (bunker creation)
         .merge(key_export_routes) // Has auth_cors (authenticated, needs cookies)
         .merge(change_key_route) // Has auth_cors (authenticated, needs cookies)
-        .merge(logout_route.layer(public_cors.clone())) // Public CORS - Bearer token auth, third-party apps
+        .merge(logout_route) // Has auth_cors (credentialed cookie logout)
         .merge(account_delete_route.layer(public_cors.clone())) // Public CORS - Bearer token auth, third-party apps
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer
         .merge(email_routes.layer(public_cors.clone()))
@@ -267,6 +289,8 @@ pub fn api_routes(
         .merge(signing_routes.layer(public_cors.clone()))
         .merge(nostr_rpc_routes.layer(public_cors.clone())) // NIP-46 RPC for OAuth apps
         .merge(team_routes.layer(auth_cors.clone())) // Team routes need credentials
+        .merge(invitation_preview_route.layer(auth_cors.clone())) // Auth CORS - token-gated but clients may send credentials
+        .merge(invitation_accept_route.layer(auth_cors.clone())) // Auth - accept invite needs session
         .merge(discovery_route.layer(public_cors.clone()))
         .merge(policy_routes.layer(public_cors.clone())) // Public - available to third-party OAuth apps
         .merge(headless_routes.layer(public_cors.clone())) // Public CORS - embedded flow for web + mobile (PKCE protects token exchange)

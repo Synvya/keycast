@@ -68,3 +68,13 @@ The client represents humans. The server represents the always-on restaurant ope
 - deployable AWS hosting for Keycast itself
 - support for background provisioning of server-side restaurant authorizations
 - bot-resistant email endpoints (via AWS WAF rate limiting)
+
+## Team Bootstrap Rule
+
+Keycast now supports a narrow self-serve bootstrap path for Synvya:
+
+- an authenticated user may create their first team even if they are not whitelisted
+- the creator becomes the team admin under the normal Keycast model
+- once the user already belongs to a team, additional team creation should move through Synvya's manual-approval or server-managed provisioning flow
+
+This is a bootstrap rule, not a restaurant-ownership rule. Synvya/server remains the system that decides whether a restaurant team is official, approved, or allowed to proceed beyond onboarding.

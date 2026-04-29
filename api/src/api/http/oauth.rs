@@ -18,12 +18,28 @@ use keycast_core::repositories::{
 };
 use keycast_core::types::refresh_token::generate_refresh_token;
 use nostr_sdk::{Keys, ToBech32};
+
+use super::auth::format_session_cookie;
 use rand::Rng;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 // Import constants and helpers from auth module
 use super::auth::{generate_secure_token, token_expiry_seconds, EMAIL_VERIFICATION_EXPIRY_HOURS};
+
+fn forgot_password_url_for_auth_host() -> &'static str {
+    let auth_url = std::env::var("APP_URL")
+        .or_else(|_| std::env::var("VITE_DOMAIN"))
+        .unwrap_or_default();
+
+    if auth_url.contains("auth.staging.synvya.com") {
+        "https://account.staging.synvya.com/login"
+    } else if auth_url.contains("auth.synvya.com") {
+        "https://account.synvya.com/login"
+    } else {
+        "/forgot-password"
+    }
+}
 
 /// Generate a 256-bit random authorization handle (64 hex characters)
 /// Used for silent re-authentication in OAuth flows
@@ -1193,7 +1209,7 @@ pub async fn authorize_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <img src="/divine-logo.svg" alt="diVine" />
+                <img src="/synvya-logo.svg" alt="Synvya" />
                 <span class="logo-sub">Login</span>
             </div>
             <h1>Authorize App</h1>
@@ -1224,7 +1240,7 @@ pub async fn authorize_get(
             </div>
 
             <p class="disclaimer">
-                By authorizing, you agree to diVine's <a href="https://divine.video/terms" target="_blank">terms</a> and <a href="https://divine.video/privacy" target="_blank">privacy policy</a>.
+                By authorizing, you agree to Synvya's <a href="https://divine.video/terms" target="_blank">terms</a> and <a href="https://divine.video/privacy" target="_blank">privacy policy</a>.
             </p>
 
             <div class="buttons">
@@ -1469,6 +1485,7 @@ pub async fn authorize_get(
         }
     } else {
         // User not authenticated - show login/register form (divine.video-inspired design)
+        let forgot_password_url = forgot_password_url_for_auth_host();
         format!(
             r#"
 <!DOCTYPE html>
@@ -1476,7 +1493,7 @@ pub async fn authorize_get(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sign in - diVine Login</title>
+    <title>Sign in - Synvya Login</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
@@ -1786,7 +1803,7 @@ pub async fn authorize_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <img src="/divine-logo.svg" alt="diVine" />
+                <img src="/synvya-logo.svg" alt="Synvya" />
                 <span class="logo-sub">Login</span>
             </div>
             <h1>Sign in</h1>
@@ -1830,7 +1847,7 @@ pub async fn authorize_get(
                     <button type="submit" class="btn_primary">Sign in</button>
                 </form>
                 <div class="toggle_link">
-                    <a href="/forgot-password">Forgot password?</a>
+                    <a href="{}">Forgot password?</a>
                 </div>
                 <div class="toggle_link">
                     Don't have an account? <a onclick="showForm('register')">Create one</a>
@@ -1903,11 +1920,11 @@ pub async fn authorize_get(
             if (form === 'login') {{
                 document.getElementById('login_view').classList.add('active');
                 if (headerTitle) headerTitle.textContent = 'Sign in';
-                document.title = 'Sign in - diVine Login';
+                document.title = 'Sign in - Synvya Login';
             }} else {{
                 document.getElementById('register_view').classList.add('active');
                 if (headerTitle) headerTitle.textContent = 'Create account';
-                document.title = 'Create account - diVine Login';
+                document.title = 'Create account - Synvya Login';
             }}
 
             hideError();
@@ -2148,6 +2165,7 @@ pub async fn authorize_get(
                 .unwrap_or('A')
                 .to_uppercase(), // app icon letter
             params.client_id, // app name in card
+            forgot_password_url, // Forgot password link target
             params.client_id, // JS clientId
             params.redirect_uri, // JS redirectUri
             scope_str,        // JS scope
@@ -2158,8 +2176,8 @@ pub async fn authorize_get(
 
     // If we detected a stale cookie, clear it
     if clear_cookie {
-        let clear_cookie_header =
-            "keycast_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0";
+        let secure_cookies = auth_state.state.secure_cookies;
+        let clear_cookie_header = format_session_cookie("", 0, secure_cookies);
         Ok((
             [(axum::http::header::SET_COOKIE, clear_cookie_header)],
             Html(html),
@@ -3008,10 +3026,8 @@ pub async fn oauth_login(
     tracing::info!("OAuth popup login successful for user: {}", public_key);
 
     // Set cookie and return success - page will reload to show approval
-    let cookie = format!(
-        "keycast_session={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400",
-        ucan_token
-    );
+    let secure_cookies = auth_state.state.secure_cookies;
+    let cookie = format_session_cookie(&ucan_token, 86400, secure_cookies);
 
     Ok((
         [(axum::http::header::SET_COOKIE, cookie)],
@@ -3375,7 +3391,7 @@ pub async fn connect_get(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Authorize Connection - diVine Login</title>
+    <title>Authorize Connection - Synvya Login</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Bricolage+Grotesque:wght@600;700&display=swap" rel="stylesheet">
@@ -3597,7 +3613,7 @@ pub async fn connect_get(
     <div class="container">
         <div class="header">
             <div class="logo">
-                <img src="/divine-logo.svg" alt="diVine" />
+                <img src="/synvya-logo.svg" alt="Synvya" />
                 <span class="logo-sub">Login</span>
             </div>
             <h1>Authorize Connection</h1>
@@ -3619,7 +3635,7 @@ pub async fn connect_get(
         </div>
 
         <div class="warning">
-            This will allow the app to sign events on your behalf using your diVine-managed keys.
+            This will allow the app to sign events on your behalf using your Synvya-managed keys.
         </div>
 
         <form method="POST" action="/api/oauth/connect">

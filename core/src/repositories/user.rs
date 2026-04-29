@@ -16,6 +16,7 @@ pub struct VerificationTokenData {
     pub password_hash: Option<String>,
     pub created_at: DateTime<Utc>,
     pub email_verified: bool,
+    pub redirect_uri: Option<String>,
 }
 
 /// User details returned by admin lookup.
@@ -147,6 +148,25 @@ impl UserRepository {
         .await?;
 
         Ok(count > 0)
+    }
+
+    /// Count how many teams this user belongs to within the tenant.
+    pub async fn count_team_memberships(
+        &self,
+        tenant_id: i64,
+        pubkey: &PublicKey,
+    ) -> Result<i64, RepositoryError> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*)
+             FROM team_users tu
+             JOIN teams t ON t.id = tu.team_id
+             WHERE tu.user_pubkey = $1 AND t.tenant_id = $2",
+        )
+        .bind(pubkey.to_hex())
+        .bind(tenant_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
     }
 
     // =========================================================================
@@ -304,6 +324,7 @@ impl UserRepository {
         verification_token: &str,
         verification_expires_at: DateTime<Utc>,
         encrypted_secret: &[u8],
+        redirect_uri: Option<&str>,
     ) -> Result<(), RepositoryError> {
         let mut tx = self.pool.begin().await?;
         let now = Utc::now();
@@ -311,8 +332,8 @@ impl UserRepository {
         // Insert user with email verification token
         // password_hash may be NULL for async bcrypt flow (computed in background)
         sqlx::query(
-            "INSERT INTO users (pubkey, tenant_id, email, password_hash, email_verified, email_verification_token, email_verification_expires_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO users (pubkey, tenant_id, email, password_hash, email_verified, email_verification_token, email_verification_expires_at, redirect_uri, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(pubkey)
         .bind(tenant_id)
@@ -321,6 +342,7 @@ impl UserRepository {
         .bind(false)
         .bind(verification_token)
         .bind(verification_expires_at)
+        .bind(redirect_uri)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -354,7 +376,7 @@ impl UserRepository {
         tenant_id: i64,
     ) -> Result<Option<VerificationTokenData>, RepositoryError> {
         sqlx::query_as(
-            "SELECT pubkey, email_verification_expires_at, password_hash, created_at, email_verified FROM users
+            "SELECT pubkey, email_verification_expires_at, password_hash, created_at, email_verified, redirect_uri FROM users
              WHERE email_verification_token = $1 AND tenant_id = $2",
         )
         .bind(token)
@@ -1402,6 +1424,20 @@ mod tests {
         result.0
     }
 
+    async fn create_test_tenant(pool: &PgPool, tenant_id: i64, suffix: &str) {
+        sqlx::query(
+            "INSERT INTO tenants (id, domain, name, created_at, updated_at)
+             VALUES ($1, $2, $3, NOW(), NOW())
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .bind(format!("tenant-{}.{}.test", tenant_id, suffix))
+        .bind(format!("Tenant {}", tenant_id))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn add_user_to_team(pool: &PgPool, pubkey: &str, team_id: i32, role: &str) {
         sqlx::query(
             "INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
@@ -1555,6 +1591,50 @@ mod tests {
         let result = repo.is_team_member(1, &pubkey, team_id).await;
         assert!(result.is_ok());
         assert!(!result.unwrap(), "User should not be member");
+    }
+
+    #[tokio::test]
+    async fn test_count_team_memberships_zero_for_new_user() {
+        let pool = setup_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+
+        repo.find_or_create(1, &pubkey).await.unwrap();
+
+        let result = repo.count_team_memberships(1, &pubkey).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0, "New user should have zero teams");
+    }
+
+    #[tokio::test]
+    async fn test_count_team_memberships_filters_by_tenant() {
+        let pool = setup_pool().await;
+        let repo = UserRepository::new(pool.clone());
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+        let suffix = test_suffix();
+
+        create_test_tenant(&pool, 2, &suffix).await;
+        repo.find_or_create(1, &pubkey).await.unwrap();
+        repo.find_or_create(2, &pubkey).await.unwrap();
+
+        let team1_id = create_test_team(&pool, &format!("Tenant One {}", suffix)).await;
+        add_user_to_team(&pool, &pubkey.to_hex(), team1_id, "admin").await;
+
+        let team2_id: i32 = sqlx::query_scalar(
+            "INSERT INTO teams (tenant_id, name, created_at, updated_at)
+             VALUES (2, $1, NOW(), NOW())
+             RETURNING id",
+        )
+        .bind(format!("Tenant Two {}", suffix))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        add_user_to_team(&pool, &pubkey.to_hex(), team2_id, "admin").await;
+
+        assert_eq!(repo.count_team_memberships(1, &pubkey).await.unwrap(), 1);
+        assert_eq!(repo.count_team_memberships(2, &pubkey).await.unwrap(), 1);
     }
 
     #[tokio::test]

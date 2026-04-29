@@ -7,7 +7,7 @@ services:
     image: postgres:16
     container_name: keycast-postgres
     environment:
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pass-apr-2026-local}
       POSTGRES_DB: keycast
       POSTGRES_USER: postgres
     ports:

@@ -1,40 +1,46 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { toast } from 'svelte-hot-french-toast';
-	import { KeycastApi } from '$lib/keycast_api.svelte';
-	import { setCurrentUser } from '$lib/current_user.svelte';
-	import { BRAND } from '$lib/brand';
-	import { onMount } from 'svelte';
+	import { goto } from "$app/navigation";
+	import { toast } from "svelte-hot-french-toast";
+	import { KeycastApi } from "$lib/keycast_api.svelte";
+	import { setCurrentUser } from "$lib/current_user.svelte";
+	import { BRAND } from "$lib/brand";
+	import { getLoginUrl } from "$lib/utils/env";
+	import { onMount } from "svelte";
 
 	const api = new KeycastApi();
+	const loginUrl = getLoginUrl();
+	const isSynvyaManaged = loginUrl !== "/login";
+	const pageTitle = isSynvyaManaged
+		? "Create Account - Synvya"
+		: `Register - ${BRAND.name}`;
 	let hasExtension = $state(false);
 
 	onMount(() => {
-		hasExtension = typeof window !== 'undefined' && !!window.nostr;
+		hasExtension = typeof window !== "undefined" && !!window.nostr;
 	});
 
-	let email = $state('');
-	let password = $state('');
-	let confirmPassword = $state('');
-	let nsec = $state('');
+	let email = $state("");
+	let password = $state("");
+	let confirmPassword = $state("");
+	let nsec = $state("");
 	let showAdvanced = $state(false);
 	let isLoading = $state(false);
 	let showVerificationNotice = $state(false);
-	let registeredEmail = $state('');
+	let registeredEmail = $state("");
 
 	async function handleRegister() {
 		if (!email || !password) {
-			toast.error('Please enter email and password');
+			toast.error("Please enter email and password");
 			return;
 		}
 
 		if (password.length < 8) {
-			toast.error('Password must be at least 8 characters');
+			toast.error("Password must be at least 8 characters");
 			return;
 		}
 
 		if (password !== confirmPassword) {
-			toast.error('Passwords do not match');
+			toast.error("Passwords do not match");
 			return;
 		}
 
@@ -50,25 +56,27 @@
 				token?: string;
 				pubkey?: string;
 				email?: string;
-			}>('/auth/register', body);
+			}>("/auth/register", body);
 
 			// Check if email verification is required
 			if (response.verification_required) {
 				showVerificationNotice = true;
 				registeredEmail = response.email || email;
-				toast.success('Account created! Please verify your email.');
+				toast.success("Account created! Please verify your email.");
 				return;
 			}
 
 			// Legacy flow: immediate login
 			if (response.pubkey) {
 				toast.success(`Account created! Welcome ${email}`);
-				setCurrentUser(response.pubkey, 'cookie');
-				goto('/');
+				setCurrentUser(response.pubkey, "cookie");
+				goto("/");
 			}
 		} catch (err: any) {
-			console.error('Registration error:', err);
-			toast.error(err.message || 'Registration failed. Please try again.');
+			console.error("Registration error:", err);
+			toast.error(
+				err.message || "Registration failed. Please try again.",
+			);
 		} finally {
 			isLoading = false;
 		}
@@ -76,111 +84,164 @@
 </script>
 
 <svelte:head>
-	<title>Register - {BRAND.name}</title>
+	<title>{pageTitle}</title>
 </svelte:head>
 
-<div class="auth-page">
-	<div class="auth-container">
+<div class:auth-page={true} class:synvya-page={isSynvyaManaged}>
+	<div class:auth-container={true} class:synvya-container={isSynvyaManaged}>
 		<!-- Logo/Branding -->
-		<a href="/" class="auth-branding">
-			<img src="/divine-logo.svg" alt="{BRAND.shortName}" class="auth-logo-img" />
-			<span class="auth-logo-sub">Login</span>
+		<a href={isSynvyaManaged ? loginUrl : "/"} class="auth-branding">
+			{#if isSynvyaManaged}
+				<img
+					src="/synvya-logo.png"
+					alt="Synvya"
+					class="synvya-logo-img"
+				/>
+			{:else}
+				<img
+					src="/synvya-logo.svg"
+					alt={BRAND.shortName}
+					class="auth-logo-img"
+				/>
+				<span class="auth-logo-sub">Login</span>
+			{/if}
 		</a>
 
-		<h1>Create your account</h1>
-		<p class="subtitle">Your Nostr identity, simplified</p>
+		{#if !showVerificationNotice}
+			<div class="auth-copy">
+				<h1>
+					{isSynvyaManaged
+						? "Create your account"
+						: "Create your account"}
+				</h1>
+				<p class="subtitle">
+					{isSynvyaManaged
+						? "Enter your details below to get started."
+						: "Your Nostr identity, simplified"}
+				</p>
+			</div>
+		{/if}
 
 		{#if showVerificationNotice}
 			<div class="verification-notice">
 				<div class="notice-icon success">
-					<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" viewBox="0 0 256 256">
-						<path d="M224,48H32a8,8,0,0,0-8,8V192a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A8,8,0,0,0,224,48ZM203.43,64,128,133.15,52.57,64ZM216,192H40V74.19l82.59,75.71a8,8,0,0,0,10.82,0L216,74.19V192Z"></path>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						width="48"
+						height="48"
+						fill="currentColor"
+						viewBox="0 0 256 256"
+					>
+						<path
+							d="M224,48H32a8,8,0,0,0-8,8V192a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A8,8,0,0,0,224,48ZM203.43,64,128,133.15,52.57,64ZM216,192H40V74.19l82.59,75.71a8,8,0,0,0,10.82,0L216,74.19V192Z"
+						></path>
 					</svg>
 				</div>
 				<h2>Check your email</h2>
-				<p>We've sent a verification link to <strong>{registeredEmail}</strong></p>
-				<p class="subtext">Click the link in the email to verify your account and sign&nbsp;in.</p>
-				<a href="/login" class="btn-secondary">Go to Login</a>
+				<p>
+					We've sent a verification link to <strong
+						>{registeredEmail}</strong
+					>
+				</p>
+				<p class="subtext">
+					Click the link in the email to verify your account and
+					sign&nbsp;in.
+				</p>
+				<a href={loginUrl} class="btn-secondary">Go to Login</a>
 			</div>
 		{:else}
-			<form onsubmit={(e) => { e.preventDefault(); handleRegister(); }}>
-			<div class="form-group">
-				<label for="email">Email</label>
-				<input
-					id="email"
-					type="email"
-					bind:value={email}
-					placeholder="you@example.com"
-					required
-					disabled={isLoading}
-				/>
-			</div>
-
-			<div class="form-group">
-				<label for="password">Password</label>
-				<input
-					id="password"
-					type="password"
-					bind:value={password}
-					placeholder="At least 8 characters"
-					required
-					minlength="8"
-					disabled={isLoading}
-				/>
-			</div>
-
-			<div class="form-group">
-				<label for="confirm-password">Confirm Password</label>
-				<input
-					id="confirm-password"
-					type="password"
-					bind:value={confirmPassword}
-					placeholder="Re-enter password"
-					required
-					minlength="8"
-					disabled={isLoading}
-				/>
-			</div>
-
-			<button
-				type="button"
-				class="advanced-toggle"
-				onclick={() => showAdvanced = !showAdvanced}
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					handleRegister();
+				}}
 			>
-				Already have a Nostr account?
-				<span class="toggle-arrow" class:open={showAdvanced}>&rsaquo;</span>
-			</button>
-
-			{#if showAdvanced}
-			<div class="advanced-section">
 				<div class="form-group">
-					<label for="nsec">Your Nostr private key</label>
+					<label for="email">Email</label>
 					<input
-						id="nsec"
-						type="password"
-						bind:value={nsec}
-						placeholder="nsec1... or hex format"
-						autocomplete="off"
+						id="email"
+						type="email"
+						bind:value={email}
+						placeholder="you@example.com"
+						required
 						disabled={isLoading}
 					/>
-					<p class="field-hint">Import your existing key to use it with diVine Login. Leave empty to create a new one.</p>
 				</div>
-			</div>
-			{/if}
 
-			<button type="submit" class="btn-primary" disabled={isLoading}>
-				{isLoading ? 'Creating account...' : 'Create Account'}
-			</button>
-		</form>
+				<div class="form-group">
+					<label for="password">Password</label>
+					<input
+						id="password"
+						type="password"
+						bind:value={password}
+						placeholder="At least 8 characters"
+						required
+						minlength="8"
+						disabled={isLoading}
+					/>
+				</div>
+
+				<div class="form-group">
+					<label for="confirm-password">Confirm Password</label>
+					<input
+						id="confirm-password"
+						type="password"
+						bind:value={confirmPassword}
+						placeholder="Re-enter password"
+						required
+						minlength="8"
+						disabled={isLoading}
+					/>
+				</div>
+
+				{#if !isSynvyaManaged}
+					<button
+						type="button"
+						class="advanced-toggle"
+						onclick={() => (showAdvanced = !showAdvanced)}
+					>
+						Already have a Nostr account?
+						<span class="toggle-arrow" class:open={showAdvanced}
+							>&rsaquo;</span
+						>
+					</button>
+
+					{#if showAdvanced}
+						<div class="advanced-section">
+							<div class="form-group">
+								<label for="nsec">Your Nostr private key</label>
+								<input
+									id="nsec"
+									type="password"
+									bind:value={nsec}
+									placeholder="nsec1... or hex format"
+									autocomplete="off"
+									disabled={isLoading}
+								/>
+								<p class="field-hint">
+									Import your existing key to use it with
+									Synvya Login. Leave empty to create a new
+									one.
+								</p>
+							</div>
+						</div>
+					{/if}
+				{/if}
+
+				<button type="submit" class="btn-primary" disabled={isLoading}>
+					{isLoading ? "Creating account..." : "Create Account"}
+				</button>
+			</form>
 
 			<p class="auth-link">
-				Already have an account? <a href="/login">Sign in</a>
+				Already have an account? <a href={loginUrl}>Sign in</a>
 			</p>
 
-			{#if hasExtension}
-			<p class="auth-note">
-				Admin? <a href="/login">Sign in with your Nostr extension</a>
-			</p>
+			{#if !isSynvyaManaged && hasExtension}
+				<p class="auth-note">
+					Admin? <a href="/login">Sign in with your Nostr extension</a
+					>
+				</p>
 			{/if}
 		{/if}
 	</div>
@@ -196,6 +257,11 @@
 		background: var(--color-divine-bg);
 	}
 
+	.synvya-page {
+		padding: 1.5rem;
+		background: #ffffff;
+	}
+
 	.auth-container {
 		background: var(--color-divine-surface);
 		border: 1px solid var(--color-divine-border);
@@ -204,6 +270,18 @@
 		max-width: 420px;
 		width: 100%;
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.08);
+	}
+
+	.synvya-container {
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		padding: 0;
+		box-shadow: none;
+		max-width: 24rem;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
 	}
 
 	.auth-branding {
@@ -216,6 +294,10 @@
 		margin-bottom: 1.5rem;
 	}
 
+	.synvya-container .auth-branding {
+		margin-bottom: 0;
+	}
+
 	.auth-branding:hover {
 		opacity: 0.85;
 	}
@@ -224,14 +306,25 @@
 		height: 28px;
 	}
 
+	.synvya-logo-img {
+		height: 2.75rem;
+		width: auto;
+	}
+
 	.auth-logo-sub {
-		font-family: 'Inter', sans-serif;
+		font-family: "Inter", sans-serif;
 		font-weight: 500;
 		font-size: 11px;
 		letter-spacing: 3px;
 		text-transform: uppercase;
 		color: var(--color-divine-green);
 		opacity: 0.6;
+	}
+
+	.auth-copy {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
 	}
 
 	h1 {
@@ -244,6 +337,15 @@
 		letter-spacing: -0.02em;
 	}
 
+	.synvya-container h1 {
+		color: #0f172a;
+		font-family: var(--font-sans);
+		font-size: 1.875rem;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		line-height: 1.15;
+	}
+
 	.subtitle {
 		color: var(--color-divine-text-secondary);
 		margin: 0 0 1.5rem 0;
@@ -251,8 +353,23 @@
 		font-size: 0.95rem;
 	}
 
+	.synvya-container .subtitle,
+	.synvya-container .auth-link {
+		color: #64748b;
+	}
+
+	.synvya-container .subtitle {
+		margin: 0;
+		font-size: 0.975rem;
+		line-height: 1.5;
+	}
+
 	.form-group {
 		margin-bottom: 1rem;
+	}
+
+	.synvya-container .form-group {
+		margin-bottom: 0;
 	}
 
 	label {
@@ -261,6 +378,11 @@
 		color: var(--color-divine-text-secondary);
 		font-size: 0.875rem;
 		font-weight: 500;
+	}
+
+	.synvya-container label {
+		margin-bottom: 0.5rem;
+		color: #0f172a;
 	}
 
 	input {
@@ -272,7 +394,9 @@
 		color: var(--color-divine-text);
 		font-size: 1rem;
 		box-sizing: border-box;
-		transition: border-color 0.2s, box-shadow 0.2s;
+		transition:
+			border-color 0.2s,
+			box-shadow 0.2s;
 	}
 
 	input:focus {
@@ -289,6 +413,30 @@
 	input:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	.synvya-container input {
+		background: #eff6ff;
+		border-color: #dbe4f0;
+		border-radius: 0.75rem;
+		color: #0f172a;
+		padding: 0.875rem 1rem;
+	}
+
+	.synvya-container input::placeholder {
+		color: #9aa7b8;
+		opacity: 1;
+	}
+
+	.synvya-container input:focus {
+		border-color: #22c55e;
+		box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+	}
+
+	.synvya-container form {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
 	}
 
 	.advanced-toggle {
@@ -346,9 +494,20 @@
 		margin-top: 0.5rem;
 	}
 
+	.synvya-container .btn-primary {
+		margin-top: 0.25rem;
+		border-radius: 0.75rem;
+		background: #22c55e;
+		box-shadow: none;
+	}
+
 	.btn-primary:hover:not(:disabled) {
 		background: var(--color-divine-green-dark);
 		box-shadow: 0 2px 8px rgba(39, 197, 139, 0.16);
+	}
+
+	.synvya-container .btn-primary:hover:not(:disabled) {
+		background: #16a34a;
 	}
 
 	.btn-primary:disabled {
@@ -371,6 +530,13 @@
 
 	.auth-link a:hover {
 		text-decoration: underline;
+	}
+
+	.synvya-container .auth-link a {
+		color: #334155;
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		font-weight: 400;
 	}
 
 	.auth-note {
@@ -406,11 +572,20 @@
 		color: var(--color-divine-green);
 	}
 
+	.synvya-container .verification-notice .notice-icon.success {
+		color: #22c55e;
+	}
+
 	.verification-notice h2 {
 		font-size: 1.25rem;
 		font-weight: 600;
 		color: var(--color-divine-text);
 		margin-bottom: 0.5rem;
+	}
+
+	.synvya-container .verification-notice h2 {
+		color: #0f172a;
+		font-size: 1.5rem;
 	}
 
 	.verification-notice p {
@@ -420,8 +595,16 @@
 		margin-bottom: 0.5rem;
 	}
 
+	.synvya-container .verification-notice p {
+		color: #64748b;
+	}
+
 	.verification-notice strong {
 		color: var(--color-divine-text);
+	}
+
+	.synvya-container .verification-notice strong {
+		color: #0f172a;
 	}
 
 	.verification-notice .subtext {
@@ -443,8 +626,29 @@
 		transition: all 0.2s;
 	}
 
+	.synvya-container .btn-secondary {
+		border-radius: 0.75rem;
+		color: #334155;
+		border-color: #dbe4f0;
+	}
+
 	.btn-secondary:hover {
 		background: var(--color-divine-muted);
 		color: var(--color-divine-text);
+	}
+
+	.synvya-container .btn-secondary:hover {
+		background: #f8fafc;
+		border-color: #94a3b8;
+	}
+
+	@media (max-width: 640px) {
+		.synvya-page {
+			padding: 1.25rem;
+		}
+
+		.synvya-container h1 {
+			font-size: 1.625rem;
+		}
 	}
 </style>
