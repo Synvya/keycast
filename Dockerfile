@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Build stage for Rust API
 FROM rust:1.93-slim AS rust-builder
 
@@ -7,44 +8,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# ── Stage A: cache dependency compilation ─────────────────────────────
-# Copy only manifests + any cargo-auto-detected build scripts, then stub
-# every workspace member so dependencies compile without our source.
-# This layer is reused across pushes whenever Cargo.toml/Cargo.lock and
-# the member manifests are unchanged — saving the ~400-crate cold build.
-COPY ./Cargo.toml ./Cargo.toml
-COPY ./Cargo.lock ./Cargo.lock
-COPY ./api/Cargo.toml ./api/Cargo.toml
-COPY ./api/build.rs ./api/build.rs
-COPY ./core/Cargo.toml ./core/Cargo.toml
-COPY ./signer/Cargo.toml ./signer/Cargo.toml
-COPY ./keycast/Cargo.toml ./keycast/Cargo.toml
-COPY ./cluster-hashring/Cargo.toml ./cluster-hashring/Cargo.toml
-COPY ./tools/loadtest/Cargo.toml ./tools/loadtest/Cargo.toml
-
-RUN mkdir -p api/src core/src signer/src keycast/src cluster-hashring/src tools/loadtest/src && \
-    : > api/src/lib.rs && \
-    : > core/src/lib.rs && \
-    : > signer/src/lib.rs && \
-    : > cluster-hashring/src/lib.rs && \
-    echo 'fn main() {}' > keycast/src/main.rs && \
-    echo 'fn main() {}' > tools/loadtest/src/main.rs
-
-ARG CARGO_FEATURES=""
-ARG CARGO_BUILD_JOBS=""
-ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-
-RUN if [ -n "$CARGO_FEATURES" ]; then \
-      cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
-    else \
-      cargo build --release --bin keycast; \
-    fi
-
-# ── Stage B: real-source build ────────────────────────────────────────
-# Real sources overwrite stubs; cargo recompiles only the workspace
-# crates (their content hashes changed) and reuses dep .rlibs from
-# Stage A in target/release/deps.
 COPY ./api ./api
 COPY ./signer ./signer
 COPY ./core ./core
@@ -52,13 +15,31 @@ COPY ./keycast ./keycast
 COPY ./cluster-hashring ./cluster-hashring
 COPY ./tools ./tools
 COPY ./database/migrations ./database/migrations
+COPY ./Cargo.toml ./Cargo.toml
+COPY ./Cargo.lock ./Cargo.lock
 
-RUN if [ -n "$CARGO_FEATURES" ]; then \
+ARG CARGO_FEATURES=""
+ARG CARGO_BUILD_JOBS=""
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+
+# BuildKit cache mounts persist the cargo registry/git index and the
+# target/ directory across builds on the same host. Unchanged crates
+# stay compiled, so warm builds skip the ~400-crate dependency build.
+# Artifacts must be copied out of target/ before the RUN ends because
+# cache mounts are not part of the resulting image layer.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    set -e; \
+    if [ -n "$CARGO_FEATURES" ]; then \
       cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
     else \
       cargo build --release --bin keycast; \
-    fi
-RUN cargo build --release --example migrate-vine-users
+    fi; \
+    cargo build --release --example migrate-vine-users; \
+    mkdir -p /artifacts; \
+    cp target/release/keycast /artifacts/keycast; \
+    cp target/release/examples/migrate-vine-users /artifacts/migrate-vine-users
 
 # Build stage for Bun frontend
 FROM oven/bun:1 AS web-builder
@@ -144,9 +125,11 @@ RUN curl -fsSL https://bun.sh/install | bash
 # Create necessary directories
 RUN mkdir -p /app/database /data
 
-# Copy built artifacts - keycast binary and migration tool
-COPY --from=rust-builder /app/target/release/keycast ./
-COPY --from=rust-builder /app/target/release/examples/migrate-vine-users ./
+# Copy built artifacts - keycast binary and migration tool.
+# Sources are /artifacts/ (not target/) because target/ is a BuildKit
+# cache mount in rust-builder and is not present in its image layer.
+COPY --from=rust-builder /artifacts/keycast ./
+COPY --from=rust-builder /artifacts/migrate-vine-users ./
 COPY --from=web-builder /app/web/build ./web
 COPY --from=web-builder /app/web/package.json ./
 COPY --from=web-builder /app/web/node_modules ./node_modules

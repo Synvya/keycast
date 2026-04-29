@@ -155,6 +155,10 @@ jobs:
             # cold cargo build of all dependencies on every deploy.
             docker image prune -f || true
             docker builder prune -f || true
+            # Force BuildKit so the Dockerfile's --mount=type=cache works.
+            # Compose v2 enables it by default, but be explicit.
+            export DOCKER_BUILDKIT=1
+            export COMPOSE_DOCKER_CLI_BUILD=1
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               build --build-arg CARGO_BUILD_JOBS=2 postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
@@ -197,6 +201,10 @@ jobs:
             # cold cargo build of all dependencies on every deploy.
             docker image prune -f || true
             docker builder prune -f || true
+            # Force BuildKit so the Dockerfile's --mount=type=cache works.
+            # Compose v2 enables it by default, but be explicit.
+            export DOCKER_BUILDKIT=1
+            export COMPOSE_DOCKER_CLI_BUILD=1
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
               build --build-arg CARGO_BUILD_JOBS=2 postgres redis migrate keycast
             docker compose -f docker-compose.synvya.yml --env-file /opt/synvya/.env \
