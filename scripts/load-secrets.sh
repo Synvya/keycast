@@ -29,7 +29,7 @@ else
     exit 1
 fi
 
-EXTRA_ALLOWED_ORIGINS="https://account.synvya.com,https://account.staging.synvya.com,https://server.synvya.com,https://server.staging.synvya.com"
+EXTRA_ALLOWED_ORIGINS="https://account.synvya.com,https://account.staging.synvya.com,https://server.synvya.com,https://server.staging.synvya.com,https://admin.synvya.com,https://admin.staging.synvya.com"
 ALLOWED_PUBKEYS=$(get_secret synvya/$ENV/keycast/allowed-pubkeys 2>/dev/null || echo "")
 
 cat > /opt/synvya/.env <<EOF
