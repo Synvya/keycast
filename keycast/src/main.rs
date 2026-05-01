@@ -808,9 +808,7 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
                     let redirect_url = redirect_url_for_fallback.clone();
                     async move {
                         match redirect_url {
-                            Some(url) => {
-                                axum::response::Redirect::temporary(&url).into_response()
-                            }
+                            Some(url) => axum::response::Redirect::temporary(&url).into_response(),
                             None => (StatusCode::NOT_FOUND, "Not found").into_response(),
                         }
                     }
