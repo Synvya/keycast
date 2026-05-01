@@ -95,8 +95,8 @@ docker compose ps
 The `keycast-unified` container should show a status of `Up (healthy)`.
 
 ### Access the Web UI
-- **Docker Mode**: The API is on **[http://localhost:3000](http://localhost:3000)** and the Dashboard is on **[http://localhost:5172](http://localhost:5172)**.
-- **Native Dev Mode**: The API is on port 3000, and the live-reloading frontend is on **[http://localhost:5173](http://localhost:5173)**.
+- **Docker Mode**: The Rust binary serves **both the API and the SvelteKit dashboard** on a single port — open **[http://localhost:3000](http://localhost:3000)** for both. (The web app is built with `adapter-static` in [web/svelte.config.js](web/svelte.config.js) and the unified runtime serves the static bundle from `WEB_BUILD_DIR=/app/web` alongside the `/api/*` routes. The `5172:5173` mapping in `docker-compose.yml` is a leftover from the pre-`adapter-static` era and serves nothing — slated for cleanup.)
+- **Native Dev Mode**: The Rust API is on port 3000 (`bun run dev`), and the Vite live-reloading frontend is on **[http://localhost:5173](http://localhost:5173)** (`bun run dev:web`). The two are separate processes in this mode.
 
 ---
 
