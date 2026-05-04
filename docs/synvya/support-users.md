@@ -2,7 +2,13 @@
 
 Spec for letting Synvya support staff create restaurants on behalf of owners and act as any existing restaurant identity for diagnostic/repair work, all from inside the Synvya Restaurant app (`account.synvya.com`).
 
-**System context**:
+**Per-repo specs**:
+- [Cross-system `support-users.md`](https://github.com/Synvya/docs/blob/main/architecture/support-users.md) — system-wide design and the two-layer authority model.
+- [Server `support-users.md`](https://github.com/Synvya/server/blob/staging/docs/specs/support-users.md) — Synvya server's Support-flag mirror to Keycast.
+- [Systemtools `support-users.md`](https://github.com/Synvya/systemtools/blob/staging/docs/specs/support-users.md) — UI: Support toggle on the admin user row, DynamoDB attribute.
+
+**System context** (Keycast):
+- [Keycast Service Auth](keycast-service-auth.md) — foundation; the Synvya server's mirror call to Keycast rides on this NIP-98 service-auth path.
 - [Architecture Context](architecture-context.md)
 - [Keycast Boundary](specs/keycast-boundary.md)
 - [Restaurant Team E2E](restaurant-team-e2e.md)
@@ -30,13 +36,13 @@ The `support_admin` role already grants read access to a user's teams and author
 
 ### Defining who is a support agent
 
-`systemtools` is the source of truth for who is a Synvya support agent. Keycast's `support_admins` Redis set is a **managed mirror** that the `systemtools` backend keeps in sync — it is never edited by humans directly.
+`systemtools` is the source of truth for who is a Synvya support agent. Keycast's `support_admins` Redis set is a **managed mirror** kept in sync by the Synvya server — it is never edited by humans directly.
 
-Concretely, `systemtools`' admin user record gains a `support` flag, **orthogonal** to the existing `pulse_only | admin | superadmin` role (a user can have `support: true` independently of any systemtools-UI role). When a `systemtools` `superadmin` toggles the flag on a user, the `systemtools` backend (a) updates its DynamoDB admin table, and (b) calls Keycast `POST /api/admin/support-admins` (or the matching `DELETE` on demotion) to update the Redis mirror. Next time that user logs into Keycast, `is_support_admin()` returns true and the issued UCAN carries `admin_role: "support"`.
+Concretely, the `systemtools` admin user record gains a `support` flag, **orthogonal** to the existing `pulse_only | admin | superadmin` role (a user can have `support: true` independently of any systemtools-UI role). When a `systemtools` `superadmin` toggles the flag on a user, the Synvya server (a) updates its DynamoDB admin table, and (b) calls Keycast `POST /api/admin/support-admins` (or the matching `DELETE` on demotion) to update the Redis mirror. Next time that user logs into Keycast, `is_support_admin()` returns true and the issued UCAN carries `admin_role: "support"`.
 
-For step (b) to authorize against Keycast, the `systemtools` backend signs each call with NIP-98 using a dedicated service identity. Keycast calls pubkeys listed in `ALLOWED_PUBKEYS` **full admins** — operator-level identities with full Keycast authority. The `systemtools` service pubkey is one such full admin, added to the `synvya/{env}/keycast/allowed-pubkeys` secret once at bootstrap. Bootstrap human full admins (Synvya leadership/engineering with direct Keycast authority) are added to the same secret manually and managed by the same secret-update process.
+The mirror call from server to Keycast goes over the [Keycast Service Auth](keycast-service-auth.md) foundation: signed with `SERVER_BUNKER_CLIENT_PRIVATE_KEY` (the server's existing stable identity), recognized by Keycast as full admin via `ALLOWED_PUBKEYS`. See the foundation spec for the complete mechanism, the bootstrap procedure, and the trust model. This spec assumes the foundation is in place.
 
-The `systemtools` `superadmin` role does **not** automatically grant Keycast full admin. They are independent: a Synvya leader who needs direct Keycast authority is in `ALLOWED_PUBKEYS` *and* has the systemtools `superadmin` role, by separate operations. This is the deliberate manual-sync boundary.
+The `systemtools` `superadmin` role does **not** automatically grant Keycast full admin. They are independent: a Synvya leader who needs direct Keycast authority is in `ALLOWED_PUBKEYS` *and* has the systemtools `superadmin` role, by separate operations.
 
 ### What the Restaurant app does after this lands
 
@@ -70,25 +76,27 @@ The `support_admins` Redis set is tenant-global (single key, not namespaced by t
 - New endpoints for atomic just-in-time support access on existing teams:
   - `POST /api/admin/teams/:id/support-access` — add the calling support admin as member of the team, mint a fresh `Authorization` against the team's first stored key, return the bunker URL.
   - `DELETE /api/admin/teams/:id/support-access` — revoke the support admin's active authorizations on the team and remove their membership.
-- A NIP-98 (kind:27235) service-auth path that resolves a request-bound signed envelope to a full-admin context when the signing pubkey is in `ALLOWED_PUBKEYS`. This is what lets the `systemtools` backend write to `support_admins` without needing a human's session cookie.
-- Audit log lines for both new endpoints and the systemtools-mirror operation, mirroring the `revoke_authorization` log pattern.
+- Audit log lines for both new endpoints, mirroring the `revoke_authorization` log pattern.
+
+The NIP-98 service-auth path used by the Synvya server's mirror call is **not new in this spec** — it is owned by the [Keycast Service Auth](keycast-service-auth.md) foundation and is a prerequisite.
 
 ### What `systemtools` owns (new)
 
 - A `support` flag on the existing admin user record (DynamoDB `synvya-{env}-admin-users`), orthogonal to the existing role enum.
-- A "Support" management surface in the `systemtools` UI (visible to `superadmin` only) that toggles the flag on/off for any existing admin user.
-- A backend mirror that, on each toggle, also calls Keycast `POST /api/admin/support-admins` (or `DELETE`) signed with NIP-98 by the systemtools service identity.
-- A bootstrap configuration: the systemtools service nsec held in AWS Secrets Manager; the corresponding pubkey listed in `synvya/{env}/keycast/allowed-pubkeys`.
+- A "Support" toggle in the `systemtools` UI (visible to `superadmin` only) on the admin user row.
+- A backend mirror in the Synvya server that, on each toggle, also calls Keycast `POST /api/admin/support-admins` (or `DELETE`) via the foundation service-auth path.
+
+Bootstrap of `ALLOWED_PUBKEYS` (i.e. registering the Synvya server's pubkey as a Keycast full admin) is owned by the [Keycast Service Auth](keycast-service-auth.md) foundation. This spec depends on it but does not duplicate it.
 
 ### What Keycast does not own
 
 - The Restaurant app's restaurant picker UI, "Create new restaurant" button, and "Open another restaurant" search. Those live in `Synvya/client`.
 - The systemtools-side Support management UI and the DynamoDB `support` flag. Those live in `systemtools` (frontend) and the Synvya server (backend, mirroring to Keycast).
-- The contents of `ALLOWED_PUBKEYS`. The bootstrap manual-sync of Synvya leadership/engineering pubkeys and the systemtools service pubkey is operational, not a Keycast feature.
+- The contents of `ALLOWED_PUBKEYS`, the NIP-98 service-auth verification path, and the server's signing identity. Owned by the [Keycast Service Auth](keycast-service-auth.md) foundation.
 
 ### What `Synvya/server` does not own
 
-`Synvya/server` is not in the request path for any user-facing support action. The systemtools backend (which today lives inside `Synvya/server`) is in the path only for management operations (toggling the Support flag), not for the support actions themselves. The unused `KEYCAST_SERVICE_TOKEN` in `Synvya/server`'s config remains unused — it is replaced by NIP-98 signing with the systemtools service nsec.
+`Synvya/server` is not in the request path for any user-facing support action. The systemtools backend (which lives inside `Synvya/server`) is in the path only for management operations (toggling the Support flag), not for the support actions themselves.
 
 ---
 
@@ -182,21 +190,6 @@ Both new routes are registered alongside the existing admin block at [`api/src/a
 )
 ```
 
-### 3.5 NIP-98 service-auth path on admin routes
-
-Keycast already verifies kind:27235 (NIP-98) envelopes during NIP-98 login at [`api/src/api/http/auth.rs:559`](../../api/src/api/http/auth.rs) and stamps `admin_role: "full" | "support"` into the issued UCAN. This spec extends the same primitive to **any admin route**, not just login:
-
-- A request carrying `Authorization: Nostr <base64(kind:27235 event)>` is verified the same way (signature valid, `u` tag matches request URL, `method` tag matches HTTP method, `created_at` within tolerance).
-- If the signing pubkey is in `ALLOWED_PUBKEYS`, the request is treated as if it carried a full-admin UCAN. `is_full_admin()` returns true for that request.
-- If the signing pubkey is in the `support_admins` Redis set, the request is treated as `admin_role: "support"`.
-- Otherwise the envelope is rejected.
-
-This middleware is the entry point the `systemtools` backend uses when it calls `POST /api/admin/support-admins`: the call is signed with the systemtools service nsec, and Keycast resolves the service pubkey to full-admin authority via this path. No session cookie, no shared secret token. Each request is independently authenticated by signature.
-
-Keep the existing UCAN cookie path untouched — it remains the primary auth mechanism for human callers (Restaurant app, future systemtools UI calls that piggyback on a user's keycast session). NIP-98 service-auth is an additional path, not a replacement.
-
-The middleware lives in `api/src/api/extractors.rs` (or a new file `api/src/api/nip98_extractor.rs`) and is composed into the same `UcanAuth` extractor so handlers do not need to know which path the request came in on.
-
 ---
 
 ## 4. Reused Surface (no changes)
@@ -211,7 +204,7 @@ The following are already implemented and gated on `is_support_admin()` ([`api/s
 | `POST /api/admin/authorizations/:id/revoke` | Manual revoke for diagnostics; complements the bulk revoke in `DELETE .../support-access` |
 | `GET /api/admin/claim-tokens?pubkey=` | Look up a pending claim token for handoff |
 | `POST /api/admin/claim-tokens` | Generate a claim link to hand off the new restaurant to its owner |
-| `POST /api/admin/support-admins` | Full-admin only. Called by the `systemtools` backend (NIP-98-signed by the systemtools service identity) when a `superadmin` toggles the Support flag on a user. Not called by humans directly in Phase 2. |
+| `POST /api/admin/support-admins` | Full-admin only. Called by the Synvya server backend via the [foundation service-auth path](keycast-service-auth.md) when a `superadmin` toggles the Support flag on a user. Not called by humans directly. |
 | `DELETE /api/admin/support-admins/:pubkey` | Full-admin only. Same caller as above; invoked on demotion. |
 
 For team-internal operations after `create_team` (adding a stored key, creating the first server-side authorization for `Synvya/server`, inviting the actual owner by email), the support user uses the existing team-admin endpoints by virtue of being the team's admin. Specifically:
@@ -337,7 +330,7 @@ No structured audit table is added in this spec; the structured log lines feed C
 
 5. **Stored key access**. Support admins never touch the restaurant's stored secret key directly. They sign via NIP-46 against an authorization they hold, exactly like any other team member. The encryption-at-rest model is unchanged.
 
-6. **Systemtools service identity**. The systemtools service nsec is a full-admin credential — anyone holding it can do anything in Keycast. It must be stored only in AWS Secrets Manager, never logged, never passed through frontend code, and never used outside the systemtools backend. Compromise of this nsec is equivalent to compromise of a Keycast root credential and is handled by rotating the value in Secrets Manager and updating `synvya/{env}/keycast/allowed-pubkeys`.
+6. **Service-auth credentials**. The credential used by the Synvya server to sign mirror calls to Keycast is `SERVER_BUNKER_CLIENT_PRIVATE_KEY`. Security details — handling, blast radius, rotation procedure — are owned by the [Keycast Service Auth](keycast-service-auth.md) foundation spec.
 
 7. **Demotion is eventually consistent**. When a `superadmin` removes the Support flag from a user, the user's UCAN may still carry `admin_role: "support"` until it expires (UCANs are stamped at login, not re-checked on every request). For immediate revocation, the systemtools backend should also revoke the user's active Keycast sessions via existing session-management endpoints, or accept that Support powers persist until UCAN expiry. The current Keycast UCAN TTL is short enough (minutes) that this is acceptable for normal demotions; emergency demotions (terminated employees) require explicit session revocation.
 
@@ -351,7 +344,6 @@ Keycast (`synvya-staging` branch):
 - [ ] Add `grant_team_support_access` handler in [`api/src/api/http/admin.rs`](../../api/src/api/http/admin.rs).
 - [ ] Add `release_team_support_access` handler in the same file.
 - [ ] Register both routes under `/admin/teams/:id/support-access` in [`api/src/api/http/routes.rs`](../../api/src/api/http/routes.rs).
-- [ ] Add NIP-98 service-auth extractor (§3.5) and compose it into `UcanAuth` so any admin route accepts either a UCAN cookie or a request-bound NIP-98 envelope.
 - [ ] Add structured log lines per §7.
 - [ ] Default authorization expiry of 24h on support-issued authorizations (per §8.2). Make configurable via request body.
 - [ ] Tests:
@@ -361,9 +353,6 @@ Keycast (`synvya-staging` branch):
   - [ ] release notifies the signer daemon (`AuthorizationCommand::Remove`).
   - [ ] full admin retains all current capabilities.
   - [ ] non-support, non-admin caller is forbidden on both new endpoints.
-  - [ ] NIP-98-signed call from a pubkey in `ALLOWED_PUBKEYS` resolves to full-admin and can `POST /api/admin/support-admins`.
-  - [ ] NIP-98-signed call from a pubkey not in `ALLOWED_PUBKEYS` and not in `support_admins` is rejected.
-  - [ ] NIP-98 envelope with mismatched `u` tag, mismatched `method` tag, or stale `created_at` is rejected.
 
 Restaurant app (`Synvya/client`, separate PR):
 
@@ -373,28 +362,18 @@ Restaurant app (`Synvya/client`, separate PR):
 - [ ] On active-team switch / logout, call `DELETE .../support-access` if the leaving team was a support session.
 - [ ] Distinct UI label for support members on the Team page.
 
-`systemtools` and Synvya server backend (separate PR):
+`systemtools` and Synvya server checklists are in their respective vantage-point specs:
 
-- [ ] Add `support: boolean` attribute to `synvya-{env}-admin-users` DynamoDB items (default false on existing rows).
-- [ ] Add `support` to the `AdminUser` TypeScript type and the `SessionInfo` shape returned by `GET /api/admin/me`.
-- [ ] Render a "Support" toggle in the systemtools admin user management page (already a Phase 4 placeholder), gated on `superadmin` role.
-- [ ] Backend handler for the toggle: write DynamoDB, then call Keycast `POST /api/admin/support-admins` (or `DELETE /api/admin/support-admins/:pubkey` on demotion) with NIP-98 signing.
-- [ ] `KeycastAdminClient` service (~150 LOC): holds the systemtools service nsec from AWS Secrets Manager; signs each call with NIP-98 (URL + method + timestamp tags); retries with exponential backoff on transient errors.
-- [ ] Idempotency: if the DynamoDB write succeeds but the Keycast mirror call fails, the toggle is marked "drift" and a sweeper job reconciles. Drift is also surfaced in the admin UI as a warning.
-- [ ] Tests: end-to-end toggle promotes/demotes the user in both DynamoDB and Keycast Redis; failure of the Keycast call is captured as drift; idempotent re-toggle is a no-op.
+- [Server `support-users.md`](https://github.com/Synvya/server/blob/staging/docs/specs/support-users.md) — DynamoDB attribute, `KeycastAdminClient.addSupportAdmin/removeSupportAdmin`, drift handling, mirror endpoint.
+- [Systemtools `support-users.md`](https://github.com/Synvya/systemtools/blob/staging/docs/specs/support-users.md) — Support toggle UI, badge, drift indicator.
 
-Operations:
-
-- [ ] Generate the systemtools service nsec; store as `synvya/{env}/systemtools/keycast-service-key` in AWS Secrets Manager.
-- [ ] Add the corresponding pubkey to `synvya/{env}/keycast/allowed-pubkeys` alongside the existing bootstrap pubkeys.
-- [ ] Document the manual sync runbook for adding/removing Synvya leadership/engineering pubkeys to/from `allowed-pubkeys`.
+Operations bootstrap (registering the Synvya server's pubkey in `ALLOWED_PUBKEYS`) is owned by the [Keycast Service Auth](keycast-service-auth.md) foundation spec.
 
 ---
 
 ## 10. Out of Scope / Future Work
 
 - **Tenant-scoped support admins**. Today the `support_admins` Redis set is keyed `support_admins` (single key). If Keycast becomes multi-tenant in Synvya, the set should be namespaced per tenant (`support_admins:{tenant_id}`) and `is_support_admin` should consult the caller's tenant. Not needed yet.
-- **Automatic ALLOWED_PUBKEYS sync**. Bootstrap full-admin membership is intentionally manual. Removing this manual step would either require systemtools to manage `ALLOWED_PUBKEYS` (which would mean systemtools could elevate itself or any of its users to Keycast full admin — a much larger blast radius than the Support flag), or a separate identity system. Both are larger than the problem currently warrants.
 - **Auto-expire of stale support sessions**. Beyond the 24h authorization expiry, a periodic sweeper that revokes any `support` authorizations older than N hours would reduce the leak surface in §8.2. Defer until we see real volume.
 - **Read-only support mode**. A support admin could be granted "view this team's data" without minting a signing authorization. Not in this spec — current Synvya support tasks are write-leaning (fix bad menu data, repair profile fields).
 - **Formal audit table**. Once support volume justifies it, move from `tracing::info!` to a structured `admin_audit_log` table with `(actor_pubkey, action, target_team_id, target_authorization_id, outcome, ts, request_id)` columns.
@@ -421,11 +400,10 @@ A single Synvya employee can hold any combination: e.g., an engineer might be a 
 
 1. Synvya `superadmin` opens the `systemtools` admin user page for the target user.
 2. Toggles the **Support** checkbox to on.
-3. `systemtools` backend writes `support: true` to the DynamoDB row.
-4. `systemtools` backend builds a kind:27235 NIP-98 envelope: `u` = `https://auth.synvya.com/api/admin/support-admins`, `method` = `POST`, signed with the systemtools service nsec.
-5. `systemtools` backend sends `POST /api/admin/support-admins` to Keycast with `Authorization: Nostr <base64(envelope)>` and body `{ "identifier": "<target user's pubkey or email>" }`.
-6. Keycast verifies the envelope, resolves the systemtools service pubkey to full-admin via `ALLOWED_PUBKEYS`, runs the existing `add_support_admin` handler, and writes to Redis.
-7. Next time the target user logs into Keycast, `is_support_admin()` returns true and their UCAN carries `admin_role: "support"`.
+3. Synvya server writes `support: true` to the DynamoDB row.
+4. Synvya server calls Keycast `POST /api/admin/support-admins` over the [foundation service-auth path](keycast-service-auth.md) (signed with `SERVER_BUNKER_CLIENT_PRIVATE_KEY`) with body `{ "identifier": "<target user's pubkey or email>" }`.
+5. Keycast verifies the envelope per the foundation, runs the existing `add_support_admin` handler, and writes to Redis.
+6. Next time the target user logs into Keycast, `is_support_admin()` returns true and their UCAN carries `admin_role: "support"`.
 
 ### Demotion flow (toggle Support flag off)
 
@@ -433,14 +411,7 @@ Symmetric to promotion: DynamoDB write, then `DELETE /api/admin/support-admins/:
 
 ### Bootstrap (one-time, per environment)
 
-Run once when standing up a new staging or production environment, or when rotating credentials:
-
-1. Generate a fresh nsec for the systemtools service identity.
-2. Store as `synvya/{env}/systemtools/keycast-service-key` in AWS Secrets Manager.
-3. Compute the corresponding hex pubkey.
-4. Edit `synvya/{env}/keycast/allowed-pubkeys` to append the systemtools service pubkey alongside the existing bootstrap human pubkeys.
-5. Redeploy or trigger the secret-refresh path on Keycast so the new `ALLOWED_PUBKEYS` is loaded.
-6. Verify by issuing a test NIP-98-signed `GET /api/admin/support-admins` from the systemtools backend and confirming a `200` response.
+Bootstrap (registering the Synvya server's pubkey in `ALLOWED_PUBKEYS`) is owned by the [Keycast Service Auth](keycast-service-auth.md) foundation. Once that bootstrap is complete for an environment, no additional Keycast bootstrap is required for the support-users feature.
 
 ### Adding or removing a Synvya leadership/engineering full admin
 
