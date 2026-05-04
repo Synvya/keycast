@@ -1,6 +1,7 @@
 // ABOUTME: NIP-98 service-auth path for admin routes
 // ABOUTME: Verifies Authorization: Nostr <base64> envelopes, resolves admin_role, anti-replay via Redis
 
+use axum::extract::OriginalUri;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use base64::prelude::*;
@@ -108,12 +109,24 @@ async fn authenticate_nip98(parts: &Parts, auth_header: &str) -> Result<UcanAuth
 /// `X-Forwarded-Host` set by the load balancer (Cloud Run / ALB) so that
 /// HTTPS-signed envelopes verify even though the inbound request to the app
 /// arrives as HTTP.
+///
+/// Reads the path from `OriginalUri` (axum populates it as a request
+/// extension before nesting strips prefixes) so that requests arriving via
+/// `Router::nest("/api", ...)` are reconstructed with the `/api/` prefix
+/// the client actually signed. Falls back to `parts.uri` when no
+/// `OriginalUri` extension is present (e.g. unit tests built from a bare
+/// `Request`).
 fn build_expected_url(parts: &Parts) -> Option<String> {
-    let path_and_query = parts
-        .uri
+    let original_uri = parts
+        .extensions
+        .get::<OriginalUri>()
+        .map(|o| &o.0)
+        .unwrap_or(&parts.uri);
+
+    let path_and_query = original_uri
         .path_and_query()
         .map(|pq| pq.as_str().to_string())
-        .unwrap_or_else(|| parts.uri.path().to_string());
+        .unwrap_or_else(|| original_uri.path().to_string());
 
     let host = parts
         .headers
@@ -260,6 +273,26 @@ mod tests {
             url,
             "https://auth.synvya.com/api/admin/user-lookup?q=alice%40example.com"
         );
+    }
+
+    /// When the request was routed through `Router::nest("/api", ...)`, axum
+    /// strips the `/api` prefix from `parts.uri` but stores the original path
+    /// in the `OriginalUri` extension. The extractor must read from the
+    /// extension so the reconstructed URL matches what the client actually
+    /// signed (including the `/api/` prefix).
+    #[test]
+    fn build_expected_url_uses_original_uri_when_nested() {
+        let mut parts = parts_from(
+            // post-strip path that axum sees inside the nested router
+            "/admin/status",
+            Method::GET,
+            vec![("Host", "auth.synvya.com")],
+        );
+        parts
+            .extensions
+            .insert(OriginalUri("/api/admin/status".parse::<Uri>().unwrap()));
+        let url = build_expected_url(&parts).unwrap();
+        assert_eq!(url, "https://auth.synvya.com/api/admin/status");
     }
 
     /// Build a NIP-98 Authorization header for the given keys/url/method.
