@@ -38,10 +38,11 @@ New path:       NIP-98 header → UcanAuth { pubkey, admin_role }
 
 The composition order:
 
-1. If `Authorization: Nostr <base64-event>` is present, attempt NIP-98 verification.
-2. If verification succeeds, resolve `admin_role` from `ALLOWED_PUBKEYS` / `support_admins` Redis set, and return `UcanAuth`.
-3. Otherwise, fall back to the existing UCAN cookie path.
-4. If neither resolves, return 401.
+1. If `Authorization: Nostr <base64-event>` is present, the NIP-98 path is **exclusive**: verify the envelope and either resolve `admin_role` from `ALLOWED_PUBKEYS` / `support_admins` Redis set and return `UcanAuth`, or return 401. Do **not** fall through to the cookie path on NIP-98 failure.
+2. If the header is absent, fall back to the existing UCAN cookie path.
+3. If neither resolves, return 401.
+
+The exclusivity rule in step 1 is deliberate. A caller that sets `Authorization: Nostr ...` has explicitly declared "I am a service signing with NIP-98." Silently retrying as a cookie request on verification failure would hide NIP-98 errors from operators and could resolve the request under a different identity if a cookie happens to be in scope (dev sessions, shared browsers, CI). There is no legitimate caller that needs both paths tried in sequence.
 
 ## 3. NIP-98 Verification
 
@@ -79,7 +80,11 @@ The Synvya server signs every admin call with a fresh `created_at`. To prevent e
 - Store the id in Redis with a TTL slightly longer than the `created_at` tolerance window (e.g. `EXPIRE 120` seconds).
 - On each verification, `SET NX` on the id key. If the key already existed, reject as a replay.
 
-If Redis is unavailable, the verification falls back to "accept" — no replay protection, but the request still proceeds. This matches how `is_support_admin()` already handles Redis outages: log a warning, do not block.
+If Redis is unavailable, the anti-replay check **fails closed**: return 503 with a generic "service temporarily unavailable" body and log a warning. The verification does not proceed.
+
+Rationale: anti-replay is part of the authentication itself, not a downstream role check. Failing open would let a captured envelope be reused for the duration of a Redis outage, expanding the replay window from the ±60s `created_at` tolerance to "as long as Redis is down." Because NIP-98 service auth resolves to full-admin authority for the systemtools service pubkey (§4, §7), a replayed envelope is a high-impact credential. Fail-closed is the correct trade — service-to-service callers retry naturally on 503; brief Redis blips do not compromise auth.
+
+Note: this differs from how `is_support_admin()` handles Redis outages (it logs and returns false, treating the caller as non-support). That fallback is safe because the request is already authenticated and the failure mode is *capability downgrade*. Anti-replay sits earlier in the pipeline and a fallback there is *authentication weakening*.
 
 ## 6. Performance
 
@@ -112,8 +117,9 @@ The server pubkey (derived from `SERVER_BUNKER_CLIENT_PRIVATE_KEY`) must be in `
   - [ ] Stale `created_at` → 401.
   - [ ] Tampered signature → 401.
   - [ ] Replayed envelope (same id within TTL) → 401.
-  - [ ] Redis unavailable during anti-replay check → request proceeds (warning logged).
+  - [ ] Redis unavailable during anti-replay check → 503, request rejected (warning logged).
   - [ ] UCAN cookie still works on routes that previously accepted it.
+  - [ ] Request with both an invalid `Authorization: Nostr ...` header and a valid UCAN cookie → 401 (NIP-98 path is exclusive when the header is present).
 
 ## 9. Out of Scope
 
