@@ -7,12 +7,18 @@ use chrono::{Duration, Utc};
 use nostr_sdk::{FromBech32, Keys};
 use serde::{Deserialize, Serialize};
 
+use secrecy::ExposeSecret;
+
 use super::routes::AuthState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extractors::UcanAuth;
+use crate::state::{get_key_manager, get_secret_pool};
+use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
-    ClaimTokenRepository, OAuthAuthorizationRepository, UserRepository,
+    AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
+    StoredKeyRepository, TeamRepository, UserRepository,
 };
+use keycast_core::types::authorization::Authorization;
 use keycast_core::types::claim_token::generate_claim_token;
 
 /// Admin token expiry in days (30 days for long-lived admin tokens)
@@ -23,6 +29,12 @@ const PRELOAD_TOKEN_EXPIRY_DAYS: i64 = 30;
 
 /// Redis key for the support admins set
 const SUPPORT_ADMINS_KEY: &str = "support_admins";
+
+/// Default expiry for support-issued authorizations (§8.2 of support-users.md).
+const DEFAULT_SUPPORT_AUTH_EXPIRY_HOURS: i64 = 24;
+
+/// Server-enforced ceiling on support-issued authorization lifetime.
+const MAX_SUPPORT_AUTH_EXPIRY_HOURS: i64 = 24 * 7;
 
 /// Full admin: has admin_role == "full" in UCAN, or pubkey in ALLOWED_PUBKEYS whitelist.
 /// Full admins can access all admin endpoints including token generation and user preloading.
@@ -1173,6 +1185,294 @@ pub async fn revoke_authorization(
     Ok(Json(RevokeAuthorizationResponse {
         revoked: true,
         authorization_id,
+    }))
+}
+
+// ============================================================================
+// POST /api/admin/teams/:id/support-access — JIT membership on a team
+// ============================================================================
+
+#[derive(Debug, Default, Deserialize)]
+pub struct GrantSupportAccessRequest {
+    /// Optional policy id; defaults to the team's first policy ("All Access").
+    #[serde(default)]
+    pub policy_id: Option<i32>,
+    /// Optional human-readable suffix for audit clarity. The server always
+    /// prefixes with `support:{caller_pubkey_hex}` regardless of input — the
+    /// prefix is the source of truth for the release endpoint's filter.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Optional authorization lifetime in hours. Defaults to 24, capped at 168.
+    #[serde(default)]
+    pub expires_in_hours: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GrantSupportAccessResponse {
+    pub team_id: i32,
+    pub stored_key_pubkey: String,
+    pub authorization: Authorization,
+    pub bunker_url: String,
+}
+
+/// Add the calling support admin as a `member` of the team (idempotent — admin
+/// rows are preserved), mint a fresh authorization against the team's stored
+/// key, and return the bunker URL. See `docs/synvya/support-users.md` §3.2.
+pub async fn grant_team_support_access(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(team_id): Path<i32>,
+    Json(req): Json<GrantSupportAccessRequest>,
+) -> ApiResult<Json<GrantSupportAccessResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Support admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+    let caller = &auth.pubkey;
+
+    let team_repo = TeamRepository::new(pool.clone());
+    team_repo
+        .find(tenant_id, team_id)
+        .await
+        .map_err(|_| ApiError::not_found("Team not found"))?;
+
+    let key_repo = StoredKeyRepository::new(pool.clone());
+    let stored_keys = key_repo
+        .list_by_team(tenant_id, team_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load stored keys: {}", e)))?;
+
+    let stored_key = stored_keys.into_iter().next().ok_or_else(|| {
+        ApiError::bad_request(
+            "team has no stored key — the agent who created it must finish provisioning first",
+        )
+    })?;
+
+    let policy_repo = PolicyRepository::new(pool.clone());
+    let policy_id = match req.policy_id {
+        Some(id) => {
+            if !policy_repo
+                .exists_for_team(team_id, id)
+                .await
+                .map_err(|e| ApiError::internal(format!("Failed to verify policy: {}", e)))?
+            {
+                return Err(ApiError::not_found("Policy not found for this team"));
+            }
+            id
+        }
+        None => {
+            policy_repo
+                .list_by_team(team_id)
+                .await
+                .map_err(|e| ApiError::internal(format!("Failed to load policies: {}", e)))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| ApiError::internal("Team has no policies"))?
+                .id
+        }
+    };
+
+    if !team_repo
+        .is_member(team_id, caller)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to check membership: {}", e)))?
+    {
+        team_repo
+            .add_member(team_id, caller, "member")
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to add support member: {}", e)))?;
+    }
+
+    let secret_pool = get_secret_pool().map_err(|e| ApiError::internal(e.to_string()))?;
+    let secret_pair = secret_pool
+        .get()
+        .await
+        .ok_or_else(|| ApiError::internal("Secret pool exhausted".to_string()))?;
+    let connection_secret = secret_pair.secret;
+    let secret_hash = secret_pair.hash;
+
+    let key_manager = get_key_manager().map_err(|e| ApiError::internal(e.to_string()))?;
+    let decrypted_stored_key = key_manager
+        .decrypt(&stored_key.secret_key)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to decrypt stored key: {}", e)))?;
+    let stored_key_secret = nostr_sdk::SecretKey::from_slice(&decrypted_stored_key)
+        .map_err(|e| ApiError::internal(format!("Invalid stored key: {}", e)))?;
+    let bunker_keys = derive_bunker_keys(&stored_key_secret, &secret_hash);
+
+    let relays = serde_json::json!(Vec::<String>::new());
+
+    let hours = req
+        .expires_in_hours
+        .unwrap_or(DEFAULT_SUPPORT_AUTH_EXPIRY_HOURS)
+        .clamp(1, MAX_SUPPORT_AUTH_EXPIRY_HOURS);
+    let expires_at = Utc::now() + Duration::hours(hours);
+
+    let label = match req
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(suffix) => format!("support:{} ({})", caller, suffix),
+        None => format!("support:{}", caller),
+    };
+
+    let auth_repo = AuthorizationRepository::new(pool.clone());
+    let authorization = auth_repo
+        .create(
+            tenant_id,
+            stored_key.id,
+            policy_id,
+            &secret_hash,
+            &bunker_keys.public_key().to_hex(),
+            &relays,
+            None,
+            Some(expires_at),
+            Some(&label),
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to create authorization: {}", e)))?;
+
+    let bunker_url = Authorization::generate_bunker_url(
+        &bunker_keys.public_key().to_hex(),
+        connection_secret.expose_secret(),
+    );
+
+    if let Some(tx) = &auth_state.auth_tx {
+        use keycast_core::authorization_channel::AuthorizationCommand;
+        if let Err(e) = tx
+            .send(AuthorizationCommand::Upsert {
+                bunker_pubkey: bunker_keys.public_key().to_hex(),
+                tenant_id,
+                is_oauth: false,
+            })
+            .await
+        {
+            tracing::warn!(
+                "Failed to notify signer of support-access grant for {}: {}",
+                bunker_keys.public_key().to_hex(),
+                e
+            );
+        }
+    }
+
+    tracing::info!(
+        "Support access granted: team={} support_admin={} authorization={}",
+        team_id,
+        &caller[..8.min(caller.len())],
+        authorization.id,
+    );
+
+    Ok(Json(GrantSupportAccessResponse {
+        team_id,
+        stored_key_pubkey: stored_key.pubkey.clone(),
+        authorization,
+        bunker_url,
+    }))
+}
+
+// ============================================================================
+// DELETE /api/admin/teams/:id/support-access — release JIT membership
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ReleaseSupportAccessResponse {
+    pub team_id: i32,
+    pub revoked_authorizations: usize,
+    pub removed_membership: bool,
+}
+
+/// Revoke the calling support admin's active authorizations on the team
+/// (identified by the `support:{caller}` label prefix) and remove their
+/// `member` row. Admin rows are preserved. See §3.3.
+pub async fn release_team_support_access(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(team_id): Path<i32>,
+) -> ApiResult<Json<ReleaseSupportAccessResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Support admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+    let caller = &auth.pubkey;
+
+    let team_repo = TeamRepository::new(pool.clone());
+    team_repo
+        .find(tenant_id, team_id)
+        .await
+        .map_err(|_| ApiError::not_found("Team not found"))?;
+
+    let auth_repo = AuthorizationRepository::new(pool.clone());
+    let active = auth_repo
+        .find_active_support_for_caller(tenant_id, team_id, caller)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to load support authorizations: {}", e)))?;
+
+    let mut revoked_count = 0usize;
+    for (auth_id, bunker_pubkey) in &active {
+        let bunker_pubkey_revoked = auth_repo
+            .revoke(tenant_id, *auth_id, Some("support_session_end"))
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to revoke authorization: {}", e)))?;
+
+        if bunker_pubkey_revoked.is_none() {
+            // Already revoked between the lookup and now — skip the daemon notify.
+            continue;
+        }
+        revoked_count += 1;
+
+        if let Some(tx) = &auth_state.auth_tx {
+            use keycast_core::authorization_channel::AuthorizationCommand;
+            if let Err(e) = tx
+                .send(AuthorizationCommand::Remove {
+                    bunker_pubkey: bunker_pubkey.clone(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    "Failed to notify signer of support-access release for {}: {}",
+                    bunker_pubkey,
+                    e
+                );
+            }
+        }
+    }
+
+    let mut removed_membership = false;
+    match team_repo.get_member(team_id, caller).await {
+        Ok(member) if matches!(member.role, keycast_core::types::user::TeamUserRole::Member) => {
+            team_repo
+                .remove_member(team_id, caller)
+                .await
+                .map_err(|e| ApiError::internal(format!("Failed to remove member: {}", e)))?;
+            removed_membership = true;
+        }
+        Ok(_) => {
+            // Caller is admin (e.g., they created this team) — leave the row.
+        }
+        Err(_) => {
+            // No membership row (idempotent re-call) — nothing to remove.
+        }
+    }
+
+    tracing::info!(
+        "Support access released: team={} support_admin={} revoked={}",
+        team_id,
+        &caller[..8.min(caller.len())],
+        revoked_count,
+    );
+
+    Ok(Json(ReleaseSupportAccessResponse {
+        team_id,
+        revoked_authorizations: revoked_count,
+        removed_membership,
     }))
 }
 

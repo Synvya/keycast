@@ -203,6 +203,10 @@ pub fn api_routes(
             post(admin::revoke_authorization),
         )
         .route(
+            "/admin/teams/:id/support-access",
+            post(admin::grant_team_support_access).delete(admin::release_team_support_access),
+        )
+        .route(
             "/admin/support-admins",
             get(admin::list_support_admins).post(admin::add_support_admin),
         )
