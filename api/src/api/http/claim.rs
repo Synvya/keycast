@@ -26,6 +26,13 @@ fn get_server_keys() -> Result<Keys, ClaimError> {
 #[derive(Debug, Deserialize)]
 pub struct ClaimQuery {
     pub token: String,
+    /// Optional pre-fill for the email input. Set by callers that already
+    /// know the recipient's email (e.g. claim-tokens/batch with
+    /// `delivery_email`). Convenience only: the user can edit the value
+    /// in the form, and `claim_post` does not enforce a match. See
+    /// `docs/synvya/admin-user-provisioning.md` for the design rationale.
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// Form data for POST /claim
@@ -65,6 +72,7 @@ pub async fn claim_get(
 
     let display_name_str = display_name.unwrap_or_else(|| username.clone().unwrap_or_default());
     let username_str = username.unwrap_or_default();
+    let prefill_email = params.email.as_deref().unwrap_or("");
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -199,7 +207,7 @@ pub async fn claim_get(
             <input type="hidden" name="token" value="{token}">
 
             <label for="email">Email</label>
-            <input type="email" id="email" name="email" required placeholder="your@email.com">
+            <input type="email" id="email" name="email" required placeholder="your@email.com" value="{email}">
 
             <label for="password">Password</label>
             <input type="password" id="password" name="password" required placeholder="••••••••" minlength="8">
@@ -238,6 +246,7 @@ pub async fn claim_get(
         display_name = html_escape(&display_name_str),
         username = html_escape(&username_str),
         token = html_escape(&params.token),
+        email = html_escape(prefill_email),
     );
 
     Ok(Html(html).into_response())

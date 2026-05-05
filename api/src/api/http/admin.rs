@@ -725,7 +725,18 @@ pub async fn batch_create_claim_tokens(
             }
         };
 
-        let claim_url = format!("{}/api/claim?token={}", app_url, token);
+        // Pre-fill the recipient's email on the claim form when we know it.
+        // Convenience only — the user can edit it, and claim_post does not
+        // enforce a match. See docs/synvya/admin-user-provisioning.md.
+        let claim_url = match &req.delivery_email {
+            Some(email) => format!(
+                "{}/api/claim?token={}&email={}",
+                app_url,
+                token,
+                urlencoding::encode(email)
+            ),
+            None => format!("{}/api/claim?token={}", app_url, token),
+        };
 
         // Send email if requested
         if let (Some(email), Some(svc)) = (&req.delivery_email, &email_service) {
