@@ -75,7 +75,7 @@ pub async fn claim_get(
     let prefill_email = params.email.as_deref().unwrap_or("");
 
     let html = format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -101,6 +101,12 @@ pub async fn claim_get(
             max-width: 400px;
             width: 100%;
             box-shadow: 0 8px 32px rgba(39, 197, 139, 0.08);
+        }}
+        .logo {{
+            width: 140px;
+            height: auto;
+            display: block;
+            margin: 0 auto 24px;
         }}
         h1 {{
             margin: 0 0 8px 0;
@@ -193,6 +199,16 @@ pub async fn claim_get(
 </head>
 <body>
     <div class="container">
+        <svg class="logo" viewBox="0 0 240 100" xmlns="http://www.w3.org/2000/svg" aria-label="Synvya">
+            <g fill="#1DB054">
+                <rect x="20" y="60" width="45" height="6" rx="3" />
+                <path d="M25 58 C25 35 60 35 60 58 Z" />
+                <circle cx="42.5" cy="36" r="3" />
+                <path d="M68 48 L78 58 L68 68 V62 H58 V54 H68 V48 Z" />
+            </g>
+            <text x="90" y="62" font-family="Arial, sans-serif" font-size="42" fill="#1DB054" font-weight="400">Synvya</text>
+        </svg>
+
         <h1>Claim Your Account</h1>
         <p class="welcome">Set up your login credentials to access your account.</p>
 
@@ -242,7 +258,7 @@ pub async fn claim_get(
         }}
     </script>
 </body>
-</html>"#,
+</html>"##,
         display_name = html_escape(&display_name_str),
         username = html_escape(&username_str),
         token = html_escape(&params.token),
@@ -358,9 +374,16 @@ pub async fn claim_post(
 
     let display_name_str = display_name.unwrap_or_else(|| username.clone().unwrap_or_default());
 
-    // Show success page with app download instructions
+    // Where to send the recipient after they've claimed. Synvya admin onboarding
+    // is the only flow that hits this success page today (Vine import is legacy).
+    // Set in scripts/load-secrets.sh per environment; safe default keeps the
+    // page valid in dev / unset configurations.
+    let admin_base_url =
+        std::env::var("ADMIN_BASE_URL").unwrap_or_else(|_| "https://admin.synvya.com".to_string());
+
+    // Show success page directing the new admin to Synvya Admin.
     let html = format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -388,6 +411,12 @@ pub async fn claim_post(
             text-align: center;
             box-shadow: 0 8px 32px rgba(39, 197, 139, 0.08);
         }}
+        .logo {{
+            width: 140px;
+            height: auto;
+            display: block;
+            margin: 0 auto 28px;
+        }}
         .checkmark {{
             width: 56px;
             height: 56px;
@@ -411,65 +440,6 @@ pub async fn claim_post(
             margin: 0 0 28px 0;
             line-height: 1.5;
         }}
-        .steps {{
-            text-align: left;
-            margin-bottom: 28px;
-        }}
-        .step {{
-            display: flex;
-            gap: 14px;
-            align-items: flex-start;
-            margin-bottom: 18px;
-        }}
-        .step-num {{
-            flex-shrink: 0;
-            width: 28px;
-            height: 28px;
-            background: rgba(39, 197, 139, 0.15);
-            color: #27C58B;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 13px;
-            font-weight: 700;
-        }}
-        .step-content {{
-            flex: 1;
-        }}
-        .step-title {{
-            color: #F9F7F6;
-            font-weight: 600;
-            font-size: 14px;
-            margin-bottom: 3px;
-        }}
-        .step-desc {{
-            color: #9CA3AF;
-            font-size: 13px;
-            line-height: 1.4;
-        }}
-        .app-links {{
-            display: flex;
-            gap: 10px;
-            margin-top: 8px;
-        }}
-        .app-link {{
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 14px;
-            background: #072218;
-            border: 1px solid #1C4033;
-            border-radius: 8px;
-            color: #F9F7F6;
-            text-decoration: none;
-            font-size: 13px;
-            font-weight: 500;
-            transition: border-color 0.2s;
-        }}
-        .app-link:hover {{
-            border-color: #27C58B;
-        }}
         .divider {{
             border-top: 1px solid #1C4033;
             margin: 0 0 20px 0;
@@ -490,62 +460,56 @@ pub async fn claim_post(
         .web-link:hover {{
             background: #1AA575;
         }}
+        .instruction {{
+            color: #BEB3A7;
+            font-size: 14px;
+            line-height: 1.5;
+            margin: 0 0 24px 0;
+        }}
         .note {{
             color: #9CA3AF;
             font-size: 12px;
-            margin-top: 16px;
+            margin-top: 20px;
             line-height: 1.4;
+        }}
+        .note a {{
+            color: #27C58B;
+            text-decoration: none;
+        }}
+        .note a:hover {{
+            text-decoration: underline;
         }}
     </style>
 </head>
 <body>
     <div class="container">
+        <svg class="logo" viewBox="0 0 240 100" xmlns="http://www.w3.org/2000/svg" aria-label="Synvya">
+            <g fill="#1DB054">
+                <rect x="20" y="60" width="45" height="6" rx="3" />
+                <path d="M25 58 C25 35 60 35 60 58 Z" />
+                <circle cx="42.5" cy="36" r="3" />
+                <path d="M68 48 L78 58 L68 68 V62 H58 V54 H68 V48 Z" />
+            </g>
+            <text x="90" y="62" font-family="Arial, sans-serif" font-size="42" fill="#1DB054" font-weight="400">Synvya</text>
+        </svg>
+
         <div class="checkmark">&#10003;</div>
         <h1>Account Claimed!</h1>
         <p class="subtitle">Welcome, {display_name}. Your credentials have been set.</p>
 
-        <div class="steps">
-            <div class="step">
-                <div class="step-num">1</div>
-                <div class="step-content">
-                    <div class="step-title">Get the App</div>
-                    <div class="step-desc">Download Synvya for the best experience.</div>
-                    <div class="app-links">
-                        <a class="app-link" href="https://apps.apple.com/app/divine-video/id6744577425" target="_blank">
-                            &#63743; App Store
-                        </a>
-                        <a class="app-link" href="https://play.google.com/store/apps/details?id=com.openvine.divine" target="_blank">
-                            &#9654; Google Play
-                        </a>
-                    </div>
-                </div>
-            </div>
-            <div class="step">
-                <div class="step-num">2</div>
-                <div class="step-content">
-                    <div class="step-title">Sign In</div>
-                    <div class="step-desc">Use the email and password you just set to sign in.</div>
-                </div>
-            </div>
-            <div class="step">
-                <div class="step-num">3</div>
-                <div class="step-content">
-                    <div class="step-title">Your Content is Waiting</div>
-                    <div class="step-desc">Your videos and profile are ready to go.</div>
-                </div>
-            </div>
-        </div>
-
         <div class="divider"></div>
 
-        <a class="web-link" href="https://divine.video" target="_blank">
-            Open Synvya on Web
+        <p class="instruction">Use the email and password you just set to sign in to Synvya Admin.</p>
+
+        <a class="web-link" href="{admin_base_url}">
+            Open Synvya Admin
         </a>
-        <p class="note">You can also access your account at divine.video</p>
+        <p class="note">Need help? Contact <a href="mailto:support@synvya.com">support@synvya.com</a></p>
     </div>
 </body>
-</html>"#,
+</html>"##,
         display_name = html_escape(&display_name_str),
+        admin_base_url = html_escape(&admin_base_url),
     );
 
     Ok(([(header::SET_COOKIE, cookie_value)], Html(html)).into_response())
