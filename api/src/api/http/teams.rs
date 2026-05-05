@@ -65,7 +65,10 @@ pub async fn create_team(
         .await?
         == 0;
 
-    if !super::admin::is_full_admin(&auth) && !can_create_first_team {
+    let is_full = super::admin::is_full_admin(&auth);
+    let is_support = !is_full && super::admin::is_support_admin(&auth).await;
+
+    if !is_full && !is_support && !can_create_first_team {
         tracing::warn!(
             "Team creation denied for non-admin pubkey: {}",
             user_pubkey_hex
@@ -87,6 +90,15 @@ pub async fn create_team(
             allowed_kinds_config,
         )
         .await?;
+
+    if is_support {
+        tracing::info!(
+            "Team created by support admin: team_id={} support_admin={} name={}",
+            team_with_relations.team.id,
+            &user_pubkey_hex[..8.min(user_pubkey_hex.len())],
+            request.name,
+        );
+    }
 
     Ok(Json(team_with_relations))
 }
