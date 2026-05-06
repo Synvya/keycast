@@ -32,29 +32,36 @@ async fn setup_pool() -> PgPool {
 }
 
 async fn ensure_tenant(pool: &PgPool, tenant_id: i64) {
-    let _ = sqlx::query(
-        "INSERT INTO tenants (id, name, created_at, updated_at)
-         VALUES ($1, $2, NOW(), NOW())
+    // The tenants table requires (id, domain, name) — domain is NOT NULL.
+    sqlx::query(
+        "INSERT INTO tenants (id, domain, name, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(tenant_id)
+    .bind(format!("test-tenant-{}.example.test", tenant_id))
     .bind(format!("test-tenant-{}", tenant_id))
     .execute(pool)
-    .await;
+    .await
+    .expect("ensure_tenant insert must succeed");
 }
 
-/// Create a user with optional email. Idempotent on (pubkey, tenant_id).
+/// Create or update a user with optional email. The unique index on `users`
+/// is on `pubkey` alone (`users_pubkey_idx`), not `(pubkey, tenant_id)`.
 async fn ensure_user_with_email(pool: &PgPool, tenant_id: i64, pubkey: &str, email: Option<&str>) {
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO users (pubkey, tenant_id, email, created_at, updated_at)
          VALUES ($1, $2, $3, NOW(), NOW())
-         ON CONFLICT (pubkey, tenant_id) DO UPDATE SET email = EXCLUDED.email",
+         ON CONFLICT (pubkey) DO UPDATE
+             SET email = EXCLUDED.email,
+                 tenant_id = EXCLUDED.tenant_id",
     )
     .bind(pubkey)
     .bind(tenant_id)
     .bind(email)
     .execute(pool)
-    .await;
+    .await
+    .expect("ensure_user_with_email insert must succeed");
 }
 
 /// Create a team with the given admin and (optionally) a stored key. Returns team_id.
@@ -125,15 +132,19 @@ async fn test_search_matches_substring_case_insensitive() {
     let pool = setup_pool().await;
     let admin = Keys::generate().public_key().to_hex();
     let unique = Uuid::new_v4().to_string();
-    let target_name = format!("Joes Diner {}", unique);
-    let unrelated_name = format!("Bella Bistro {}", unique);
+    // Two teams; target name carries an uppercase prefix so we can verify the
+    // case-insensitive match. The disambiguating substring lives at the start.
+    let target_name = format!("JoesDiner-{}", unique);
+    let unrelated_name = format!("BellaBistro-{}", unique);
 
     let target = create_team(&pool, TENANT_A, &target_name, &admin, true).await;
     let unrelated = create_team(&pool, TENANT_A, &unrelated_name, &admin, true).await;
 
     let team_repo = TeamRepository::new(pool.clone());
+    // Lowercase substring of the target name. Must match `JoesDiner-…`
+    // case-insensitively and must NOT match `BellaBistro-…`.
     let results = team_repo
-        .search_by_name(TENANT_A, &format!("joes {}", &unique[..8]), 25)
+        .search_by_name(TENANT_A, &format!("joesdiner-{}", &unique[..8]), 25)
         .await
         .expect("search should succeed");
 
