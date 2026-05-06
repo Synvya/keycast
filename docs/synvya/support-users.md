@@ -6,6 +6,7 @@ Spec for letting Synvya support staff create restaurants on behalf of owners and
 - [Cross-system `support-users.md`](https://github.com/Synvya/docs/blob/main/architecture/support-users.md) — system-wide design and the two-layer authority model.
 - [Server `support-users.md`](https://github.com/Synvya/server/blob/staging/docs/specs/support-users.md) — Synvya server's Support-flag mirror to Keycast.
 - [Systemtools `support-users.md`](https://github.com/Synvya/systemtools/blob/staging/docs/specs/support-users.md) — UI: Support toggle on the admin user row, DynamoDB attribute.
+- [Client `support-users.md`](https://github.com/Synvya/client/blob/staging/docs/specs/support-users.md) — Restaurant app: support picker, support-access wiring, session cleanup on switch and logout.
 
 **System context** (Keycast):
 - [Keycast Service Auth](keycast-service-auth.md) — foundation; the Synvya server's mirror call to Keycast rides on this NIP-98 service-auth path.
@@ -127,6 +128,8 @@ The existing `create_with_admin` repository call ([`core/src/repositories/team.r
 
 ### 3.2 New endpoint: `POST /api/admin/teams/:id/support-access`
 
+The `/support-access` endpoints target **fully-provisioned teams** — the existing-restaurant diagnostic flow (§5.2). For the cold-start flow (§5.1), the support user is already the team's admin via `create_with_admin` and uses the standard team-admin endpoints (`add_key`, `add_authorization`, `invite_user`); they never call `POST /support-access` for a team they just created.
+
 **Auth**: `is_support_admin()` only. Tenant-scoped via `TenantExtractor`.
 
 **Path params**: `id` — team id.
@@ -134,17 +137,20 @@ The existing `create_with_admin` repository call ([`core/src/repositories/team.r
 **Request body**:
 ```json
 {
-  "policy_id": 42,           // optional; defaults to the team's "All Access" policy
-  "label": "support: maria"  // optional; recorded on the authorization for audit clarity
+  "policy_id": 42,            // optional; defaults to the team's "All Access" policy
+  "label": "support: maria",  // optional; the server prefixes with `support:{caller_pubkey}` for filtering
+  "expires_in_hours": 24      // optional; default 24, server-enforced ceiling 168 (7d)
 }
 ```
 
 **Behavior** (single transaction):
 1. Look up the team and verify it belongs to the caller's tenant.
-2. If the caller is not yet a `team_users` row for this team, insert one with `role = 'member'`. If the caller is already a member, leave the row alone (do not downgrade an admin).
-3. Pick the team's first non-revoked stored key (this is the restaurant identity; teams have exactly one in the current Synvya model).
-4. Mint a fresh `Authorization` against that stored key, with `connected_client_pubkey = caller`, derived bunker keys, and a fresh connection secret. Use the existing `auth_repo.create()` path so the signer daemon picks it up.
-5. Return the bunker URL plus the authorization summary.
+2. If the team has no non-revoked stored key, return **400** (`team has no stored key — the agent who created it must finish provisioning first`). The endpoint is for established teams.
+3. If the caller is not yet a `team_users` row for this team, insert one with `role = 'member'`. If the caller is already a member, leave the row alone (do not downgrade an admin).
+4. Pick the team's first stored key (the restaurant identity; teams have exactly one in the current Synvya model).
+5. Mint a fresh `Authorization` against that stored key with derived bunker keys, a fresh connection secret, `expires_at` per request (default 24h, capped at 7d), and `label = "support:{caller_pubkey_hex}"` (request-supplied label is appended after the prefix). The label is the source of truth for the `DELETE` endpoint's filtering — `connected_client_pubkey` is set later by the signer when the bunker is first used.
+6. Notify the signer daemon via `AuthorizationCommand::Upsert` so the bunker is live without lazy-load latency.
+7. Return the bunker URL plus the authorization summary.
 
 **Response**:
 ```json
@@ -163,9 +169,11 @@ The existing `create_with_admin` repository call ([`core/src/repositories/team.r
 **Auth**: `is_support_admin()` only. Tenant-scoped.
 
 **Behavior** (single transaction):
-1. Find all non-revoked authorizations on this team where `connected_client_pubkey = caller`. Set `revoked_at = NOW()` and `revoked_reason = 'support_session_end'` on each. Notify the signer daemon (`AuthorizationCommand::Remove`) for each one, mirroring [`admin.rs:1138`](../../api/src/api/http/admin.rs).
+1. Find all non-revoked authorizations on this team where `label LIKE 'support:{caller_pubkey_hex}%'`. Set `revoked_at = NOW()` and `revoked_reason = 'support_session_end'` on each. Notify the signer daemon (`AuthorizationCommand::Remove`) for each one, mirroring [`admin.rs:1138`](../../api/src/api/http/admin.rs).
 2. If the caller's `team_users` row has `role = 'member'` (not `admin`), remove it. If they are an `admin` of this team (e.g., they created it), leave the membership alone.
 3. Return a count of revoked authorizations and a `removed_membership: bool`.
+
+The label-based filter is required because `connected_client_pubkey` is populated only when a NIP-46 client first connects; for a freshly minted authorization that has not yet been used, the column is `NULL`. The grant endpoint stamps `label = "support:{caller_pubkey_hex}"` so this filter unambiguously identifies the calling agent's own authorizations.
 
 **Response**:
 ```json
