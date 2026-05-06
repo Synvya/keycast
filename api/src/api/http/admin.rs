@@ -28,7 +28,7 @@ const ADMIN_TOKEN_EXPIRY_DAYS: i64 = 30;
 const PRELOAD_TOKEN_EXPIRY_DAYS: i64 = 30;
 
 /// Redis key for the support admins set
-const SUPPORT_ADMINS_KEY: &str = "support_admins";
+pub const SUPPORT_ADMINS_KEY: &str = "support_admins";
 
 /// Default expiry for support-issued authorizations (§8.2 of support-users.md).
 const DEFAULT_SUPPORT_AUTH_EXPIRY_HOURS: i64 = 24;
