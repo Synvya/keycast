@@ -219,6 +219,44 @@ Behavior:
 
 The unit-tested helper `mark_support_members(rows: &mut [TeamUser], set: &HashSet<String>)` is the pure core; the handler-side `fetch_support_admin_set()` performs the I/O.
 
+### 3.6 New endpoint: `GET /api/admin/team-lookup`
+
+The primary search surface for the Restaurant app's "Open another restaurant" picker (§5.2). Lets a support agent find a restaurant by name rather than going through the owner.
+
+**Auth**: `is_support_admin()` only. Tenant-scoped via `TenantExtractor`.
+
+**Query params**:
+
+| Param | Description |
+|---|---|
+| `q` | Required. Case-insensitive substring of the team name. Minimum 2 characters. |
+
+**Response**:
+
+```json
+{
+  "results": [
+    {
+      "id": 17,
+      "name": "Joe's Diner",
+      "admin_emails": ["joe@example.com"],
+      "has_stored_key": true,
+      "created_at": "2025-09-12T14:03:11Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+**Behavior**:
+
+- Single SQL query with `ILIKE '%q%'` on `teams.name`, joined to `team_users` and `users` to aggregate admin emails (deduped, admins only — `member` rows are excluded), and an `EXISTS` subquery against `stored_keys` for the provisioning flag.
+- Results are tenant-scoped, sorted by name, capped at **25 rows** (`TEAM_LOOKUP_LIMIT`).
+- Queries shorter than 2 chars return 400; this is intentional — too short to render in a picker without overwhelming.
+- `has_stored_key: false` rows are still returned so the client can show the team but disable the "Open" action with a message ("not yet provisioned"); per §3.2, `POST /support-access` would 400 on those teams.
+
+**Why a name search rather than user-rooted**: support agents most often start from "this restaurant has a problem," not "this user has a problem." The owner-rooted `user-lookup` + `user-teams` flow is retained for the cases that genuinely begin from a user (claim-token lookup, revoking a specific user's authorizations) but is no longer the primary path for finding a restaurant.
+
 ---
 
 ## 4. Reused Surface (no changes)

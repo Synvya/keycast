@@ -16,7 +16,7 @@ use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
-    StoredKeyRepository, TeamRepository, UserRepository,
+    StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
 };
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::claim_token::generate_claim_token;
@@ -930,6 +930,94 @@ pub async fn get_user_lookup(
     }
 
     Ok(Json(UserLookupResponse { results, total }))
+}
+
+// ============================================================================
+// GET /api/admin/team-lookup?q=<name> - Search teams by name
+// ============================================================================
+
+/// Maximum number of teams returned by `team-lookup`. Tight enough to render
+/// inline in a picker without scroll; loose enough to disambiguate when many
+/// restaurants share a common word (e.g. "pizza").
+const TEAM_LOOKUP_LIMIT: i64 = 25;
+
+/// Minimum query length before the server runs the search. Shorter queries
+/// would match too many teams to be useful in a picker.
+const TEAM_LOOKUP_MIN_QUERY_LEN: usize = 2;
+
+#[derive(Debug, Deserialize)]
+pub struct TeamLookupQuery {
+    /// Case-insensitive substring of the team name. Required.
+    pub q: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeamLookupResponse {
+    pub results: Vec<TeamLookupCandidate>,
+    pub total: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeamLookupCandidate {
+    pub id: i32,
+    pub name: String,
+    /// Emails of admins on the team (deduped). May be empty if no admin has
+    /// an email on file. Useful for disambiguating same-named restaurants.
+    pub admin_emails: Vec<String>,
+    /// `true` if the team has at least one stored key. A team with no stored
+    /// key is not eligible for `POST /admin/teams/:id/support-access`; the
+    /// client should surface this so support agents see why.
+    pub has_stored_key: bool,
+    pub created_at: String,
+}
+
+impl From<TeamSearchResult> for TeamLookupCandidate {
+    fn from(row: TeamSearchResult) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            admin_emails: row.admin_emails,
+            has_stored_key: row.has_stored_key,
+            created_at: row.created_at.to_rfc3339(),
+        }
+    }
+}
+
+/// Look up teams by case-insensitive name substring. Available to support
+/// admins and above. Tenant-scoped. Returns up to 25 candidates with admin
+/// emails and provisioning status to drive the Restaurant app's
+/// "Open another restaurant" search picker.
+pub async fn get_team_lookup(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    axum::extract::Query(query): axum::extract::Query<TeamLookupQuery>,
+) -> ApiResult<Json<TeamLookupResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Support admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    let q = query.q.trim();
+    if q.len() < TEAM_LOOKUP_MIN_QUERY_LEN {
+        return Err(ApiError::bad_request(format!(
+            "Query 'q' must be at least {} characters",
+            TEAM_LOOKUP_MIN_QUERY_LEN
+        )));
+    }
+
+    let team_repo = TeamRepository::new(pool.clone());
+    let rows = team_repo
+        .search_by_name(tenant_id, q, TEAM_LOOKUP_LIMIT)
+        .await
+        .map_err(|e| ApiError::internal(format!("Team search failed: {}", e)))?;
+
+    let results: Vec<TeamLookupCandidate> = rows.into_iter().map(Into::into).collect();
+    let total = results.len();
+
+    Ok(Json(TeamLookupResponse { results, total }))
 }
 
 // ============================================================================
