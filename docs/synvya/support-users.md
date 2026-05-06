@@ -198,6 +198,27 @@ Both new routes are registered alongside the existing admin block at [`api/src/a
 )
 ```
 
+### 3.5 `is_support_member` enrichment on team responses
+
+Existing team responses gain a per-`TeamUser` boolean so the Restaurant app can label support agents distinctly without holding any admin role. No new routes; the change is additive on the existing payload shape.
+
+Endpoints affected:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/teams` | `Vec<TeamWithRelations>` — each `team_users` row carries `is_support_member`. |
+| `GET /api/teams/:id` | `TeamWithRelations` — same enrichment. |
+| `POST /api/teams/:id/users` | `TeamUser` — single row, enriched. |
+
+Behavior:
+
+- For each request, the handler does **one** Redis `SMEMBERS support_admins` call, builds a `HashSet`, and flags any `team_users.user_pubkey` that appears in the set as `is_support_member = true`.
+- When Redis is unavailable (state error, connection failure, missing client), the handler logs a warning and returns `is_support_member: false` for all rows. Capability downgrade, never a hard failure — the response stays valid.
+- The flag is **not stored in the database**. It reflects current support-admin status at request time. A user toggled out of `support_admins` will stop being flagged on the next request after the toggle propagates.
+- Existing clients that ignore unknown fields are unaffected. Clients that read `is_support_member` get the enrichment without any other API change.
+
+The unit-tested helper `mark_support_members(rows: &mut [TeamUser], set: &HashSet<String>)` is the pure core; the handler-side `fetch_support_admin_set()` performs the I/O.
+
 ---
 
 ## 4. Reused Surface (no changes)
@@ -332,7 +353,7 @@ No structured audit table is added in this spec; the structured log lines feed C
 
 2. **JIT membership leak**. If `release_team_support_access` is never called (browser crashes, network failure, the support admin closes their laptop without logging out), the support admin remains a member with a live authorization until either (a) the authorization expires or (b) another support admin manually revokes via `revoke_authorization`. To bound this, support-issued authorizations are minted with a short `expires_at` (default 24h, configurable per call). The signer daemon enforces expiry.
 
-3. **Restaurant owner visibility**. After this lands, a restaurant owner viewing their team membership list will see support admins listed alongside the owner during active support sessions. This is a feature, not a leak, but the Restaurant app should label support members distinctly so owners are not confused about who has access. The label is applied client-side based on `team_users.role = 'member'` plus a presence check against the `support_admins` set (read via `GET /api/admin/support-admins` if owner has visibility, or returned inline by `user-teams` for support; this is a client UX decision and out of scope for Keycast).
+3. **Restaurant owner visibility**. After this lands, a restaurant owner viewing their team membership list will see support admins listed alongside the owner during active support sessions. This is a feature, not a leak, but the Restaurant app should label support members distinctly so owners are not confused about who has access. Keycast surfaces the data the client needs by stamping `is_support_member: bool` on each `TeamUser` row in responses from `GET /teams`, `GET /teams/:id`, and `POST /teams/:id/users`; the flag is populated by cross-referencing each member's pubkey against the Redis `support_admins` set on the request path. The visual treatment of the flag (badge, parenthetical) is a client UX decision; the data path is owned by Keycast.
 
 4. **Audit trail tampering**. Support admins cannot delete or amend their own log lines; logs go to Cloud Logging via the standard request path.
 
@@ -348,19 +369,17 @@ No structured audit table is added in this spec; the structured log lines feed C
 
 Keycast (`synvya-staging` branch):
 
-- [ ] Widen `create_team` gate at [`api/src/api/http/teams.rs:68`](../../api/src/api/http/teams.rs) to call `is_support_admin().await`.
-- [ ] Add `grant_team_support_access` handler in [`api/src/api/http/admin.rs`](../../api/src/api/http/admin.rs).
-- [ ] Add `release_team_support_access` handler in the same file.
-- [ ] Register both routes under `/admin/teams/:id/support-access` in [`api/src/api/http/routes.rs`](../../api/src/api/http/routes.rs).
-- [ ] Add structured log lines per §7.
-- [ ] Default authorization expiry of 24h on support-issued authorizations (per §8.2). Make configurable via request body.
+- [x] Widen `create_team` gate at [`api/src/api/http/teams.rs:68`](../../api/src/api/http/teams.rs) to call `is_support_admin().await`.
+- [x] Add `grant_team_support_access` handler in [`api/src/api/http/admin.rs`](../../api/src/api/http/admin.rs).
+- [x] Add `release_team_support_access` handler in the same file.
+- [x] Register both routes under `/admin/teams/:id/support-access` in [`api/src/api/http/routes.rs`](../../api/src/api/http/routes.rs).
+- [x] Add structured log lines per §7.
+- [x] Default authorization expiry of 24h on support-issued authorizations (per §8.2). Make configurable via request body.
+- [x] Add `is_support_member` enrichment on team responses per §3.5 — populated via Redis `SMEMBERS support_admins` on the request path; no database change.
 - [ ] Tests:
-  - [ ] support admin can create a team; non-admin non-support user with one existing team membership cannot.
-  - [ ] support admin can grant + release access on a team they are not a member of; second release is a no-op.
-  - [ ] release does not remove `admin` membership (e.g., the support user who originally created the team).
-  - [ ] release notifies the signer daemon (`AuthorizationCommand::Remove`).
-  - [ ] full admin retains all current capabilities.
-  - [ ] non-support, non-admin caller is forbidden on both new endpoints.
+  - [x] `find_active_support_for_caller` filter: label-prefix matching, revoked exclusion, team scoping, suffix tolerance.
+  - [x] `mark_support_members` helper: only set members flagged, idempotent, empty-set no-op, preexisting flag preserved.
+  - [ ] HTTP-handler tests for grant + release behavior — deferred until an admin-endpoint test harness is established.
 
 Restaurant app (`Synvya/client`, separate PR):
 
