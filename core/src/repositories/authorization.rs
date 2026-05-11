@@ -105,6 +105,35 @@ impl AuthorizationRepository {
         .map_err(Into::into)
     }
 
+    /// Find a support admin's own active authorizations on a team, identified
+    /// by the `support:{caller_pubkey_hex}` label prefix stamped at grant time.
+    ///
+    /// Returns `(authorization_id, bunker_public_key)` pairs. Used by the
+    /// `DELETE /admin/teams/:id/support-access` endpoint to bulk-revoke.
+    pub async fn find_active_support_for_caller(
+        &self,
+        tenant_id: i64,
+        team_id: i32,
+        caller_pubkey_hex: &str,
+    ) -> Result<Vec<(i32, String)>, RepositoryError> {
+        let label_prefix = format!("support:{}", caller_pubkey_hex);
+        sqlx::query_as::<_, (i32, String)>(
+            "SELECT a.id, a.bunker_public_key
+             FROM authorizations a
+             JOIN stored_keys sk ON sk.id = a.stored_key_id
+             WHERE a.tenant_id = $1
+               AND sk.team_id = $2
+               AND a.revoked_at IS NULL
+               AND a.label LIKE $3 || '%'",
+        )
+        .bind(tenant_id)
+        .bind(team_id)
+        .bind(label_prefix)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
     /// Soft-delete an authorization by setting `revoked_at = NOW()`.
     /// Returns the bunker_public_key of the revoked row (used by the caller to
     /// notify the signer daemon via the authorization channel), or `None` if

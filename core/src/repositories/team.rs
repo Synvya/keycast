@@ -6,7 +6,24 @@ use crate::types::policy::{Policy, PolicyWithPermissions};
 use crate::types::stored_key::{PublicStoredKey, StoredKey};
 use crate::types::team::{Team, TeamWithRelations};
 use crate::types::user::TeamUser;
+use chrono::DateTime;
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use sqlx::PgPool;
+
+/// Result row for the team-name search used by `GET /api/admin/team-lookup`.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct TeamSearchResult {
+    pub id: i32,
+    pub name: String,
+    pub created_at: DateTime<chrono::Utc>,
+    /// Emails of admins on the team (deduped). Empty when no admin has an
+    /// email on file. Used to disambiguate when multiple teams share a name.
+    pub admin_emails: Vec<String>,
+    /// `true` when the team has at least one row in `stored_keys`. A team
+    /// without a stored key is not eligible for `/support-access`.
+    pub has_stored_key: bool,
+}
 
 /// Repository for team-related database operations.
 #[derive(Debug, Clone)]
@@ -28,6 +45,51 @@ impl TeamRepository {
         .bind(tenant_id)
         .bind(team_id)
         .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Search teams by name within a tenant. Returns up to `limit` rows whose
+    /// names match the case-insensitive substring `query`. Each row carries
+    /// the team's admin emails (for disambiguation when multiple teams share
+    /// a name) and a flag indicating whether the team has a stored key
+    /// (a team with no stored key is not eligible for `/support-access`).
+    ///
+    /// Used by `GET /api/admin/team-lookup`.
+    pub async fn search_by_name(
+        &self,
+        tenant_id: i64,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<TeamSearchResult>, RepositoryError> {
+        let pattern = format!("%{}%", query);
+        sqlx::query_as::<_, TeamSearchResult>(
+            "SELECT
+                t.id,
+                t.name,
+                t.created_at,
+                COALESCE(
+                    ARRAY_AGG(DISTINCT u.email)
+                        FILTER (WHERE u.email IS NOT NULL AND tu.role = 'admin'),
+                    '{}'
+                )::text[] AS admin_emails,
+                EXISTS (
+                    SELECT 1 FROM stored_keys sk
+                    WHERE sk.team_id = t.id AND sk.tenant_id = $1
+                ) AS has_stored_key
+             FROM teams t
+             LEFT JOIN team_users tu ON tu.team_id = t.id
+             LEFT JOIN users u ON u.pubkey = tu.user_pubkey AND u.tenant_id = $1
+             WHERE t.tenant_id = $1
+               AND t.name ILIKE $2
+             GROUP BY t.id, t.name, t.created_at
+             ORDER BY t.name
+             LIMIT $3",
+        )
+        .bind(tenant_id)
+        .bind(pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
     }

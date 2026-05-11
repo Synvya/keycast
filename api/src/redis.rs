@@ -266,6 +266,40 @@ impl PrefixedRedis {
         })
         .await
     }
+
+    /// Atomically `SET key value NX EX ttl_seconds`.
+    ///
+    /// Returns `Ok(true)` if the key was set (it did not previously exist).
+    /// Returns `Ok(false)` if the key already existed (NX condition failed).
+    ///
+    /// Used for anti-replay protection: a unique token is `set_nx_ex`'d on
+    /// first sight; a duplicate within the TTL returns `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if Redis operation fails or connection refresh fails.
+    pub async fn set_nx_ex(&self, key: &str, value: &str, ttl_seconds: u64) -> RedisResult<bool> {
+        let prefixed = self.prefixed_key(key).into_owned();
+        let value = value.to_string();
+        self.with_refresh(|mut conn| {
+            let key = prefixed.clone();
+            let val = value.clone();
+            async move {
+                // SET key value NX EX ttl returns "OK" (bulk string) if set,
+                // or nil if NX failed. Map to bool.
+                let result: Option<String> = redis::cmd("SET")
+                    .arg(key)
+                    .arg(val)
+                    .arg("NX")
+                    .arg("EX")
+                    .arg(ttl_seconds)
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(result.is_some())
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

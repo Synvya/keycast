@@ -15,6 +15,12 @@ pub struct AuthError {
     message: String,
 }
 
+impl AuthError {
+    pub fn new(status: StatusCode, message: String) -> Self {
+        Self { status, message }
+    }
+}
+
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let body = serde_json::json!({ "error": self.message });
@@ -42,6 +48,13 @@ where
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let path = parts.uri.path();
+
+        // Try 0: NIP-98 service-auth (Authorization: Nostr <base64>).
+        // Exclusive — if the header is present, this path either succeeds
+        // or the request is rejected. No fall-through to Bearer/cookie.
+        if let Some(result) = crate::api::nip98_extractor::try_authenticate_nip98(parts).await {
+            return result;
+        }
 
         // Try 1: UCAN Bearer Token
         if let Some(auth_header) = parts.headers.get("Authorization") {

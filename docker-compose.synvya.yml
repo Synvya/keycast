@@ -77,6 +77,10 @@ services:
       # Synvya hosts the password reset page on a different domain
       # (account.synvya.com / account.staging.synvya.com) from the auth host.
       PASSWORD_RESET_BASE_URL: ${PASSWORD_RESET_BASE_URL:?error}
+      # Synvya Admin lives on a separate host. The post-claim success page
+      # in the keycast claim flow links to this URL so newly-onboarded
+      # admins land directly on admin.synvya.com (or staging equivalent).
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:?error}
       DISABLE_EMAILS:
       # Frontend
       VITE_DOMAIN: ${VITE_DOMAIN:-}

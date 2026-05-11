@@ -11,7 +11,7 @@
 	const api = new KeycastApi();
 	const loginUrl = getLoginUrl();
 	const isSynvyaManaged = loginUrl !== '/login';
-	const pageTitle = isSynvyaManaged ? 'Verify Email - Synvya' : `Verify Email - ${BRAND.name}`;
+	const pageTitle = isSynvyaManaged ? 'Verify Email - Synvya Restaurant' : `Verify Email - ${BRAND.name}`;
 	let status = $state<'loading' | 'processing' | 'success' | 'oauth_redirect' | 'headless_verified' | 'error' | 'no-token'>('loading');
 	let message = $state('');
 	let redirectUrl = $state('');
@@ -236,7 +236,17 @@
 	}
 
 	.synvya-page {
-		background: color-mix(in srgb, var(--color-divine-muted) 60%, white);
+		position: fixed;
+		inset: 0;
+		z-index: 1;
+		background: hsl(0 0% 100%);
+		overflow-y: auto;
+	}
+
+	@media (prefers-color-scheme: dark) {
+		.synvya-page {
+			background: hsl(222.2 84% 4.9%);
+		}
 	}
 
 	.verify-container {
@@ -338,10 +348,17 @@
 	}
 
 	.synvya-container h1 {
-		color: #0f172a;
+		color: hsl(222.2 84% 4.9%);
+		font-family: system-ui, -apple-system, sans-serif;
 		font-size: 1.25rem;
 		font-weight: 600;
 		letter-spacing: -0.01em;
+	}
+
+	@media (prefers-color-scheme: dark) {
+		.synvya-container h1 {
+			color: hsl(210 40% 98%);
+		}
 	}
 
 	.subtitle {
@@ -353,7 +370,15 @@
 	.synvya-container .subtitle,
 	.synvya-container .redirect-notice,
 	.synvya-container .processing-notice {
-		color: #475569;
+		color: hsl(215.4 16.3% 46.9%);
+	}
+
+	@media (prefers-color-scheme: dark) {
+		.synvya-container .subtitle,
+		.synvya-container .redirect-notice,
+		.synvya-container .processing-notice {
+			color: hsl(215 20.2% 65.1%);
+		}
 	}
 
 	/* Synvya-themed status icons: small chip with soft background instead of
@@ -379,8 +404,27 @@
 	}
 
 	.synvya-container .status-icon.loading :global(svg) {
-		color: #0f172a;
+		color: hsl(222.2 84% 4.9%);
 		background: rgba(15, 23, 42, 0.04);
+	}
+
+	@media (prefers-color-scheme: dark) {
+		.synvya-container .status-icon :global(svg) {
+			background: rgba(255, 255, 255, 0.06);
+		}
+
+		.synvya-container .status-icon.success :global(svg) {
+			background: rgba(22, 163, 74, 0.15);
+		}
+
+		.synvya-container .status-icon.error :global(svg) {
+			background: rgba(220, 38, 38, 0.12);
+		}
+
+		.synvya-container .status-icon.loading :global(svg) {
+			color: hsl(210 40% 98%);
+			background: rgba(255, 255, 255, 0.06);
+		}
 	}
 
 	.synvya-container .status-icon :global(.synvya-spin) {
@@ -420,8 +464,8 @@
 	}
 
 	.synvya-container .btn-primary {
-		background: #0f172a;
-		box-shadow: none;
+		background: hsl(142.1 76.2% 36.3%);
+		border-radius: 0.375rem;
 	}
 
 	.btn-primary:hover {
@@ -430,7 +474,7 @@
 	}
 
 	.synvya-container .btn-primary:hover {
-		background: #111827;
+		background: hsl(142.1 76.2% 30%);
 	}
 
 	.btn-secondary {
@@ -448,9 +492,10 @@
 	}
 
 	.synvya-container .btn-secondary {
-		background: rgba(255, 255, 255, 0.72);
-		border-color: rgba(15, 23, 42, 0.12);
-		color: #0f172a;
+		background: transparent;
+		border-color: hsl(214.3 31.8% 91.4%);
+		border-radius: 0.375rem;
+		color: hsl(222.2 84% 4.9%);
 	}
 
 	.btn-secondary:hover {
@@ -459,7 +504,19 @@
 	}
 
 	.synvya-container .btn-secondary:hover {
-		background: rgba(248, 250, 252, 1);
-		border-color: rgba(15, 23, 42, 0.2);
+		background: hsl(210 40% 96.1%);
+		border-color: hsl(214.3 31.8% 83%);
+	}
+
+	@media (prefers-color-scheme: dark) {
+		.synvya-container .btn-secondary {
+			border-color: rgba(255, 255, 255, 0.12);
+			color: hsl(210 40% 98%);
+		}
+
+		.synvya-container .btn-secondary:hover {
+			background: rgba(255, 255, 255, 0.06);
+			border-color: rgba(255, 255, 255, 0.2);
+		}
 	}
 </style>
