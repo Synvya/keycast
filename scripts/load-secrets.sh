@@ -20,12 +20,18 @@ if [ "$ENV" = "staging" ]; then
     INVITE_BASE_URL=https://account.staging.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.staging.synvya.com
     ADMIN_BASE_URL=https://admin.staging.synvya.com
+    BUNKER_RELAYS=wss://relay.staging.synvya.com
+    VITE_NDK_EXPLICIT_RELAYS=wss://relay.staging.synvya.com
+    VITE_NDK_BUNKER_RELAYS=wss://relay.staging.synvya.com
 elif [ "$ENV" = "production" ]; then
     DOMAIN=auth.synvya.com
     KMS_KEY_ID=alias/synvya-production-keycast-masterkey
     INVITE_BASE_URL=https://account.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.synvya.com
     ADMIN_BASE_URL=https://admin.synvya.com
+    BUNKER_RELAYS=wss://relay.synvya.com
+    VITE_NDK_EXPLICIT_RELAYS=wss://relay.synvya.com
+    VITE_NDK_BUNKER_RELAYS=wss://relay.synvya.com
 else
     echo "Error: environment must be 'staging' or 'production'" >&2
     exit 1
@@ -42,7 +48,9 @@ POSTGRES_PASSWORD=$(get_secret synvya/$ENV/keycast/postgres-password)
 SERVER_NSEC=$(get_secret synvya/$ENV/keycast/privatekey)
 AWS_KMS_KEY_ID=$KMS_KEY_ID
 AWS_REGION=$REGION
-BUNKER_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.snort.social
+BUNKER_RELAYS=$BUNKER_RELAYS
+VITE_NDK_EXPLICIT_RELAYS=$VITE_NDK_EXPLICIT_RELAYS
+VITE_NDK_BUNKER_RELAYS=$VITE_NDK_BUNKER_RELAYS
 ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS
 BASE_URL=https://$DOMAIN
 APP_URL=https://$DOMAIN
