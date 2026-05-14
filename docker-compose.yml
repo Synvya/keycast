@@ -77,11 +77,25 @@ services:
       - ./master.key:/app/master.key:ro
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?error}@postgres:5432/keycast
-      RUST_LOG: ${RUST_LOG:-info,keycast_signer=debug}
+      RUST_LOG: ${RUST_LOG:-info,keycast_api=debug,keycast_signer=debug}
       MASTER_KEY_PATH: /app/master.key
       USE_GCP_KMS: ${USE_GCP_KMS:-false}
       BUNKER_RELAYS: ${BUNKER_RELAYS:?error}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?error}
+      # Backend admin allowlist. Empty means NO admins recognized via the
+      # pubkey path — keycast's `is_full_admin` falls through to `false`
+      # and every /api/admin/* call from the synvya server returns 403.
+      # For local dev, set this to the pubkey derived from
+      # SERVER_BUNKER_CLIENT_PRIVATE_KEY in server/.env.local.
+      ALLOWED_PUBKEYS: ${ALLOWED_PUBKEYS:-}
+      # Local-dev opt-in for the tenant-domain blocklist (otherwise hosts
+      # ending in .internal / .local / .test / etc. are rejected by
+      # `keycast_api::api::tenant::validate_domain`). The server in Docker
+      # reaches keycast via `host.docker.internal:3000`, so the Host header
+      # always carries the blocked `.internal` suffix — without this opt-in
+      # every NIP-98 admin call from server→keycast 400s before
+      # verification runs. Empty in prod (real DNS, blocklist applies).
+      ALLOWED_TENANT_DOMAINS: ${ALLOWED_TENANT_DOMAINS:-host.docker.internal,localhost}
       WEB_BUILD_DIR: /app/web
       SERVER_NSEC: ${SERVER_NSEC:?error}
       REDIS_URL: redis://redis:6379
