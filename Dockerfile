@@ -19,7 +19,7 @@ COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
 
 ARG CARGO_FEATURES=""
-ARG CARGO_BUILD_JOBS=""
+ARG CARGO_BUILD_JOBS=default
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 
 # BuildKit cache mounts persist the cargo registry/git index and the
