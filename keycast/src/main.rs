@@ -774,22 +774,46 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
             }
         };
 
-        let app = app.route("/verify-email", axum::routing::get(verify_email_handler));
+        // SvelteKit entry points must redirect, not serve the SPA. Without
+        // explicit routes, the ServeDir fallback below would expose the login
+        // page anyway: `/` resolves to `index.html` via
+        // `append_index_html_on_directories`, and `/index.html` is a real file
+        // in the build output.
+        let redirect_url_for_routes = redirect_url.clone();
+        let redirect_handler = axum::routing::get(move || {
+            let redirect_url = redirect_url_for_routes.clone();
+            async move {
+                match redirect_url {
+                    Some(url) => axum::response::Redirect::temporary(&url).into_response(),
+                    None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                }
+            }
+        });
+
+        let app = app
+            .route("/", redirect_handler.clone())
+            .route("/index.html", redirect_handler)
+            .route("/verify-email", axum::routing::get(verify_email_handler));
 
         // Serve SvelteKit static assets (/_app/*, favicon, logos) needed by the
-        // verify-email page; unmatched routes redirect to WEB_UI_REDIRECT_URL.
+        // verify-email page. Unmatched routes redirect to WEB_UI_REDIRECT_URL.
+        // `append_index_html_on_directories(false)` prevents ServeDir from
+        // silently serving build/index.html for any directory-style request
+        // beyond `/` (which is already routed explicitly above).
         let redirect_url_for_fallback = redirect_url.clone();
-        app.fallback_service(ServeDir::new(&web_build_dir).fallback(axum::routing::any(
-            move || {
-                let redirect_url = redirect_url_for_fallback.clone();
-                async move {
-                    match redirect_url {
-                        Some(url) => axum::response::Redirect::temporary(&url).into_response(),
-                        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+        app.fallback_service(
+            ServeDir::new(&web_build_dir)
+                .append_index_html_on_directories(false)
+                .fallback(axum::routing::any(move || {
+                    let redirect_url = redirect_url_for_fallback.clone();
+                    async move {
+                        match redirect_url {
+                            Some(url) => axum::response::Redirect::temporary(&url).into_response(),
+                            None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                        }
                     }
-                }
-            },
-        )))
+                })),
+        )
     } else {
         // SvelteKit frontend - explicitly handle root and index.html with injection
         // This ensures index.html always goes through injection, not served as static file

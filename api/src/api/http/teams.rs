@@ -24,6 +24,34 @@ use keycast_core::types::stored_key::PublicStoredKey;
 use keycast_core::types::team::{KeyWithRelations, Team, TeamWithRelations};
 use keycast_core::types::user::{TeamUser, TeamUserRole};
 
+/// Fetch the Redis `support_admins` set as a `HashSet`. Returns `None` when
+/// state or Redis is unavailable; callers should treat that as "no enrichment
+/// possible" and fall back to default `is_support_member: false` on responses.
+async fn fetch_support_admin_set() -> Option<std::collections::HashSet<String>> {
+    let state = crate::state::get_keycast_state().ok()?;
+    let redis = state.redis.as_ref()?;
+    match redis.smembers(super::admin::SUPPORT_ADMINS_KEY).await {
+        Ok(v) => Some(v.into_iter().collect()),
+        Err(e) => {
+            tracing::warn!("Redis SMEMBERS support_admins failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Stamp `is_support_member: true` on each `TeamUser` whose pubkey appears in
+/// the supplied `support_admins` set. Pure function — exposed for unit tests.
+pub(crate) fn mark_support_members(
+    team_users: &mut [TeamUser],
+    support_set: &std::collections::HashSet<String>,
+) {
+    for tu in team_users.iter_mut() {
+        if support_set.contains(&tu.user_pubkey) {
+            tu.is_support_member = true;
+        }
+    }
+}
+
 pub async fn list_teams(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
@@ -43,7 +71,15 @@ pub async fn list_teams(
         .await
         .map_err(|_| ApiError::not_found("User not found"))?;
 
-    let teams_with_relations = user.teams(&pool, tenant_id).await?;
+    let mut teams_with_relations = user.teams(&pool, tenant_id).await?;
+
+    if !teams_with_relations.is_empty() {
+        if let Some(set) = fetch_support_admin_set().await {
+            for twr in teams_with_relations.iter_mut() {
+                mark_support_members(&mut twr.team_users, &set);
+            }
+        }
+    }
 
     Ok(Json(teams_with_relations))
 }
@@ -65,7 +101,10 @@ pub async fn create_team(
         .await?
         == 0;
 
-    if !super::admin::is_full_admin(&auth) && !can_create_first_team {
+    let is_full = super::admin::is_full_admin(&auth);
+    let is_support = !is_full && super::admin::is_support_admin(&auth).await;
+
+    if !is_full && !is_support && !can_create_first_team {
         tracing::warn!(
             "Team creation denied for non-admin pubkey: {}",
             user_pubkey_hex
@@ -88,6 +127,15 @@ pub async fn create_team(
         )
         .await?;
 
+    if is_support {
+        tracing::info!(
+            "Team created by support admin: team_id={} support_admin={} name={}",
+            team_with_relations.team.id,
+            &user_pubkey_hex[..8.min(user_pubkey_hex.len())],
+            request.name,
+        );
+    }
+
     Ok(Json(team_with_relations))
 }
 
@@ -104,10 +152,14 @@ pub async fn get_team(
     verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
 
     let team_repo = TeamRepository::new(pool.clone());
-    let team_with_relations = team_repo
+    let mut team_with_relations = team_repo
         .find_with_relations(tenant_id, team_id)
         .await
         .map_err(|_| ApiError::not_found("Team not found"))?;
+
+    if let Some(set) = fetch_support_admin_set().await {
+        mark_support_members(&mut team_with_relations.team_users, &set);
+    }
 
     Ok(Json(team_with_relations))
 }
@@ -189,9 +241,13 @@ pub async fn add_user(
         .await?;
 
     // Add the team membership
-    let team_user = team_repo
+    let mut team_user = team_repo
         .add_member(team_id, &new_user_pubkey.to_hex(), request.role.as_str())
         .await?;
+
+    if let Some(set) = fetch_support_admin_set().await {
+        mark_support_members(std::slice::from_mut(&mut team_user), &set);
+    }
 
     Ok(Json(team_user))
 }
@@ -958,5 +1014,82 @@ async fn resolve_display_name(pool: &PgPool, pubkey: &str, tenant_id: i64) -> St
         Some((Some(display_name), _)) if !display_name.is_empty() => display_name,
         Some((_, Some(username))) if !username.is_empty() => username,
         _ => format!("{}…", &pubkey[..8]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::collections::HashSet;
+
+    fn fake_team_user(pubkey: &str, role: TeamUserRole) -> TeamUser {
+        let now = Utc::now();
+        TeamUser {
+            user_pubkey: pubkey.to_string(),
+            team_id: 1,
+            role,
+            email: None,
+            created_at: now,
+            updated_at: now,
+            is_support_member: false,
+        }
+    }
+
+    #[test]
+    fn mark_support_members_flags_only_pubkeys_in_set() {
+        let support = "aaaa".to_string();
+        let owner = "bbbb".to_string();
+        let mut rows = vec![
+            fake_team_user(&support, TeamUserRole::Member),
+            fake_team_user(&owner, TeamUserRole::Admin),
+        ];
+        let set: HashSet<String> = [support.clone()].into_iter().collect();
+
+        mark_support_members(&mut rows, &set);
+
+        assert!(rows[0].is_support_member, "support pubkey must be flagged");
+        assert!(
+            !rows[1].is_support_member,
+            "owner pubkey must NOT be flagged"
+        );
+    }
+
+    #[test]
+    fn mark_support_members_is_idempotent() {
+        let pk = "cccc".to_string();
+        let mut rows = vec![fake_team_user(&pk, TeamUserRole::Member)];
+        let set: HashSet<String> = [pk.clone()].into_iter().collect();
+
+        mark_support_members(&mut rows, &set);
+        mark_support_members(&mut rows, &set);
+
+        assert!(rows[0].is_support_member);
+    }
+
+    #[test]
+    fn mark_support_members_empty_set_is_noop() {
+        let mut rows = vec![fake_team_user("dddd", TeamUserRole::Admin)];
+        let set: HashSet<String> = HashSet::new();
+
+        mark_support_members(&mut rows, &set);
+
+        assert!(!rows[0].is_support_member);
+    }
+
+    #[test]
+    fn mark_support_members_does_not_clear_preexisting_flag() {
+        // If a row was already marked (e.g. enriched upstream), a subsequent
+        // pass with a smaller set must not unset it.
+        let mut rows = vec![fake_team_user("eeee", TeamUserRole::Member)];
+        rows[0].is_support_member = true;
+        let set: HashSet<String> = HashSet::new();
+
+        mark_support_members(&mut rows, &set);
+
+        assert!(
+            rows[0].is_support_member,
+            "preexisting true flag must be preserved"
+        );
     }
 }

@@ -198,9 +198,14 @@ pub fn api_routes(
         )
         .route("/admin/user-lookup", get(admin::get_user_lookup))
         .route("/admin/user-teams", get(admin::get_user_teams))
+        .route("/admin/team-lookup", get(admin::get_team_lookup))
         .route(
             "/admin/authorizations/:id/revoke",
             post(admin::revoke_authorization),
+        )
+        .route(
+            "/admin/teams/:id/support-access",
+            post(admin::grant_team_support_access).delete(admin::release_team_support_access),
         )
         .route(
             "/admin/support-admins",

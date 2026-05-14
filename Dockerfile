@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Build stage for Rust API
 FROM rust:1.93-slim AS rust-builder
 
@@ -18,15 +19,36 @@ COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
 
 ARG CARGO_FEATURES=""
-RUN if [ -n "$CARGO_FEATURES" ]; then \
+ARG CARGO_BUILD_JOBS=""
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+
+# BuildKit cache mounts persist the cargo registry/git index and the
+# target/ directory across builds on the same host. Unchanged crates
+# stay compiled, so warm builds skip the ~400-crate dependency build.
+# Artifacts must be copied out of target/ before the RUN ends because
+# cache mounts are not part of the resulting image layer.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    set -e; \
+    if [ -n "$CARGO_FEATURES" ]; then \
       cargo build --release --bin keycast --features "$CARGO_FEATURES"; \
     else \
       cargo build --release --bin keycast; \
-    fi
-RUN cargo build --release --example migrate-vine-users
+    fi; \
+    cargo build --release --example migrate-vine-users; \
+    mkdir -p /artifacts; \
+    cp target/release/keycast /artifacts/keycast; \
+    cp target/release/examples/migrate-vine-users /artifacts/migrate-vine-users
 
 # Build stage for Bun frontend
 FROM oven/bun:1 AS web-builder
+
+# Force serial execution: only start web-builder after rust-builder
+# completes. BuildKit otherwise runs the two stages in parallel, which
+# pushes a small EC2 (e.g. t3.medium) into swap thrash and locks the
+# host. This COPY creates a build-graph dependency on rust-builder.
+COPY --from=rust-builder /artifacts/keycast /tmp/.rust-builder-done
 
 # Install build essentials for native modules
 RUN apt-get update && apt-get install -y \
@@ -109,9 +131,11 @@ RUN curl -fsSL https://bun.sh/install | bash
 # Create necessary directories
 RUN mkdir -p /app/database /data
 
-# Copy built artifacts - keycast binary and migration tool
-COPY --from=rust-builder /app/target/release/keycast ./
-COPY --from=rust-builder /app/target/release/examples/migrate-vine-users ./
+# Copy built artifacts - keycast binary and migration tool.
+# Sources are /artifacts/ (not target/) because target/ is a BuildKit
+# cache mount in rust-builder and is not present in its image layer.
+COPY --from=rust-builder /artifacts/keycast ./
+COPY --from=rust-builder /artifacts/migrate-vine-users ./
 COPY --from=web-builder /app/web/build ./web
 COPY --from=web-builder /app/web/package.json ./
 COPY --from=web-builder /app/web/node_modules ./node_modules

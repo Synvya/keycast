@@ -53,6 +53,13 @@ pub struct TeamUser {
     pub created_at: DateTime<chrono::Utc>,
     /// The date and time the user was last updated
     pub updated_at: DateTime<chrono::Utc>,
+    /// True if `user_pubkey` is currently in the Redis `support_admins` set.
+    /// Populated by API handlers after fetching from the repository; default
+    /// `false` when no enrichment has been done (e.g., daemon code paths,
+    /// Redis unavailable). Not stored in the database.
+    #[serde(default)]
+    #[sqlx(default)]
+    pub is_support_member: bool,
 }
 
 /// The role of a user in a team
