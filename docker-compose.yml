@@ -77,11 +77,31 @@ services:
       - ./master.key:/app/master.key:ro
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:?error}@postgres:5432/keycast
-      RUST_LOG: ${RUST_LOG:-info,keycast_signer=debug}
+      RUST_LOG: ${RUST_LOG:-info,keycast_api=debug,keycast_signer=debug}
       MASTER_KEY_PATH: /app/master.key
       USE_GCP_KMS: ${USE_GCP_KMS:-false}
       BUNKER_RELAYS: ${BUNKER_RELAYS:?error}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?error}
+      # Backend admin allowlist. Empty means NO admins recognized via the
+      # pubkey path — keycast's `is_full_admin` falls through to `false`
+      # and every /api/admin/* call from the synvya server returns 403.
+      # For local dev, set this to the pubkey derived from
+      # SERVER_BUNKER_CLIENT_PRIVATE_KEY in server/.env.local.
+      ALLOWED_PUBKEYS: ${ALLOWED_PUBKEYS:-}
+      # Local-dev opt-in for the tenant-domain blocklist (otherwise hosts
+      # ending in .internal / .local / .test / etc. are rejected by
+      # `keycast_api::api::tenant::validate_domain`). All three local-dev
+      # hostnames are listed so each ingress path resolves cleanly:
+      #   * keycast.local.synvya.com — canonical, used by both browser and
+      #     the server-container so user/tenant identity agrees across paths.
+      #     Lives under synvya.com (a real PSL eTLD+1) so Safari ITP treats
+      #     cross-host fetches between *.local.synvya.com siblings as same-site.
+      #   * host.docker.internal — kept for compat with code paths that
+      #     might still target it (BUNKER_RELAYS, older configs).
+      #   * localhost — kept for browser typed-URL fallback and any tooling
+      #     that hardcodes localhost.
+      # Empty in prod (real DNS, blocklist applies).
+      ALLOWED_TENANT_DOMAINS: ${ALLOWED_TENANT_DOMAINS:-keycast.local.synvya.com,host.docker.internal,localhost}
       WEB_BUILD_DIR: /app/web
       SERVER_NSEC: ${SERVER_NSEC:?error}
       REDIS_URL: redis://redis:6379
@@ -89,7 +109,31 @@ services:
       SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
       FROM_EMAIL: ${FROM_EMAIL:-noreply@divine.video}
       FROM_NAME: ${FROM_NAME:-Synvya}
-      BASE_URL: ${BASE_URL:-http://localhost:5173}
+      # Local-dev BASE_URL points at keycast itself
+      # (keycast.local.synvya.com:3000) rather than the merchant client
+      # (localhost:5173). The verify-email and claim links keycast embeds use
+      # this base; keeping it within keycast's own origin means the same
+      # tenant resolves both the link generation and the link click — and
+      # removes the historical "substitute :3000 for :5173 in the URL" Phase 4
+      # workaround. Prod overrides via host env (account.staging.synvya.com /
+      # account.synvya.com).
+      BASE_URL: ${BASE_URL:-http://keycast.local.synvya.com:3000}
+      # `APP_URL` drives the frontend's API base URL: keycast's HTTP server
+      # injects it into the served HTML as `window.__ENV__.VITE_DOMAIN`
+      # (see `keycast/src/main.rs:inject_runtime_env`). Without this set,
+      # the SvelteKit web build's default of `http://localhost:3000` wins —
+      # so a page loaded from keycast.local.synvya.com:3000 tries to POST to
+      # localhost:3000 → cross-origin → CORS blocks → "Registration error:
+      # TypeError: Load failed" in the browser. Setting APP_URL to the
+      # same hostname the page is served from makes API calls same-origin.
+      # Prod sets this to https://auth.synvya.com / https://auth.staging.synvya.com.
+      APP_URL: ${APP_URL:-http://keycast.local.synvya.com:3000}
+      # "Open Synvya Admin" button URL on the claim-success page
+      # (api/src/api/http/claim.rs). Without this, the Rust fallback
+      # `https://admin.synvya.com` wins and a freshly-claimed local admin
+      # gets sent to production. Prod values come from
+      # keycast/scripts/load-secrets.sh.
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:-http://admin.local.synvya.com:5175}
       # DISABLE_EMAILS: ${DISABLE_EMAILS:-}
       # Server configuration
       PORT: ${PORT:-3000}
