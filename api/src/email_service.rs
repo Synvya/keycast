@@ -300,6 +300,12 @@ fn team_invite_html(
         })
         .unwrap_or_default();
 
+    // Shared inline styles for the labeled-field rows. Inlined per row because
+    // many email clients strip <style> blocks. See ui-shell-pattern.md §13 for
+    // the layout convention.
+    let label_td = "padding:6px 12px 6px 0; color:#888; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; vertical-align:top; width:72px;";
+    let value_td = "padding:6px 0; color:#111; font-size:14px; word-break:break-all; vertical-align:top;";
+
     format!(
         r#"<!doctype html>
 <html>
@@ -309,10 +315,28 @@ fn team_invite_html(
       <span style="color:#00B488; font-size:20px; font-weight:600; letter-spacing:0.2px;">Synvya</span>
     </div>
     <h2 style="text-align:center; margin:0 0 20px; font-size:20px; font-weight:600;">Team Invitation</h2>
-    <div style="background:#fff; border-radius:12px; padding:28px 24px; text-align:center; border:1px solid #ececec;">
-      {avatar_html}<div style="font-size:18px; font-weight:600; margin-bottom:12px;">{team_name_esc}</div>
-      <div style="color:#444; font-size:14px; margin-bottom:10px;"><strong>{inviter_esc}</strong> invited you to join as <strong>{role_esc}</strong>.</div>
-      <div style="color:#888; font-size:13px;">Sent to <strong>{recipient_esc}</strong>. Expires {expires_fmt}.</div>
+    <div style="background:#fff; border-radius:12px; padding:28px 24px; border:1px solid #ececec;">
+      <div style="text-align:center;">
+        {avatar_html}<div style="font-size:18px; font-weight:600; margin-bottom:20px;">{team_name_esc}</div>
+      </div>
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
+        <tr>
+          <td style="{label_td}">From</td>
+          <td style="{value_td}">{inviter_esc}</td>
+        </tr>
+        <tr>
+          <td style="{label_td}">To</td>
+          <td style="{value_td}">{recipient_esc}</td>
+        </tr>
+        <tr>
+          <td style="{label_td}">Role</td>
+          <td style="{value_td}">{role_esc}</td>
+        </tr>
+        <tr>
+          <td style="{label_td}">Expires</td>
+          <td style="{value_td}">{expires_fmt}</td>
+        </tr>
+      </table>
     </div>
     <div style="margin:28px 0; text-align:center;">
       <a href="{url_esc}" style="display:inline-block; background:#00B488; color:#fff; padding:14px 36px; text-decoration:none; border-radius:8px; font-weight:600; font-size:15px;">Accept Invitation</a>
@@ -343,8 +367,10 @@ fn team_invite_text(
     let expires_fmt = expires_at.format("%b %-d, %Y").to_string();
     format!(
         "Team Invitation — {team_display_name}\n\n\
-         {inviter_label} invited you to join as {role_tc}.\n\
-         Sent to {recipient_email}. Expires {expires_fmt}.\n\n\
+         From:    {inviter_label}\n\
+         To:      {recipient_email}\n\
+         Role:    {role_tc}\n\
+         Expires: {expires_fmt}\n\n\
          Accept the invitation:\n{invite_url}\n\n\
          This invitation expires in 7 days. If you didn't expect this email, you can safely ignore it.\n",
     )
