@@ -199,6 +199,15 @@ pub fn api_routes(
         .route("/admin/user-lookup", get(admin::get_user_lookup))
         .route("/admin/user-teams", get(admin::get_user_teams))
         .route("/admin/team-lookup", get(admin::get_team_lookup))
+        // Lean (id, name) listing of all teams in the tenant — no pagination,
+        // intended for pickers. Registered BEFORE `/admin/teams/:id/members`
+        // because axum matches routes in declared order; the static path must
+        // come first to avoid `:id` swallowing the literal "names".
+        .route("/admin/team-names", get(admin::get_team_names))
+        .route(
+            "/admin/teams/:id/members",
+            get(admin::get_team_members),
+        )
         .route(
             "/admin/authorizations/:id/revoke",
             post(admin::revoke_authorization),

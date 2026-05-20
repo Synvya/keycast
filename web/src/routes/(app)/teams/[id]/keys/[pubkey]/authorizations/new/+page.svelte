@@ -14,6 +14,7 @@ import { readablePermissionConfig } from "$lib/utils/permissions";
 import { toTitleCase } from "$lib/utils/strings";
 import { CaretRight, X, Copy, Check, Warning } from "phosphor-svelte";
 import { toast } from "svelte-hot-french-toast";
+import { copyToClipboard } from "$lib/clipboard";
 
 const { id, pubkey } = $page.params;
 
@@ -108,7 +109,7 @@ async function createAuthorization() {
 
 function copyBunkerUrl() {
     if (createdBunkerUrl) {
-        navigator.clipboard.writeText(createdBunkerUrl);
+        void copyToClipboard(createdBunkerUrl);
         bunkerUrlCopied = true;
         toast.success("Bunker URL copied to clipboard");
         setTimeout(() => {

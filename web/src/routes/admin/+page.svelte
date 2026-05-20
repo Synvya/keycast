@@ -7,6 +7,7 @@
 	import { Copy, Check, Key, Terminal, Users, Link, Warning, ArrowSquareOut, ShieldCheck, Trash, Plus } from 'phosphor-svelte';
 	import { nip19 } from 'nostr-tools';
 	import { getViteDomain } from '$lib/utils/env';
+	import { copyToClipboard } from '$lib/clipboard';
 
 	const api = new KeycastApi();
 	const serverUrl = getViteDomain();
@@ -86,7 +87,7 @@
 	async function copyToken() {
 		if (!adminToken) return;
 		try {
-			await navigator.clipboard.writeText(adminToken);
+			await copyToClipboard(adminToken);
 			copiedToken = true;
 			toast.success('Token copied to clipboard');
 			setTimeout(() => (copiedToken = false), 2000);
@@ -197,7 +198,7 @@
 
 	async function copySupportAdminPubkey(hex: string) {
 		try {
-			await navigator.clipboard.writeText(formatSupportAdminPubkey(hex));
+			await copyToClipboard(formatSupportAdminPubkey(hex));
 			copiedSupportAdminPubkey = hex;
 			toast.success(`${supportAdminPubkeyFormat === 'npub' ? 'npub' : 'Hex pubkey'} copied!`);
 			setTimeout(() => (copiedSupportAdminPubkey = null), 2000);

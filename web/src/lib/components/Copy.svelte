@@ -1,5 +1,6 @@
 <script lang="ts">
 import { Check, Copy } from "phosphor-svelte";
+import { copyToClipboard } from "$lib/clipboard";
 
 let {
     value,
@@ -16,17 +17,12 @@ let {
 let copySuccess = $state(false);
 
 async function copyListId() {
-    copyToClipboard(value).then(() => {
+    try {
+        await copyToClipboard(value);
         copySuccess = true;
         setTimeout(() => {
             copySuccess = false;
         }, 1500);
-    });
-}
-
-async function copyToClipboard(textToCopy: string) {
-    try {
-        await navigator.clipboard.writeText(textToCopy);
     } catch (err) {
         console.error("Failed to copy: ", err);
     }
