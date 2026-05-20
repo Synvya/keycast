@@ -30,6 +30,14 @@ services:
     container_name: keycast-redis
     ports:
       - "16379:6379"
+    # AOF + named volume so the `support_admins` set (and any other
+    # Redis state) survives container restarts. Without persistence,
+    # `bun run docker-up` after a `docker-down` wipes every support-admin
+    # grant — operators had to re-grant via the admin UI after every
+    # restart, which is the wrong UX and obscures real bugs.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -183,6 +191,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   keycast:
