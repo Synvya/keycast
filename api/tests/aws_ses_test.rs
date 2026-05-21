@@ -57,7 +57,7 @@ async fn test_ses_send_password_reset_email() {
     let sender = SesEmailSender::new().await.expect("SES init failed");
 
     let result = sender
-        .send_password_reset_email(&recipient, "reset-token-67890")
+        .send_password_reset_email(&recipient, "reset-token-67890", None)
         .await;
 
     assert!(
