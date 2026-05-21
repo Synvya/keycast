@@ -24,10 +24,19 @@ pub trait EmailSender: Send + Sync {
         to_email: &str,
         verification_token: &str,
     ) -> Result<(), String>;
+    /// Send the password reset email.
+    ///
+    /// `base_url_override`, when `Some`, is used as the link prefix
+    /// instead of the implementor's configured `password_reset_base_url`.
+    /// The handler is expected to validate the override against the
+    /// CORS allowlist before passing it down (see
+    /// `api/http/auth.rs::forgot_password`) — implementations here just
+    /// trust the value.
     async fn send_password_reset_email(
         &self,
         to_email: &str,
         reset_token: &str,
+        base_url_override: Option<&str>,
     ) -> Result<(), String>;
 
     /// Send a claim link email for a preloaded account.
@@ -467,11 +476,12 @@ impl EmailSender for DevEmailSender {
         &self,
         to_email: &str,
         reset_token: &str,
+        base_url_override: Option<&str>,
     ) -> Result<(), String> {
-        let reset_url = format!(
-            "{}/reset-password?token={}",
-            self.password_reset_base_url, reset_token
-        );
+        let base = base_url_override
+            .map(|s| s.trim_end_matches('/'))
+            .unwrap_or(self.password_reset_base_url.as_str());
+        let reset_url = format!("{}/reset-password?token={}", base, reset_token);
 
         tracing::info!("");
         tracing::info!("==================================================");
@@ -776,11 +786,12 @@ impl EmailSender for SendGridEmailSender {
         &self,
         to_email: &str,
         reset_token: &str,
+        base_url_override: Option<&str>,
     ) -> Result<(), String> {
-        let reset_url = format!(
-            "{}/reset-password?token={}",
-            self.password_reset_base_url, reset_token
-        );
+        let base = base_url_override
+            .map(|s| s.trim_end_matches('/'))
+            .unwrap_or(self.password_reset_base_url.as_str());
+        let reset_url = format!("{}/reset-password?token={}", base, reset_token);
         let subject = "Reset your Synvya password";
         let html = password_reset_html(&reset_url);
         let text = password_reset_text(&reset_url);
@@ -980,11 +991,12 @@ impl EmailSender for SesEmailSender {
         &self,
         to_email: &str,
         reset_token: &str,
+        base_url_override: Option<&str>,
     ) -> Result<(), String> {
-        let reset_url = format!(
-            "{}/reset-password?token={}",
-            self.password_reset_base_url, reset_token
-        );
+        let base = base_url_override
+            .map(|s| s.trim_end_matches('/'))
+            .unwrap_or(self.password_reset_base_url.as_str());
+        let reset_url = format!("{}/reset-password?token={}", base, reset_token);
         let subject = "Reset your Synvya password";
         let html = password_reset_html(&reset_url);
         let text = password_reset_text(&reset_url);
@@ -1119,9 +1131,10 @@ impl EmailService {
         &self,
         to_email: &str,
         reset_token: &str,
+        base_url_override: Option<&str>,
     ) -> Result<(), String> {
         self.inner
-            .send_password_reset_email(to_email, reset_token)
+            .send_password_reset_email(to_email, reset_token, base_url_override)
             .await
     }
 

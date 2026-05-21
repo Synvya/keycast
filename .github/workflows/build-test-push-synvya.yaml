@@ -12,6 +12,12 @@
 #
 # Required GitHub Secrets:
 #   EC2_STAGING_HOST, EC2_STAGING_SSH_KEY, EC2_PRODUCTION_HOST, EC2_PRODUCTION_SSH_KEY
+#
+# Optional GitHub Secrets:
+#   GOOGLE_CHAT_WEBHOOK - when set, every job (test / deploy / qa) posts its
+#   final status to the Google Chat webhook via voidrot/gchat-action. Unset
+#   on forks / OSS clones; the notify step short-circuits via env-presence
+#   check.
 
 name: "Synvya - Build, Test & Push"
 
@@ -24,6 +30,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Lifted to workflow level so each job's notify step can check
+  # `env.GOOGLE_CHAT_WEBHOOK != ''` in its `if:`. Secrets aren't
+  # directly accessible in step-level `if:` expressions; routing through
+  # `env:` is the standard workaround.
+  GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
 
 permissions:
   id-token: write
@@ -374,3 +385,40 @@ jobs:
             fi
 
             echo "=== ALL TESTS PASSED ==="
+
+  # ── Step 4: Consolidated workflow-status ping to Google Chat ───────────
+  # One notification per run instead of one per job. Aggregates the prior
+  # jobs' `needs.*.result` values into a single status, so a CI run posts
+  # exactly once regardless of branch (staging push exercises 3 jobs,
+  # production push exercises 3 different jobs, every feature-branch
+  # push to a deploy branch exercises 1 job — all collapse to a single
+  # ping). Gated on `env.GOOGLE_CHAT_WEBHOOK != ''` so forks / OSS clones
+  # skip the step entirely.
+  notify:
+    name: Notify
+    needs: [test, deploy-staging, deploy-production, qa-staging, qa-production]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate prior-job results
+        id: aggregate
+        run: |
+          # `contains(needs.*.result, X)` is evaluated by the runner; we
+          # rely on shell here so the precedence is obvious in logs. The
+          # `skipped` value is fine — a job that doesn't apply to this
+          # branch (e.g. deploy-production on a synvya-staging push) is
+          # not a failure.
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "status=cancelled" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Notify Google Chat
+        if: ${{ env.GOOGLE_CHAT_WEBHOOK != '' }}
+        uses: voidrot/gchat-action@v1
+        with:
+          webhook_url: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+          message_type: 'workflow_status'
+          status: ${{ steps.aggregate.outputs.status }}

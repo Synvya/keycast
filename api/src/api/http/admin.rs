@@ -1103,6 +1103,19 @@ pub struct TeamMembersResponse {
     pub total: usize,
 }
 
+/// Row shape returned by the `team_users` ⨝ `users` lookup in
+/// `get_team_members`. Lives outside the function so the type doesn't
+/// blow the clippy::type_complexity budget (a tuple of String /
+/// Option<String> / chrono types exceeds the default threshold of 250).
+#[derive(sqlx::FromRow)]
+struct TeamMemberRow {
+    user_pubkey: String,
+    name: Option<String>,
+    email: Option<String>,
+    role: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// Return every member (admin + non-admin) of a single team. Support admin
 /// only. Tenant-scoped — the team must belong to the caller's tenant or the
 /// route returns 404. Read-only; does not write to `team_users` /
@@ -1137,13 +1150,7 @@ pub async fn get_team_members(
         None => return Err(ApiError::not_found("Team not found")),
     };
 
-    let member_rows: Vec<(
-        String,
-        Option<String>,
-        Option<String>,
-        String,
-        chrono::DateTime<chrono::Utc>,
-    )> = sqlx::query_as(
+    let member_rows: Vec<TeamMemberRow> = sqlx::query_as::<_, TeamMemberRow>(
         "SELECT
              tu.user_pubkey,
              COALESCE(u.display_name, u.username) AS name,
@@ -1165,12 +1172,12 @@ pub async fn get_team_members(
 
     let members: Vec<TeamMember> = member_rows
         .into_iter()
-        .map(|(user_pubkey, name, email, role, created_at)| TeamMember {
-            user_pubkey,
-            name,
-            email,
-            role,
-            joined_at: created_at.to_rfc3339(),
+        .map(|row| TeamMember {
+            user_pubkey: row.user_pubkey,
+            name: row.name,
+            email: row.email,
+            role: row.role,
+            joined_at: row.created_at.to_rfc3339(),
         })
         .collect();
     let total = members.len();
