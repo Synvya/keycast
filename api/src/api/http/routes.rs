@@ -204,10 +204,7 @@ pub fn api_routes(
         // because axum matches routes in declared order; the static path must
         // come first to avoid `:id` swallowing the literal "names".
         .route("/admin/team-names", get(admin::get_team_names))
-        .route(
-            "/admin/teams/:id/members",
-            get(admin::get_team_members),
-        )
+        .route("/admin/teams/:id/members", get(admin::get_team_members))
         .route(
             "/admin/authorizations/:id/revoke",
             post(admin::revoke_authorization),

@@ -312,8 +312,10 @@ fn team_invite_html(
     // Shared inline styles for the labeled-field rows. Inlined per row because
     // many email clients strip <style> blocks. See ui-shell-pattern.md §13 for
     // the layout convention.
-    let label_td = "padding:6px 12px 6px 0; color:#888; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; vertical-align:top; width:72px;";
-    let value_td = "padding:6px 0; color:#111; font-size:14px; word-break:break-all; vertical-align:top;";
+    let label_td =
+        "padding:6px 12px 6px 0; color:#888; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; white-space:nowrap; vertical-align:top; width:72px;";
+    let value_td =
+        "padding:6px 0; color:#111; font-size:14px; word-break:break-all; vertical-align:top;";
 
     format!(
         r#"<!doctype html>

@@ -1136,14 +1136,13 @@ pub async fn get_team_members(
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
 
-    let team_row: Option<(i32, String)> = sqlx::query_as(
-        "SELECT id, name FROM teams WHERE id = $1 AND tenant_id = $2",
-    )
-    .bind(team_id)
-    .bind(tenant_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| ApiError::internal(format!("Team lookup failed: {}", e)))?;
+    let team_row: Option<(i32, String)> =
+        sqlx::query_as("SELECT id, name FROM teams WHERE id = $1 AND tenant_id = $2")
+            .bind(team_id)
+            .bind(tenant_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Team lookup failed: {}", e)))?;
 
     let (team_id, team_name) = match team_row {
         Some(row) => row,
