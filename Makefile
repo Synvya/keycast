@@ -2,7 +2,7 @@
 # Keycast Development Helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: check-prereq install-prereq setup migrate help dev test env-local env-staging docker-build docker-up docker-down docker-logs
+.PHONY: check-prereq install-prereq setup migrate help dev test fmt fmt-check clippy ci env-local env-staging docker-build docker-up docker-down docker-logs
 
 # Default target: show help
 all: help
@@ -75,6 +75,23 @@ dev: ## Development: Start the local development stack (native)
 test: ## Quality: Run unit and integration tests
 	@$(MAKE) env-check
 	bun run test
+
+fmt: ## Quality: Apply rustfmt to the workspace
+	@echo "==> Running cargo fmt --all..."
+	cargo fmt --all
+
+fmt-check: ## Quality: Check rustfmt is clean (CI parity — `cargo fmt --all -- --check`)
+	@echo "==> Checking formatting (CI parity)..."
+	cargo fmt --all -- --check
+
+clippy: ## Quality: Run clippy with the same flags CI uses (workspace, all targets/features, -D warnings)
+	@echo "==> Running clippy (CI parity)..."
+	cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
+
+ci: ## Quality: Run every gate CI runs locally — fmt-check, clippy, test. Use before `git push`.
+	@$(MAKE) fmt-check
+	@$(MAKE) clippy
+	@$(MAKE) test
 
 # --- Docker ---
 
