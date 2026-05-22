@@ -182,5 +182,11 @@ When updating rebranding the application (e.g., from "diVine" to "Synvya"), foll
 
 ### Code Quality Check (Formatting & Linting)
 ```bash
-bun run check
+bun run check          # web/ side: prettier + eslint + svelte-check
+make fmt-check         # Rust side: cargo fmt --all --check
+make clippy            # Rust side: cargo clippy --workspace -- -D warnings
+make ci                # fmt-check + clippy + test (matches CI's full gate)
+make ci-fast           # fmt-check + clippy only (no test, no Docker — ~10s)
 ```
+
+`make ci-fast` is wired into a `.githooks/pre-push` hook so every `git push` runs it automatically. `make setup` chains `make install-hooks` (which sets `git config core.hooksPath .githooks` + `chmod +x .githooks/*`), so a fresh clone gets the hook on the first `make setup` invocation. Bypass for a single push: `git push --no-verify`. Uninstall: `git config --unset core.hooksPath`.
