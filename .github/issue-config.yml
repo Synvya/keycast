@@ -9,7 +9,7 @@
 #   - Add area labels as the repo's domain grows.
 #     Use lowercase, no spaces, no colons.
 
-areas: []
+areas:
   - auth
   - api
   - teams
