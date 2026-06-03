@@ -16,7 +16,7 @@ use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
-    StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
+    RestaurantKeySummary, StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
 };
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::claim_token::generate_claim_token;
@@ -968,6 +968,8 @@ pub struct TeamLookupCandidate {
     /// key is not eligible for `POST /admin/teams/:id/support-access`; the
     /// client should surface this so support agents see why.
     pub has_stored_key: bool,
+    /// Name + pubkey of each stored key belonging to the team.
+    pub restaurant_keys: Vec<RestaurantKeySummary>,
     pub created_at: String,
 }
 
@@ -978,6 +980,7 @@ impl From<TeamSearchResult> for TeamLookupCandidate {
             name: row.name,
             admin_emails: row.admin_emails,
             has_stored_key: row.has_stored_key,
+            restaurant_keys: row.restaurant_keys.0,
             created_at: row.created_at.to_rfc3339(),
         }
     }

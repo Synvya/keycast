@@ -85,7 +85,7 @@ jobs:
         run: |
           chmod +x scripts/generate_key.sh
           ./scripts/generate_key.sh
-          cargo install sqlx-cli --no-default-features --features postgres
+          cargo install sqlx-cli@0.8.3 --no-default-features --features postgres
           sqlx migrate run --database-url $DATABASE_URL --source database/migrations
 
       - name: Run tests

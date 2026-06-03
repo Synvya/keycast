@@ -32,6 +32,6 @@ pub use policy::PolicyRepository;
 pub use refresh_token::RefreshTokenRepository;
 pub use registered_client::RegisteredClientRepository;
 pub use stored_key::StoredKeyRepository;
-pub use team::{TeamRepository, TeamSearchResult};
+pub use team::{RestaurantKeySummary, TeamRepository, TeamSearchResult};
 pub use team_invitation::TeamInvitationRepository;
 pub use user::{AdminUserDetails, DeleteAccountResult, UserRepository, VerificationTokenData};

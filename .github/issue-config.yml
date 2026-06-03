@@ -1,0 +1,22 @@
+# Synvya issue configuration — copy to .github/issue-config.yml in your repo.
+# Read by the synvya-issue skill to enforce consistent labels and milestones.
+#
+# Maintenance:
+#   - When bumping versions, close old milestones on GitHub,
+#     move unfinished issues to new milestones or Backlog,
+#     then replace entries here with the new version.
+#   - Backlog is permanent — never remove it.
+#   - Add area labels as the repo's domain grows.
+#     Use lowercase, no spaces, no colons.
+
+areas:
+  - auth
+  - api
+  - teams
+
+milestones:
+  active:
+    - name: Backlog
+      description: Deferred items with no timeline
+    - name: V2.0.0 Fundamentals
+      description: Support for Synvya V2.0.0 use cases

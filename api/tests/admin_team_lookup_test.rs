@@ -64,14 +64,15 @@ async fn ensure_user_with_email(pool: &PgPool, tenant_id: i64, pubkey: &str, ema
     .expect("ensure_user_with_email insert must succeed");
 }
 
-/// Create a team with the given admin and (optionally) a stored key. Returns team_id.
+/// Create a team with the given admin and (optionally) a stored key.
+/// Returns `(team_id, Option<stored_key_pubkey>)`.
 async fn create_team(
     pool: &PgPool,
     tenant_id: i64,
     name: &str,
     admin_pubkey: &str,
     with_stored_key: bool,
-) -> i32 {
+) -> (i32, Option<String>) {
     ensure_tenant(pool, tenant_id).await;
     ensure_user_with_email(pool, tenant_id, admin_pubkey, None).await;
 
@@ -82,7 +83,7 @@ async fn create_team(
         .await
         .expect("create_with_admin should succeed");
 
-    if with_stored_key {
+    let stored_pubkey = if with_stored_key {
         let pubkey_hex = Keys::generate().public_key().to_hex();
         sqlx::query(
             "INSERT INTO stored_keys (tenant_id, team_id, name, pubkey, secret_key, created_at, updated_at)
@@ -95,9 +96,12 @@ async fn create_team(
         .execute(pool)
         .await
         .expect("stored_key insert should succeed");
-    }
+        Some(pubkey_hex)
+    } else {
+        None
+    };
 
-    twr.team.id
+    (twr.team.id, stored_pubkey)
 }
 
 async fn cleanup_team(pool: &PgPool, tenant_id: i64, team_id: i32) {
@@ -137,8 +141,8 @@ async fn test_search_matches_substring_case_insensitive() {
     let target_name = format!("JoesDiner-{}", unique);
     let unrelated_name = format!("BellaBistro-{}", unique);
 
-    let target = create_team(&pool, TENANT_A, &target_name, &admin, true).await;
-    let unrelated = create_team(&pool, TENANT_A, &unrelated_name, &admin, true).await;
+    let (target, _) = create_team(&pool, TENANT_A, &target_name, &admin, true).await;
+    let (unrelated, _) = create_team(&pool, TENANT_A, &unrelated_name, &admin, true).await;
 
     let team_repo = TeamRepository::new(pool.clone());
     // Lowercase substring of the target name. Must match `JoesDiner-…`
@@ -216,7 +220,7 @@ async fn test_search_has_stored_key_flag() {
     let admin = Keys::generate().public_key().to_hex();
     let unique = Uuid::new_v4().to_string();
 
-    let with_key = create_team(
+    let (with_key, with_key_pubkey) = create_team(
         &pool,
         TENANT_A,
         &format!("WithKey {}", unique),
@@ -224,7 +228,7 @@ async fn test_search_has_stored_key_flag() {
         true,
     )
     .await;
-    let without_key =
+    let (without_key, _) =
         create_team(&pool, TENANT_A, &format!("NoKey {}", unique), &admin, false).await;
 
     let team_repo = TeamRepository::new(pool.clone());
@@ -245,6 +249,21 @@ async fn test_search_has_stored_key_flag() {
         "team without stored key must flag false"
     );
 
+    let rk_pubkeys: Vec<&str> = with
+        .restaurant_keys
+        .iter()
+        .map(|rk| rk.pubkey.as_str())
+        .collect();
+    assert_eq!(
+        rk_pubkeys,
+        vec![with_key_pubkey.as_deref().unwrap()],
+        "restaurant_keys must contain the stored key pubkey"
+    );
+    assert!(
+        without.restaurant_keys.is_empty(),
+        "team without stored key must have empty restaurant_keys"
+    );
+
     cleanup_team(&pool, TENANT_A, with_key).await;
     cleanup_team(&pool, TENANT_A, without_key).await;
 }
@@ -258,8 +277,8 @@ async fn test_search_is_tenant_scoped() {
     let unique = Uuid::new_v4().to_string();
     let shared_name = format!("Cross Tenant {}", unique);
 
-    let team_a = create_team(&pool, TENANT_A, &shared_name, &admin_a, true).await;
-    let team_b = create_team(&pool, TENANT_B, &shared_name, &admin_b, true).await;
+    let (team_a, _) = create_team(&pool, TENANT_A, &shared_name, &admin_a, true).await;
+    let (team_b, _) = create_team(&pool, TENANT_B, &shared_name, &admin_b, true).await;
 
     let team_repo = TeamRepository::new(pool.clone());
 
@@ -301,7 +320,7 @@ async fn test_search_respects_limit() {
     let mut team_ids = Vec::new();
 
     for i in 0..5 {
-        let id = create_team(
+        let (id, _) = create_team(
             &pool,
             TENANT_A,
             &format!("LimitTest {} {}", unique, i),
