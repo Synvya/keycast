@@ -575,6 +575,10 @@ pub async fn verify_admin<'a>(
     team_id: i32,
     tenant_id: i64,
 ) -> ApiResult<()> {
+    if is_full_admin_by_pubkey(pubkey_hex) {
+        return Ok(());
+    }
+
     let pubkey =
         PublicKey::from_hex(pubkey_hex).map_err(|_| ApiError::bad_request("Invalid pubkey"))?;
 
@@ -586,6 +590,16 @@ pub async fn verify_admin<'a>(
         )),
         Err(_) => Err(ApiError::auth("Failed to verify admin status")),
     }
+}
+
+fn is_full_admin_by_pubkey(pubkey_hex: &str) -> bool {
+    if let Ok(allowed_pubkeys) = std::env::var("ALLOWED_PUBKEYS") {
+        if !allowed_pubkeys.is_empty() {
+            let allowed: Vec<&str> = allowed_pubkeys.split(',').map(|s| s.trim()).collect();
+            return allowed.contains(&pubkey_hex);
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

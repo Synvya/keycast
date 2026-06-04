@@ -1570,10 +1570,11 @@ pub async fn verify_email(
 
     // If the registration included a redirect_uri, redirect back to the client app
     let redirect_to = token_data.redirect_uri.map(|uri| {
+        let encoded_email = urlencoding::encode(&email);
         if uri.contains('?') {
-            format!("{}&verified=1", uri)
+            format!("{}&verified=1&email={}", uri, encoded_email)
         } else {
-            format!("{}?verified=1", uri)
+            format!("{}?verified=1&email={}", uri, encoded_email)
         }
     });
 
