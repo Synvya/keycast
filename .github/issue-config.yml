@@ -1,0 +1,19 @@
+# Synvya issue configuration for this repo.
+# Read by the synvya-issue skill to enforce consistent labels and milestones.
+# GENERATED/REFRESHED by synvya-issue refresh-config.sh — areas mirror the repo's
+# area-* labels; milestones.active mirrors the repo's OPEN milestones. Hand-edits
+# survive only until the next refresh, so make label/milestone changes on GitHub.
+
+areas:
+  - auth
+  - api
+  - teams
+
+milestones:
+  active:
+    - name: "V2.0.0 Fundamentals"
+      description: Support for Synvya V2.0.0 use cases
+    - name: "Backlog"
+      description: "Deferred items with no timeline"
+    - name: "Community Features"
+      description: Features and improvements requested by the community

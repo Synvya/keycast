@@ -215,6 +215,14 @@ pub struct VerifyEmailResponse {
 #[derive(Debug, Deserialize)]
 pub struct ForgotPasswordRequest {
     pub email: String,
+    /// Optional per-request override for the password-reset link's base
+    /// URL. Used so a reset initiated from `admin.synvya.com` lands the
+    /// admin back on `admin.synvya.com/reset-password`, not on the
+    /// default `account.synvya.com` set by `PASSWORD_RESET_BASE_URL`.
+    /// Must match an entry in `ALLOWED_ORIGINS` exactly — see
+    /// `forgot_password` handler. Ignored when absent.
+    #[serde(default)]
+    pub app_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1738,6 +1746,26 @@ pub async fn forgot_password(
         tenant_id
     );
 
+    // Validate the optional app_url override against ALLOWED_ORIGINS so
+    // a caller can route the reset link to its own surface (e.g. admin.*
+    // vs account.*) without opening a redirect vector. Exact match —
+    // wildcards/patterns are intentionally not honored here to keep the
+    // validation simple and tight. Any mismatch is silently dropped
+    // (treated as if no override was supplied) so a misconfigured client
+    // still gets a working email at the default surface.
+    let app_url_override = req
+        .app_url
+        .as_deref()
+        .map(|s| s.trim().trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .filter(|candidate| app_url_is_allowed(candidate));
+    if req.app_url.is_some() && app_url_override.is_none() {
+        tracing::warn!(
+            "Dropping disallowed app_url override on forgot-password request: {:?}",
+            req.app_url
+        );
+    }
+
     // Check if user exists in this tenant
     let user_repo = UserRepository::new(pool.clone());
     let user_pubkey = user_repo
@@ -1774,7 +1802,7 @@ pub async fn forgot_password(
     match crate::email_service::EmailService::new().await {
         Ok(email_service) => {
             if let Err(e) = email_service
-                .send_password_reset_email(&req.email, &reset_token)
+                .send_password_reset_email(&req.email, &reset_token, app_url_override)
                 .await
             {
                 tracing::error!(
@@ -1799,6 +1827,25 @@ pub async fn forgot_password(
         message: "If an account exists with that email, a password reset link has been sent."
             .to_string(),
     }))
+}
+
+/// Returns true when `candidate` matches an entry in `ALLOWED_ORIGINS`
+/// exactly (case-insensitive, ignoring trailing slashes). Used to gate
+/// the `app_url` override on `forgot_password` — only the same origins
+/// CORS already trusts may steer the reset email link.
+fn app_url_is_allowed(candidate: &str) -> bool {
+    let allowed = match std::env::var("ALLOWED_ORIGINS") {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let candidate_norm = candidate.trim().trim_end_matches('/').to_lowercase();
+    if candidate_norm.is_empty() {
+        return false;
+    }
+    allowed
+        .split(',')
+        .map(|s| s.trim().trim_end_matches('/').to_lowercase())
+        .any(|entry| !entry.is_empty() && entry == candidate_norm)
 }
 
 /// Reset password with token

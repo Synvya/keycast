@@ -1,8 +1,8 @@
 {
 	"name": "keycast",
 	"private": true,
-	"version": "0.1.0",
-	"description": "Keycast is a secure key management system for teams on Nostr.",
+	"version": "1.5.0",
+	"description": "Keycast is a secure key management system for teams on Nostr with Synvya extensions.",
 	"scripts": {
 		"predev": "cd keycast-login && bun run build",
 		"dev": "bun run deps:up && npx concurrently -n api,web -c blue,green \"bun run dev:api\" \"bun run dev:web\"",

@@ -2,6 +2,7 @@
 	import { getCurrentUser, setCurrentUser } from '$lib/current_user.svelte';
 	import { getAccountStatus, isEmailVerified, fetchAccountStatus } from '$lib/account_status.svelte';
 	import { KeycastApi } from '$lib/keycast_api.svelte';
+	import { copyToClipboard as writeClipboard } from '$lib/clipboard';
 	import AtprotoSettingsCard from '$lib/components/AtprotoSettingsCard.svelte';
 	import { BRAND } from '$lib/brand';
 	import { toast } from 'svelte-hot-french-toast';
@@ -139,7 +140,7 @@
 	function copyToClipboard() {
 		if (!exportedNsec) return;
 
-		navigator.clipboard.writeText(exportedNsec);
+		void writeClipboard(exportedNsec);
 		toast.success('Copied to clipboard');
 	}
 

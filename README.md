@@ -199,6 +199,7 @@ For detailed instructions on environment management, native development, and tes
 | `FROM_EMAIL` | `noreply@keycast.app` | Sender email address |
 | `FROM_NAME` | `Synvya` | Sender display name |
 | `BASE_URL` | `https://login.divine.video` | Base URL for email verification links |
+| `PASSWORD_RESET_BASE_URL` | `BASE_URL` | Base URL for password-reset links. Set when the reset page is hosted on a different domain than `BASE_URL` — e.g. Synvya sets this to `https://account.synvya.com`. A per-request `app_url` override on `POST /api/auth/forgot-password` further redirects the reset link to the calling surface (e.g. `admin.synvya.com`); the override is validated against `ALLOWED_ORIGINS` and silently dropped if not allowed. |
 | `DISABLE_EMAILS` | *(none)* | If set (any value), skips sending emails |
 
 #### Authentication & OAuth

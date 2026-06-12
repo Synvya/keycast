@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { toast } from "svelte-hot-french-toast";
 	import { KeycastApi } from "$lib/keycast_api.svelte";
+	import { copyToClipboard } from "$lib/clipboard";
 	import { onMount } from "svelte";
 
 	const api = new KeycastApi();
@@ -70,7 +71,7 @@
 
 	async function copyBunkerUrl() {
 		try {
-			await navigator.clipboard.writeText(bunkerUrl);
+			await copyToClipboard(bunkerUrl);
 			showCopySuccess = true;
 			setTimeout(() => (showCopySuccess = false), 2000);
 			toast.success("Bunker URL copied!");

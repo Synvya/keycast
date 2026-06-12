@@ -109,6 +109,21 @@ When running locally via Docker or in native development mode over plain HTTP (`
 - **Automatic Detection**: The API checks the `NODE_ENV` environment variable.
 - **Insecure Cookies**: If `NODE_ENV` is set to `development` (the default in `docker-compose.yml`), the `Secure` attribute is omitted, allowing the session to persist over HTTP.
 
+### Synvya local-dev hostnames (cross-host cookies)
+In the Synvya workspace, browser apps reach keycast across hostname boundaries (e.g. `admin.local.synvya.com` → `keycast.local.synvya.com`). For `SameSite=Lax` cookies to travel across these origins, every sibling subdomain shares the eTLD+1 `synvya.com` (a real PSL entry — Safari ITP rejects cross-host `Set-Cookie` on non-PSL TLDs like `.local`). The keycast container is reached via the canonical hostname `keycast.local.synvya.com:3000` from both browser and server-container contexts, so the `Host` header carries a single tenant.
+
+The relevant env vars in `.env.local` (and the matching `${VAR:-default}` interpolations in `docker-compose.yml`):
+
+| Var | Local-dev value | Purpose |
+|---|---|---|
+| `BASE_URL` | `http://keycast.local.synvya.com:3000` | Base for verify-email + claim URLs keycast embeds in outbound mail |
+| `APP_URL` | `http://keycast.local.synvya.com:3000` | Frontend's API base URL — must equal the hostname the browser loads from, or CORS preflight fails |
+| `ADMIN_BASE_URL` | `http://admin.local.synvya.com:5175` | "Open Synvya Admin" button on the claim-success page (defaults to `https://admin.synvya.com` when unset — would send local admins to production) |
+| `ALLOWED_TENANT_DOMAINS` | `keycast.local.synvya.com,host.docker.internal,localhost` | Whitelist override that bypasses the prod tenant-domain blocklist (`.internal`/`.local`/`.test` etc.) |
+| `ALLOWED_ORIGINS` | `http://{admin,account,diners,keycast}.local.synvya.com:{5175,5173,5174,3000}` + `localhost:*` fallback | CORS allowlist for credentialed `/api/auth/*` and `/api/user/*` fetches |
+
+Full architecture (including why `synvya.local` was retired in favour of `local.synvya.com`): [`docs/ops/local-environment.md`](https://github.com/Synvya/docs/blob/main/ops/local-environment.md) → "Same-site cookie design".
+
 ### Production Mode (HTTPS)
 In production, ensure `NODE_ENV=production` is set in your environment. This enforces the `Secure` attribute, ensuring session tokens are never transmitted over unencrypted connections.
 
@@ -167,5 +182,11 @@ When updating rebranding the application (e.g., from "diVine" to "Synvya"), foll
 
 ### Code Quality Check (Formatting & Linting)
 ```bash
-bun run check
+bun run check          # web/ side: prettier + eslint + svelte-check
+make fmt-check         # Rust side: cargo fmt --all --check
+make clippy            # Rust side: cargo clippy --workspace -- -D warnings
+make ci                # fmt-check + clippy + test (matches CI's full gate)
+make ci-fast           # fmt-check + clippy only (no test, no Docker — ~10s)
 ```
+
+`make ci-fast` is wired into a `.githooks/pre-push` hook so every `git push` runs it automatically. `make setup` chains `make install-hooks` (which sets `git config core.hooksPath .githooks` + `chmod +x .githooks/*`), so a fresh clone gets the hook on the first `make setup` invocation. Bypass for a single push: `git push --no-verify`. Uninstall: `git config --unset core.hooksPath`.

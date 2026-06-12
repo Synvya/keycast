@@ -8,6 +8,7 @@
 	import { ShieldCheck, Warning, MagnifyingGlass, User, Key, Calendar, Globe, Copy, Check, CheckCircle, XCircle, Link, CaretDown, CaretRight, Storefront, UsersThree, Plug } from 'phosphor-svelte';
 	import { nip19 } from 'nostr-tools';
 	import { toast } from 'svelte-hot-french-toast';
+	import { copyToClipboard } from '$lib/clipboard';
 
 	const api = new KeycastApi();
 	const isSynvyaManaged = getLoginUrl() !== '/login';
@@ -153,7 +154,7 @@
 
 	async function copyPubkey(hexPubkey: string) {
 		try {
-			await navigator.clipboard.writeText(formatPubkey(hexPubkey));
+			await copyToClipboard(formatPubkey(hexPubkey));
 			copiedPubkey = true;
 			toast.success(`${pubkeyFormat === 'npub' ? 'npub' : 'Hex pubkey'} copied!`);
 			setTimeout(() => (copiedPubkey = false), 2000);
@@ -198,7 +199,7 @@
 	async function copyClaimUrl() {
 		if (!claimToken) return;
 		try {
-			await navigator.clipboard.writeText(claimToken.claim_url);
+			await copyToClipboard(claimToken.claim_url);
 			copiedClaimUrl = true;
 			toast.success('Claim URL copied!');
 			setTimeout(() => (copiedClaimUrl = false), 2000);

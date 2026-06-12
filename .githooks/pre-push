@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Keycast pre-push hook — local mirror of the CI gates that `cargo check`
+# misses (rustfmt diff, clippy lints). Runs `make ci-fast` (fmt-check +
+# clippy, no test) before every push so the two avoidable CI red-streaks
+# we hit in 2026-05-20 — `clippy::type_complexity` and rustfmt diff —
+# fail locally instead of on the runner.
+#
+# Wiring: enabled by `make install-hooks` (sets `git config
+# core.hooksPath .githooks`). To install once: `make install-hooks`.
+# To bypass for a single push (e.g. WIP branch): `git push --no-verify`.
+# To uninstall: `git config --unset core.hooksPath`.
+#
+# Why ci-fast and not the full `make ci`: the full target chains
+# `make test` which needs the Docker stack (Postgres + Redis) running
+# AND wipes the test DB on every invocation. Pre-push is not the right
+# place for that; ci-fast finishes in ~5–10s while still catching the
+# specific gates that broke us.
+
+set -e
+
+# Find the repo root so the hook works regardless of where `git push`
+# was invoked from (e.g. a subdir).
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "==> pre-push: running make ci-fast (fmt-check + clippy)"
+make ci-fast

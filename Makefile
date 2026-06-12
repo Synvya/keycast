@@ -2,7 +2,7 @@
 # Keycast Development Helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: check-prereq install-prereq setup migrate help dev test env-local env-staging docker-build docker-up docker-down docker-logs
+.PHONY: check-prereq install-prereq setup migrate help dev test fmt fmt-check clippy ci ci-fast install-hooks env-local env-staging docker-build docker-up docker-down docker-logs support-admin-grant support-admin-revoke support-admin-list
 
 # Default target: show help
 all: help
@@ -48,6 +48,7 @@ setup: ## Setup: Initialize .env and generate master key
 	fi
 	@if [ ! -f "master.key" ]; then bun run key:generate; fi
 	@$(MAKE) env-local
+	@$(MAKE) install-hooks
 	@echo "  ✓ Setup complete."
 
 env-local: ## Environment: Set active environment to .env.local
@@ -76,6 +77,33 @@ test: ## Quality: Run unit and integration tests
 	@$(MAKE) env-check
 	bun run test
 
+fmt: ## Quality: Apply rustfmt to the workspace
+	@echo "==> Running cargo fmt --all..."
+	cargo fmt --all
+
+fmt-check: ## Quality: Check rustfmt is clean (CI parity — `cargo fmt --all -- --check`)
+	@echo "==> Checking formatting (CI parity)..."
+	cargo fmt --all -- --check
+
+clippy: ## Quality: Run clippy with the same flags CI uses (workspace, all targets/features, -D warnings)
+	@echo "==> Running clippy (CI parity)..."
+	cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
+
+ci-fast: ## Quality: Fast CI parity — fmt-check + clippy only (no test, no Docker). Used by the pre-push hook.
+	@$(MAKE) fmt-check
+	@$(MAKE) clippy
+
+ci: ## Quality: Run every gate CI runs locally — fmt-check, clippy, test. Use before `git push`.
+	@$(MAKE) fmt-check
+	@$(MAKE) clippy
+	@$(MAKE) test
+
+install-hooks: ## Setup: Enable the .githooks/ pre-push hook (runs `make ci-fast` on every git push)
+	@echo "==> Installing .githooks/ as the git-hooks path..."
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/* 2>/dev/null || true
+	@echo "  ✓ pre-push hook active. Bypass once with \`git push --no-verify\`; uninstall with \`git config --unset core.hooksPath\`."
+
 # --- Docker ---
 
 docker-build: ## Docker: Build the docker images
@@ -96,6 +124,32 @@ docker-down: ## Docker: Stop the services
 docker-logs: ## Docker: Follow docker logs
 	@$(MAKE) env-check
 	docker compose logs -f
+
+# Support-admin Redis-set helpers. Mostly bootstrap escape hatches —
+# after the first grant lands in the AOF-backed `redis_data` volume, the
+# Operations → Users page in systemtools is the right path for
+# subsequent grants. These recipes stay for the bootstrap case (fresh
+# Redis container, no existing support-admin to use the UI as).
+# PUBKEY is required and must be a 64-char lowercase hex string — the
+# raw `SADD` doesn't resolve npub / email like the HTTP endpoint does,
+# so passing the wrong shape would corrupt the set silently.
+
+support-admin-grant: ## Docker: Grant support-admin to PUBKEY=<hex>. Persists via AOF.
+	@if [ -z "$(PUBKEY)" ]; then echo "  ✗ PUBKEY=<64-char hex> required"; exit 1; fi
+	@echo "$(PUBKEY)" | grep -Eq '^[0-9a-f]{64}$$' || (echo "  ✗ PUBKEY must be 64 lowercase hex chars"; exit 1)
+	@echo "==> SADD support_admins $(PUBKEY)..."
+	@docker exec keycast-redis redis-cli SADD support_admins $(PUBKEY)
+	@echo "  ✓ Granted. Verify: make support-admin-list"
+
+support-admin-revoke: ## Docker: Revoke support-admin from PUBKEY=<hex>.
+	@if [ -z "$(PUBKEY)" ]; then echo "  ✗ PUBKEY=<64-char hex> required"; exit 1; fi
+	@echo "$(PUBKEY)" | grep -Eq '^[0-9a-f]{64}$$' || (echo "  ✗ PUBKEY must be 64 lowercase hex chars"; exit 1)
+	@echo "==> SREM support_admins $(PUBKEY)..."
+	@docker exec keycast-redis redis-cli SREM support_admins $(PUBKEY)
+	@echo "  ✓ Revoked."
+
+support-admin-list: ## Docker: List the current support-admin pubkeys (Redis SMEMBERS support_admins).
+	@docker exec keycast-redis redis-cli SMEMBERS support_admins
 
 # --- Internal ---
 

@@ -26,6 +26,7 @@
 	import { toast } from "svelte-hot-french-toast";
 	import { signin, SigninMethod } from "$lib/utils/auth";
 	import { getAllowedPubkeys, isTeamsEnabled } from "$lib/utils/env";
+	import { copyToClipboard } from "$lib/clipboard";
 
 	interface GroupedSession {
 		key: string;
@@ -133,7 +134,7 @@
 	async function copyPubkey(hexPubkey: string) {
 		try {
 			const formatted = formatPubkey(hexPubkey);
-			await navigator.clipboard.writeText(formatted);
+			await copyToClipboard(formatted);
 			copiedPubkey = hexPubkey;
 			toast.success(
 				`${pubkeyFormat === "npub" ? "npub" : "Hex pubkey"} copied!`,
@@ -199,7 +200,7 @@
 		if (!currentUser) return;
 		try {
 			const formatted = formatPubkey(currentUser.pubkey);
-			await navigator.clipboard.writeText(formatted);
+			await copyToClipboard(formatted);
 			copiedNpub = true;
 			toast.success(
 				`${pubkeyFormat === "npub" ? "npub" : "Hex pubkey"} copied!`,

@@ -5,6 +5,7 @@ import type { AuthorizationWithRelations } from "$lib/types";
 import { formattedDateTime } from "$lib/utils/dates";
 import { Check, Copy, Trash, Link, LinkBreak } from "phosphor-svelte";
 import { toast } from "svelte-hot-french-toast";
+import { copyToClipboard } from "$lib/clipboard";
 
 let { authorization, teamId, keyPubkey, onDelete }: {
     authorization: AuthorizationWithRelations;
@@ -30,7 +31,7 @@ function copyConnectionString(authorization: AuthorizationWithRelations) {
         toast.error("Connection string only available at creation time");
         return;
     }
-    navigator.clipboard.writeText(authorization.bunker_connection_string);
+    void copyToClipboard(authorization.bunker_connection_string);
     toast.success("Connection string copied to clipboard");
     copyConnectionSuccess = true;
     setTimeout(() => {

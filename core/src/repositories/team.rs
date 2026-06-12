@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use sqlx::PgPool;
 
+/// Name + pubkey summary for a stored key, used in team-lookup responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestaurantKeySummary {
+    pub name: String,
+    pub pubkey: String,
+}
+
 /// Result row for the team-name search used by `GET /api/admin/team-lookup`.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct TeamSearchResult {
@@ -23,6 +30,8 @@ pub struct TeamSearchResult {
     /// `true` when the team has at least one row in `stored_keys`. A team
     /// without a stored key is not eligible for `/support-access`.
     pub has_stored_key: bool,
+    /// Name + pubkey of each stored key belonging to the team.
+    pub restaurant_keys: sqlx::types::Json<Vec<RestaurantKeySummary>>,
 }
 
 /// Repository for team-related database operations.
@@ -76,7 +85,13 @@ impl TeamRepository {
                 EXISTS (
                     SELECT 1 FROM stored_keys sk
                     WHERE sk.team_id = t.id AND sk.tenant_id = $1
-                ) AS has_stored_key
+                ) AS has_stored_key,
+                COALESCE(
+                    (SELECT json_agg(json_build_object('name', sk.name, 'pubkey', sk.pubkey))
+                     FROM stored_keys sk
+                     WHERE sk.team_id = t.id AND sk.tenant_id = $1),
+                    '[]'::json
+                ) AS restaurant_keys
              FROM teams t
              LEFT JOIN team_users tu ON tu.team_id = t.id
              LEFT JOIN users u ON u.pubkey = tu.user_pubkey AND u.tenant_id = $1

@@ -16,7 +16,7 @@ use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
-    StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
+    RestaurantKeySummary, StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
 };
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::claim_token::generate_claim_token;
@@ -968,6 +968,8 @@ pub struct TeamLookupCandidate {
     /// key is not eligible for `POST /admin/teams/:id/support-access`; the
     /// client should surface this so support agents see why.
     pub has_stored_key: bool,
+    /// Name + pubkey of each stored key belonging to the team.
+    pub restaurant_keys: Vec<RestaurantKeySummary>,
     pub created_at: String,
 }
 
@@ -978,6 +980,7 @@ impl From<TeamSearchResult> for TeamLookupCandidate {
             name: row.name,
             admin_emails: row.admin_emails,
             has_stored_key: row.has_stored_key,
+            restaurant_keys: row.restaurant_keys.0,
             created_at: row.created_at.to_rfc3339(),
         }
     }
@@ -1018,6 +1021,175 @@ pub async fn get_team_lookup(
     let total = results.len();
 
     Ok(Json(TeamLookupResponse { results, total }))
+}
+
+// ============================================================================
+// GET /api/admin/team-names - Lean (id, name) listing of every team in tenant
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct TeamNameRow {
+    pub id: i32,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeamNamesResponse {
+    pub teams: Vec<TeamNameRow>,
+    pub total: usize,
+}
+
+/// Return every team in the caller's tenant as a bare (id, name) pair, ordered
+/// by name. Support admin only. No pagination — the call is intended for
+/// pickers / pre-populated dropdowns and the tenant-scoped count is bounded
+/// in practice (today's tenants ≪ 1000 teams). If that changes, add a
+/// `?limit` / `?cursor` pair on the same shape as `team-lookup`.
+pub async fn get_team_names(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+) -> ApiResult<Json<TeamNamesResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Support admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    let rows: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT id, name
+         FROM teams
+         WHERE tenant_id = $1
+         ORDER BY name ASC",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Team names listing failed: {}", e)))?;
+
+    let teams: Vec<TeamNameRow> = rows
+        .into_iter()
+        .map(|(id, name)| TeamNameRow { id, name })
+        .collect();
+    let total = teams.len();
+
+    Ok(Json(TeamNamesResponse { teams, total }))
+}
+
+// ============================================================================
+// GET /api/admin/teams/:id/members - Membership listing for a specific team
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct TeamMember {
+    pub user_pubkey: String,
+    /// Coalesced display name: prefers `users.display_name` (added in
+    /// migration 0004), falls back to `users.username` (initial schema),
+    /// `null` if neither is set or the user record is missing in this
+    /// tenant. Surfaced as a single field instead of forcing every
+    /// consumer (CLI + UI) to re-implement the same fallback.
+    pub name: Option<String>,
+    /// `null` if the user record has no email on file (e.g. a user added by
+    /// pubkey alone via support tooling).
+    pub email: Option<String>,
+    /// `'admin'` or `'member'` — the only values `team_users.role` accepts
+    /// per the CHECK constraint in migration 0001.
+    pub role: String,
+    pub joined_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeamMembersResponse {
+    pub team_id: i32,
+    pub team_name: String,
+    pub members: Vec<TeamMember>,
+    pub total: usize,
+}
+
+/// Row shape returned by the `team_users` ⨝ `users` lookup in
+/// `get_team_members`. Lives outside the function so the type doesn't
+/// blow the clippy::type_complexity budget (a tuple of String /
+/// Option<String> / chrono types exceeds the default threshold of 250).
+#[derive(sqlx::FromRow)]
+struct TeamMemberRow {
+    user_pubkey: String,
+    name: Option<String>,
+    email: Option<String>,
+    role: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Return every member (admin + non-admin) of a single team. Support admin
+/// only. Tenant-scoped — the team must belong to the caller's tenant or the
+/// route returns 404. Read-only; does not write to `team_users` /
+/// `authorizations` (contrast with `/admin/teams/:id/support-access` which
+/// grants the caller membership as a side effect). Membership lookups are
+/// rare enough that no pagination is required; if a team accumulates
+/// hundreds of members add a `?role=` filter rather than pagination.
+pub async fn get_team_members(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(team_id): Path<i32>,
+) -> ApiResult<Json<TeamMembersResponse>> {
+    if !is_support_admin(&auth).await {
+        return Err(ApiError::forbidden("Support admin access required"));
+    }
+
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    let team_row: Option<(i32, String)> =
+        sqlx::query_as("SELECT id, name FROM teams WHERE id = $1 AND tenant_id = $2")
+            .bind(team_id)
+            .bind(tenant_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ApiError::internal(format!("Team lookup failed: {}", e)))?;
+
+    let (team_id, team_name) = match team_row {
+        Some(row) => row,
+        None => return Err(ApiError::not_found("Team not found")),
+    };
+
+    let member_rows: Vec<TeamMemberRow> = sqlx::query_as::<_, TeamMemberRow>(
+        "SELECT
+             tu.user_pubkey,
+             COALESCE(u.display_name, u.username) AS name,
+             u.email,
+             tu.role,
+             tu.created_at
+         FROM team_users tu
+         LEFT JOIN users u ON u.pubkey = tu.user_pubkey AND u.tenant_id = $2
+         WHERE tu.team_id = $1
+         ORDER BY
+            CASE tu.role WHEN 'admin' THEN 0 ELSE 1 END,
+            tu.created_at ASC",
+    )
+    .bind(team_id)
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ApiError::internal(format!("Member lookup failed: {}", e)))?;
+
+    let members: Vec<TeamMember> = member_rows
+        .into_iter()
+        .map(|row| TeamMember {
+            user_pubkey: row.user_pubkey,
+            name: row.name,
+            email: row.email,
+            role: row.role,
+            joined_at: row.created_at.to_rfc3339(),
+        })
+        .collect();
+    let total = members.len();
+
+    Ok(Json(TeamMembersResponse {
+        team_id,
+        team_name,
+        members,
+        total,
+    }))
 }
 
 // ============================================================================
