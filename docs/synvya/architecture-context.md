@@ -51,7 +51,14 @@ The client represents humans. The server represents the always-on restaurant ope
 - Keycast remains its own service on `auth.*`
 - The Server is a separate service on `server.*`
 - The Server calls Keycast over HTTPS for auth introspection and signing/decryption RPC
-- AWS WAF sits in front of both ALBs, rate-limiting email-triggering endpoints and blocking known bot IPs
+- each environment has a dedicated Keycast ALB:
+  - staging: `synvya-staging-keycast`
+  - production: `synvya-production-keycast`
+- each environment also has a dedicated Server ALB:
+  - staging: `synvya-staging-server`
+  - production: `synvya-production-server`
+- AWS WAF is attached to the Keycast ALBs to protect email-triggering endpoints and block known bot IPs
+- the Server ALBs are separate from Keycast and are not fronted through `auth.*`
 
 ## What Synvya Needs From Keycast
 

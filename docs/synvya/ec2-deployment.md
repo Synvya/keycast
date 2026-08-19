@@ -53,6 +53,8 @@ EC2 + Docker Compose remains the chosen Keycast deployment target for now.
 | Runtime | EC2 + Docker Compose | EC2 + Docker Compose |
 | PostgreSQL | containerized | containerized |
 | Redis | containerized | containerized |
+| ALB | `synvya-staging-keycast` | `synvya-production-keycast` |
+| Target group | `synvya-staging-keycast` | `synvya-production-keycast` |
 | Secrets path | `synvya/staging/keycast/*` | `synvya/production/keycast/*` |
 | KMS key alias | `alias/keycast-master-key` | `alias/synvya-production-keycast-masterkey` |
 | WAF Web ACL | `synvya-staging-keycast-waf` | `synvya-production-keycast-waf` |
@@ -84,10 +86,18 @@ Keycast does not own:
 Internet
    |
    v
-AWS WAF (rate limiting + IP reputation)
+Route 53
    |
    v
-ALB (HTTPS 443, *.synvya.com cert)
+Dedicated Keycast ALB per environment
+  - `synvya-staging-keycast`
+  - `synvya-production-keycast`
+  - HTTPS 443 with wildcard certificate
+   |
+   v
+AWS WAF on the Keycast ALB
+  - `synvya-staging-keycast-waf`
+  - `synvya-production-keycast-waf`
    |
    v
 auth.staging.synvya.com / auth.synvya.com
@@ -117,9 +127,10 @@ It should not include a server or event-processor container.
 
 ### 8.1 Target Group
 
-| Target Group | Port | Health Check |
-|---|---|---|
-| `synvya-keycast` | 3000 | `GET /health` |
+| Environment | ALB | Target Group | Port | Health Check |
+|---|---|---|---|---|
+| Staging | `synvya-staging-keycast` | `synvya-staging-keycast` | `3000` | `GET /health` |
+| Production | `synvya-production-keycast` | `synvya-production-keycast` | `3000` | `GET /health` |
 
 ### 8.2 Listener Rules
 
@@ -152,12 +163,12 @@ Do not load Server-specific secrets in the Keycast deployment. IAM roles are sco
 
 ## 10. WAF
 
-Each environment has a dedicated AWS WAF Web ACL associated with its ALB.
+Each environment has a dedicated AWS WAF Web ACL associated with its dedicated Keycast ALB.
 
 | Web ACL | Associated ALB |
 |---|---|
-| `synvya-staging-keycast-waf` | `synvya-staging-keycast-alb` |
-| `synvya-production-keycast-waf` | `synvya-production-keycast-alb` |
+| `synvya-staging-keycast-waf` | `synvya-staging-keycast` |
+| `synvya-production-keycast-waf` | `synvya-production-keycast` |
 
 ### Rules
 
