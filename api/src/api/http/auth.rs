@@ -3209,12 +3209,31 @@ pub async fn delete_account(
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
 
-    // Get Authorization header
-    let auth_header = headers
-        .get("Authorization")
-        .ok_or(AuthError::MissingToken)?
-        .to_str()
-        .map_err(|_| AuthError::InvalidToken)?;
+    // The UCAN comes as a Bearer header (the Divine app, third-party apps) or
+    // as the `keycast_session` cookie (the Synvya web apps, which hold no
+    // token in JavaScript). Either way the same user-signed / first-party rule
+    // below applies — the cookie is the same UCAN the header would carry.
+    // Cookie support added 2026-09-08: the Synvya Restaurants delete flow
+    // failed at this step for every merchant, as the browser had no Bearer.
+    let bearer_owned: String;
+    let auth_header: &str = match headers.get("Authorization") {
+        Some(value) => value.to_str().map_err(|_| AuthError::InvalidToken)?,
+        None => {
+            let cookie_value = headers
+                .get("Cookie")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|cookies| {
+                    cookies
+                        .split(';')
+                        .map(str::trim)
+                        .find_map(|c| c.strip_prefix("keycast_session="))
+                        .map(str::to_owned)
+                })
+                .ok_or(AuthError::MissingToken)?;
+            bearer_owned = format!("Bearer {}", cookie_value);
+            &bearer_owned
+        }
+    };
 
     // Validate UCAN token
     let (user_pubkey, redirect_origin, _, ucan) =
