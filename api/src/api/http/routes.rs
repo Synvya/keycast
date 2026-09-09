@@ -141,7 +141,10 @@ pub fn api_routes(
         .with_state(auth_state.clone());
 
     // Account deletion - public CORS so third-party OAuth apps can delete accounts
-    // Protected by Bearer token (UCAN), not cookies
+    // UCAN as Bearer (native / third-party apps) or as the session cookie
+    // (the Synvya web apps). Auth CORS: a credentialed browser request needs
+    // an echoed origin, which the public policy's `*` cannot give — that was
+    // "Failed to fetch" on every restaurant deletion until 2026-09-08.
     let account_delete_route = Router::new()
         .route("/user/account", delete(auth::delete_account))
         .with_state(auth_state.clone());
@@ -291,7 +294,7 @@ pub fn api_routes(
         .merge(key_export_routes) // Has auth_cors (authenticated, needs cookies)
         .merge(change_key_route) // Has auth_cors (authenticated, needs cookies)
         .merge(logout_route) // Has auth_cors (credentialed cookie logout)
-        .merge(account_delete_route.layer(public_cors.clone())) // Public CORS - Bearer token auth, third-party apps
+        .merge(account_delete_route.layer(auth_cors.clone())) // Auth CORS - session cookie from the Synvya web apps; Bearer still accepted
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer
         .merge(email_routes.layer(public_cors.clone()))
         .merge(oauth_routes) // Has public_cors (third-party safe)
