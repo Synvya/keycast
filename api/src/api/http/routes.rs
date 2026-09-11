@@ -224,6 +224,9 @@ pub fn api_routes(
             "/admin/support-admins/:pubkey",
             delete(admin::remove_support_admin),
         )
+        // Operator-side account deletion (sign-up approval). Refuses while the
+        // person still belongs to a team.
+        .route("/admin/users/:pubkey", delete(admin::delete_user))
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
