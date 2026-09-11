@@ -14,6 +14,7 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::extractors::UcanAuth;
 use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
+use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
     RestaurantKeySummary, StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
@@ -1925,4 +1926,91 @@ async fn resolve_identifier(
     Err(ApiError::bad_request(
         "Identifier must be an npub, 64-char hex pubkey, or email address",
     ))
+}
+
+/// DELETE /admin/users/:pubkey
+///
+/// Delete a person's login account from the operator side — a rejected
+/// sign-up whose impostor should not keep a login, or a mistaken sign-up the
+/// person asked us to remove (Synvya sign-up approval PRD, 2026-09-11). Full
+/// admin only.
+///
+/// Refuses with 409 while the person still belongs to a team: a restaurant is
+/// deleted from its own settings, which leaves the team first, and this route
+/// must never be the thing that strands one. 404 when there is no such user.
+/// Everything else mirrors the self-service `DELETE /user/account`: the same
+/// repository call, the same signer-daemon notice, the same metric.
+pub async fn delete_user(
+    tenant: crate::api::tenant::TenantExtractor,
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(pubkey): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Full admin access required"));
+    }
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+
+    let pubkey = pubkey.trim().to_lowercase();
+    if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::bad_request("pubkey must be a 64-char hex string"));
+    }
+
+    let team_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_users tu
+         INNER JOIN teams t ON t.id = tu.team_id
+         WHERE tu.user_pubkey = $1 AND t.tenant_id = $2",
+    )
+    .bind(&pubkey)
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to check teams: {}", e)))?;
+    if team_count > 0 {
+        return Err(ApiError::conflict(
+            "User still belongs to a team; delete the restaurant first",
+        ));
+    }
+
+    let user_repo = UserRepository::new(pool.clone());
+    let result = user_repo
+        .delete_account(&pubkey, tenant_id)
+        .await
+        .map_err(|e| match e {
+            keycast_core::repositories::RepositoryError::NotFound(_) => {
+                ApiError::not_found("User not found")
+            }
+            other => ApiError::Internal(format!("Failed to delete user: {}", other)),
+        })?;
+
+    if let Some(tx) = &auth_state.auth_tx {
+        use keycast_core::authorization_channel::AuthorizationCommand;
+        for bunker_pubkey in &result.bunker_pubkeys {
+            if let Err(e) = tx
+                .send(AuthorizationCommand::Remove {
+                    bunker_pubkey: bunker_pubkey.clone(),
+                })
+                .await
+            {
+                tracing::warn!("Failed to notify signer daemon of bunker removal: {}", e);
+            }
+        }
+    }
+
+    METRICS.inc_account_deleted();
+
+    tracing::info!(
+        event = "admin_user_deleted",
+        tenant_id = tenant_id,
+        user = &pubkey[..8],
+        admin = &auth.pubkey[..8],
+        teams_removed = result.teams_removed,
+        "User deleted by admin"
+    );
+
+    Ok(Json(serde_json::json!({
+        "deleted": true,
+        "teams_removed": result.teams_removed,
+    })))
 }
