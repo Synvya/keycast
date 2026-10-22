@@ -20,6 +20,12 @@
 **Plan:** Remove fallback, fail fast if env var not set in production
 **Effort:** 1 hour
 
+### ❌ 29. CORS Preflight Conflict on `/api/user/account`
+**Status:** OPEN
+**Location:** `keycast/api/src/api/http/routes.rs`
+**Issue:** The browser console shows `Cannot use wildcard in Access-Control-Allow-Origin when credentials flag is true`. The GET is blocked, no session is established, and `/api/teams` then returns 401. The path is registered on two routers with conflicting CORS layers. The GET uses `auth_cors`, which allows credentials. The DELETE uses `public_cors`, which sends `Access-Control-Allow-Origin: *`. The preflight hits `public_cors`.
+**Plan:** Move `DELETE /user/account` under `user_routes` so one layer covers both methods. The handler already documents that third-party OAuth apps cannot delete accounts, so the wildcard was never needed. **Check first** for other paths registered on two routers with different CORS layers. Requires a Keycast rebuild and deploy.
+
 ### ❌ 28. Three Auth Tests Disabled
 **Priority:** HIGH
 **Status:** NOT STARTED
