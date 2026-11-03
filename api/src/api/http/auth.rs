@@ -18,6 +18,7 @@ use crate::handlers::http_rpc_handler::{
     invalidate_handlers_for_bunker, invalidate_handlers_for_user,
 };
 use crate::nip98;
+use crate::rate_limit;
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
     CreateOAuthAuthorizationParams, OAuthAuthorizationRepository, OAuthCodeRepository,
@@ -275,6 +276,7 @@ pub struct ProfileData {
 
 #[derive(Debug)]
 pub enum AuthError {
+    TooManyRequests,
     Database(sqlx::Error),
     PasswordHash(bcrypt::BcryptError),
     InvalidCredentials,
@@ -301,6 +303,10 @@ pub enum AuthError {
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            AuthError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.".to_string(),
+            ),
             AuthError::Database(e) => {
                 // Log the real error but return generic message to user
                 tracing::error!("Database error: {}", e);
@@ -636,7 +642,7 @@ async fn nostr_auth_login(
 pub async fn register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(mut req): Json<RegisterRequest>,
 ) -> Result<impl axum::response::IntoResponse, AuthError> {
     let pool = &auth_state.state.db;
@@ -644,6 +650,11 @@ pub async fn register(
     let tenant_id = tenant.0.id;
 
     req.email = req.email.to_lowercase();
+
+    let redis = auth_state.state.redis.as_ref();
+    if !rate_limit::allow_request(redis, "register", tenant_id, &headers, Some(&req.email)).await {
+        return Err(AuthError::TooManyRequests);
+    }
 
     let instance_id = keycast_core::instance::instance_id();
 
@@ -1624,7 +1635,23 @@ pub async fn resend_verification(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
     headers: HeaderMap,
-    Json(mut req): Json<ResendVerificationRequest>,
+    Json(req): Json<ResendVerificationRequest>,
+) -> Result<Json<ResendVerificationResponse>, AuthError> {
+    let email = req.email.as_deref();
+    let tenant_id = tenant.0.id;
+    let redis = rate_limit::shared_redis();
+    if !rate_limit::allow_request(redis, "resend_verification", tenant_id, &headers, email).await {
+        return Err(AuthError::TooManyRequests);
+    }
+
+    Ok(send_verification_again(tenant, pool, headers, req).await)
+}
+
+async fn send_verification_again(
+    tenant: crate::api::tenant::TenantExtractor,
+    pool: PgPool,
+    headers: HeaderMap,
+    mut req: ResendVerificationRequest,
 ) -> Json<ResendVerificationResponse> {
     let tenant_id = tenant.0.id;
     if let Some(ref mut email) = req.email {
@@ -1744,10 +1771,25 @@ pub async fn resend_verification(
 pub async fn forgot_password(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
+    headers: HeaderMap,
     Json(mut req): Json<ForgotPasswordRequest>,
 ) -> Result<Json<ForgotPasswordResponse>, AuthError> {
     let tenant_id = tenant.0.id;
     req.email = req.email.to_lowercase();
+
+    let redis = rate_limit::shared_redis();
+    if !rate_limit::allow_request(
+        redis,
+        "forgot_password",
+        tenant_id,
+        &headers,
+        Some(&req.email),
+    )
+    .await
+    {
+        return Err(AuthError::TooManyRequests);
+    }
+
     tracing::info!(
         "Password reset requested for email: {} in tenant: {}",
         req.email,

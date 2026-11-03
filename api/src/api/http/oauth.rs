@@ -314,6 +314,7 @@ pub struct TokenResponse {
 
 #[derive(Debug)]
 pub enum OAuthError {
+    TooManyRequests,
     Unauthorized,
     InvalidRequest(String),
     InvalidGrant(String), // RFC 6749 - for invalid/expired refresh tokens or auth codes
@@ -325,6 +326,10 @@ pub enum OAuthError {
 impl IntoResponse for OAuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            OAuthError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.".to_string(),
+            ),
             OAuthError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "Invalid email or password. Please check your credentials and try again."
@@ -3072,12 +3077,26 @@ pub struct OAuthRegisterRequest {
 pub async fn oauth_register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
+    headers: axum::http::HeaderMap,
     Json(mut req): Json<OAuthRegisterRequest>,
 ) -> Result<impl IntoResponse, OAuthError> {
     let pool = &auth_state.state.db;
     let tenant_id = tenant.0.id;
 
     req.email = req.email.to_lowercase();
+
+    let redis = auth_state.state.redis.as_ref();
+    if !crate::rate_limit::allow_request(
+        redis,
+        "oauth_register",
+        tenant_id,
+        &headers,
+        Some(&req.email),
+    )
+    .await
+    {
+        return Err(OAuthError::TooManyRequests);
+    }
 
     tracing::info!(
         "OAuth popup registration for email: {} in tenant: {}, nsec: {}, pubkey: {}, client_id: {}",

@@ -213,6 +213,7 @@ Optional:
 - `WEB_UI_REDIRECT_URL`: When `DISABLE_WEB_UI=true`, redirect non-API requests to this URL (e.g. `https://synvya.com`). If unset, non-API requests return 404.
 - `ALLOWED_TENANT_DOMAINS`: Comma-separated hostnames that may serve a tenant. Any other `Host` is refused with 400, including tenants already in the database. Required in `docker-compose.synvya.yml`. When unset, tenants are auto-provisioned from any well-formed `Host`.
 - `CUSTOMER_TENANT_DOMAIN`: Hostname of the customer tenant (passwordless accounts). Created at startup. Customer accounts are off while it is unset.
+- `RATE_LIMIT_IP_PER_HOUR`: Requests per IP per hour on endpoints that send email or call KMS (default: `60`). Applies only where a load balancer sets `X-Forwarded-For`.
 - `PASSWORD_RESET_BASE_URL`: Base URL used when constructing password reset links in emails (default: `BASE_URL`). Set when the reset page is hosted on a different domain than `BASE_URL` — e.g. Synvya sets this to `https://account.synvya.com` in production and `https://account.staging.synvya.com` in staging, so the link points at the Synvya-hosted reset form that POSTs to keycast's `/api/auth/reset-password`.
 
 Development (`.env` in `/web`):

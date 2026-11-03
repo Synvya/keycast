@@ -6,6 +6,13 @@ use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
 use std::net::IpAddr;
 
+/// Requests per email per hour on the endpoints that send email or call KMS.
+pub const EMAIL_LIMIT_PER_HOUR: u64 = 5;
+/// Requests per IP per hour on those endpoints, unless RATE_LIMIT_IP_PER_HOUR says otherwise.
+/// Generous, because owners and CI runs can share an address.
+const DEFAULT_IP_LIMIT_PER_HOUR: u64 = 60;
+const HOUR_SECONDS: u64 = 3600;
+
 /// The client's IP. The ALB appends it to X-Forwarded-For, so only the last entry can be
 /// trusted; earlier entries are whatever the caller sent.
 pub fn client_ip(headers: &HeaderMap) -> Option<IpAddr> {
@@ -60,6 +67,68 @@ pub async fn under_limit(
             true
         }
     }
+}
+
+fn ip_limit_per_hour() -> u64 {
+    std::env::var("RATE_LIMIT_IP_PER_HOUR")
+        .ok()
+        .and_then(|limit| limit.parse().ok())
+        .unwrap_or(DEFAULT_IP_LIMIT_PER_HOUR)
+}
+
+/// The Redis key counting requests from an IP to one endpoint.
+pub fn ip_limit_key(route: &str, tenant_id: i64, ip: IpAddr) -> String {
+    format!("rate_limit:{route}:{tenant_id}:ip:{ip}")
+}
+
+/// The Redis key counting requests for an email to one endpoint.
+pub fn email_limit_key(route: &str, tenant_id: i64, email: &str) -> String {
+    format!(
+        "rate_limit:{route}:{tenant_id}:email:{}",
+        email_key(&email.trim().to_lowercase())
+    )
+}
+
+/// Apply the per-IP and per-email limits for one endpoint. Returns true if the request may go on.
+///
+/// Call this before looking anything up, so that being refused says nothing about an account.
+pub async fn allow_request(
+    redis: Option<&PrefixedRedis>,
+    route: &str,
+    tenant_id: i64,
+    headers: &HeaderMap,
+    email: Option<&str>,
+) -> bool {
+    if let Some(ip) = client_ip(headers) {
+        let key = ip_limit_key(route, tenant_id, ip);
+        if !under_limit(redis, &key, ip_limit_per_hour(), HOUR_SECONDS).await {
+            tracing::warn!(
+                "Rate limit reached on {}: too many requests from one IP",
+                route
+            );
+            return false;
+        }
+    }
+
+    if let Some(email) = email {
+        let key = email_limit_key(route, tenant_id, email);
+        if !under_limit(redis, &key, EMAIL_LIMIT_PER_HOUR, HOUR_SECONDS).await {
+            tracing::warn!(
+                "Rate limit reached on {}: too many requests for one email",
+                route
+            );
+            return false;
+        }
+    }
+
+    true
+}
+
+/// The Redis connection for handlers whose state does not carry one.
+pub fn shared_redis() -> Option<&'static PrefixedRedis> {
+    crate::state::get_keycast_state()
+        .ok()
+        .and_then(|state| state.redis.as_ref())
 }
 
 #[cfg(test)]

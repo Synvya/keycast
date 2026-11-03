@@ -29,6 +29,9 @@ pub enum ApiError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Too many requests")]
+    TooManyRequests,
+
     #[error("Internal server error: {0}")]
     Internal(String),
 
@@ -91,6 +94,10 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            ApiError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.".to_string(),
+            ),
             ApiError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (

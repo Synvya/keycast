@@ -75,6 +75,8 @@ services:
       ALLOWED_TENANT_DOMAINS: ${ALLOWED_TENANT_DOMAINS:?error}
       # Hostname of the customer tenant; customer accounts are off when empty
       CUSTOMER_TENANT_DOMAIN: ${CUSTOMER_TENANT_DOMAIN:-}
+      # Requests per IP per hour on endpoints that send email or call KMS
+      RATE_LIMIT_IP_PER_HOUR: ${RATE_LIMIT_IP_PER_HOUR:-60}
       BASE_URL: ${BASE_URL:?error}
       APP_URL: ${APP_URL:?error}
       INVITE_BASE_URL: ${INVITE_BASE_URL:?error}
