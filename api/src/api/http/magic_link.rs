@@ -159,8 +159,9 @@ pub async fn send_link(
         }
     }
 
+    // By purpose, or a customer who signs in and then asks to delete would get nothing
     let key = format!(
-        "magic_link:email:{tenant_id}:{}",
+        "magic_link:email:{tenant_id}:{purpose}:{}",
         rate_limit::email_key(email)
     );
     if !rate_limit::once_per_window(redis, &key, EMAIL_WINDOW_SECONDS).await {

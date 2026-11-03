@@ -20,7 +20,8 @@ use keycast_api::redis::PrefixedRedis;
 use keycast_api::state::{get_tenant_cache, KeycastState, KEYCAST_STATE};
 use keycast_core::encryption::{KeyManager, KeyManagerError};
 use keycast_core::repositories::{
-    hash_magic_link_token, CustomerAppOriginRepository, MagicLinkTokenRepository, PURPOSE_SIGN_IN,
+    hash_magic_link_token, CustomerAppOriginRepository, MagicLinkTokenRepository,
+    PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
 };
 use keycast_core::secret_pool::SecretPool;
 use moka::future::Cache;
@@ -164,6 +165,34 @@ async fn test_one_link_per_email_per_minute() {
 
     assert_eq!(sender.get_captured_emails().len(), 1);
     assert_eq!(row_count(&pool, &email).await, 1);
+}
+
+#[tokio::test]
+async fn test_a_recent_sign_in_link_does_not_hold_back_a_deletion_link() {
+    let pool = common::setup_test_db().await;
+    let redis = test_redis().await;
+    let sender = DevEmailSender::new();
+    let email = unique_email();
+
+    assert!(send_test_link(&pool, Some(&redis), &sender, &email, None).await);
+
+    let sent = send_link(
+        &pool,
+        Some(&redis),
+        &sender,
+        LinkRequest {
+            tenant_id: TENANT_ID,
+            email: &email,
+            app_url: &app_url(),
+            merchant_name: "Example Shop",
+            purpose: PURPOSE_DELETE_ACCOUNT,
+            request_ip: None,
+        },
+    )
+    .await;
+
+    assert!(sent);
+    assert_eq!(sender.get_captured_emails().len(), 2);
 }
 
 #[tokio::test]
