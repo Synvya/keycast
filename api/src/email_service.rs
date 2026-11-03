@@ -70,6 +70,15 @@ pub trait EmailSender: Send + Sync {
         invite_url: &str,
     ) -> Result<(), String>;
 
+    /// Send an email-link sign-in to a customer. `link` is the merchant's page with the
+    /// token on it, and `merchant_name` is what the customer knows the merchant by.
+    async fn send_magic_link_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String>;
+
     /// Get captured emails (only available in dev/test mode)
     fn get_captured_emails(&self) -> Vec<CapturedEmail> {
         vec![]
@@ -392,6 +401,34 @@ fn team_invite_text(
 // ---------------------------------------------------------------------------
 
 /// Development email sender - logs URLs to console and captures emails for testing
+fn magic_link_subject(merchant_name: &str) -> String {
+    format!("Sign in to {}", merchant_name)
+}
+
+/// What a customer reads never mentions keys, or the services behind the merchant's app.
+fn magic_link_html(link: &str, merchant_name: &str) -> String {
+    let link = html_escape(link);
+    let merchant_name = html_escape(merchant_name);
+
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1a1a1a; max-width: 480px; margin: 0 auto; padding: 24px;">
+  <h1 style="font-size: 20px;">Sign in to {merchant_name}</h1>
+  <p><a href="{link}" style="display: inline-block; background: #1a1a1a; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px;">Sign in</a></p>
+  <p style="color: #666666; font-size: 14px;">This link works once and expires in 15 minutes.</p>
+  <p style="color: #666666; font-size: 14px;">If you did not ask for it, you can ignore this email.</p>
+</body>
+</html>"#
+    )
+}
+
+fn magic_link_text(link: &str, merchant_name: &str) -> String {
+    format!(
+        "Sign in to {merchant_name}\n\n{link}\n\nThis link works once and expires in 15 minutes.\n\nIf you did not ask for it, you can ignore this email.\n"
+    )
+}
+
 pub struct DevEmailSender {
     base_url: String,
     password_reset_base_url: String,
@@ -433,6 +470,29 @@ impl Default for DevEmailSender {
 
 #[async_trait]
 impl EmailSender for DevEmailSender {
+    async fn send_magic_link_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String> {
+        eprintln!(
+            "\n\x1b[35m[DEV EMAIL]\x1b[0m Sign-in link for {} at {}: \x1b[4m{}\x1b[0m\n",
+            to_email, merchant_name, link
+        );
+
+        if let Ok(mut captured) = self.captured.lock() {
+            captured.push(CapturedEmail {
+                to: to_email.to_string(),
+                subject: magic_link_subject(merchant_name),
+                verification_url: Some(link.to_string()),
+                reset_url: None,
+            });
+        }
+
+        Ok(())
+    }
+
     async fn send_verification_email(
         &self,
         to_email: &str,
@@ -768,6 +828,19 @@ impl SendGridEmailSender {
 
 #[async_trait]
 impl EmailSender for SendGridEmailSender {
+    async fn send_magic_link_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String> {
+        let subject = magic_link_subject(merchant_name);
+        let html = magic_link_html(link, merchant_name);
+        let text = magic_link_text(link, merchant_name);
+
+        self.send_email(to_email, &subject, &html, &text).await
+    }
+
     async fn send_verification_email(
         &self,
         to_email: &str,
@@ -973,6 +1046,19 @@ impl SesEmailSender {
 #[cfg(feature = "aws")]
 #[async_trait]
 impl EmailSender for SesEmailSender {
+    async fn send_magic_link_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String> {
+        let subject = magic_link_subject(merchant_name);
+        let html = magic_link_html(link, merchant_name);
+        let text = magic_link_text(link, merchant_name);
+
+        self.send_email(to_email, &subject, &html, &text).await
+    }
+
     async fn send_verification_email(
         &self,
         to_email: &str,
@@ -1119,6 +1205,11 @@ impl EmailService {
         })
     }
 
+    /// The sender behind this service.
+    pub fn sender(&self) -> &dyn EmailSender {
+        self.inner.as_ref()
+    }
+
     pub async fn send_verification_email(
         &self,
         to_email: &str,
@@ -1174,5 +1265,46 @@ impl EmailService {
                 invite_url,
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod magic_link_email_tests {
+    use super::*;
+
+    const LINK: &str = "https://orders.example.com/signin?token=abc";
+
+    #[test]
+    fn test_email_says_what_the_link_does() {
+        for body in [
+            magic_link_html(LINK, "example.com"),
+            magic_link_text(LINK, "example.com"),
+        ] {
+            assert!(body.contains("Sign in to example.com"));
+            assert!(body.contains(LINK));
+            assert!(body.contains("works once and expires in 15 minutes"));
+        }
+        assert_eq!(magic_link_subject("example.com"), "Sign in to example.com");
+    }
+
+    #[test]
+    fn test_email_never_mentions_what_is_behind_the_app() {
+        for body in [
+            magic_link_subject("example.com"),
+            magic_link_html(LINK, "example.com"),
+            magic_link_text(LINK, "example.com"),
+        ] {
+            let body = body.to_lowercase();
+            for word in ["keycast", "synvya", "nostr", "npub", "pubkey", "secret key"] {
+                assert!(!body.contains(word), "{word}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_html_email_escapes_its_values() {
+        let html = magic_link_html("https://a.example.com/?a=1&b=2", "<b>name</b>");
+        assert!(html.contains("a=1&amp;b=2"));
+        assert!(!html.contains("<b>name</b>"));
     }
 }

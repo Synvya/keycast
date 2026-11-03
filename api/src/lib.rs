@@ -6,6 +6,7 @@ pub mod email_service;
 pub mod handlers;
 pub mod nip98;
 pub mod nostr_profile;
+pub mod rate_limit;
 pub mod redis;
 pub mod state;
 pub mod ucan_auth;

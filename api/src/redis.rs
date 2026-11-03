@@ -300,6 +300,30 @@ impl PrefixedRedis {
         })
         .await
     }
+
+    /// Count an event under a key whose window starts at the first event.
+    /// Returns the count, including this event.
+    pub async fn incr_with_ttl(&self, key: &str, ttl_seconds: u64) -> RedisResult<u64> {
+        let prefixed = self.prefixed_key(key).into_owned();
+        self.with_refresh(|mut conn| {
+            let key = prefixed.clone();
+            async move {
+                // One script, so a key can never be left without its expiry
+                redis::cmd("EVAL")
+                    .arg(
+                        "local count = redis.call('INCR', KEYS[1]) \
+                         if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end \
+                         return count",
+                    )
+                    .arg(1)
+                    .arg(key)
+                    .arg(ttl_seconds)
+                    .query_async(&mut conn)
+                    .await
+            }
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

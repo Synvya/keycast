@@ -3,6 +3,7 @@
 
 use bcrypt::{hash, DEFAULT_COST};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use keycast_core::repositories::MagicLinkTokenRepository;
 use secrecy::{ExposeSecret, SecretString};
 use sqlx::PgPool;
 
@@ -241,6 +242,11 @@ pub fn spawn_cleanup_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
                 Err(e) => {
                     tracing::error!("Cleanup task: failed to delete stale rows: {}", e);
                 }
+            }
+
+            let magic_link_tokens = MagicLinkTokenRepository::new(pool.clone());
+            if let Err(e) = magic_link_tokens.purge_expired().await {
+                tracing::error!("Cleanup task: failed to purge sign-in links: {}", e);
             }
         }
     })

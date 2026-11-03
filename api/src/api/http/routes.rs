@@ -9,8 +9,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::api::http::{
-    admin, atproto, atproto_oauth, auth, claim, headless, metrics, nostr_rpc, oauth, policies,
-    teams,
+    admin, atproto, atproto_oauth, auth, claim, headless, magic_link, metrics, nostr_rpc, oauth,
+    policies, teams,
 };
 use crate::state::KeycastState;
 use axum::response::Json as AxumJson;
@@ -64,6 +64,12 @@ pub fn api_routes(
         .route("/auth/reset-password", post(auth::reset_password))
         .route("/auth/resend-verification", post(auth::resend_verification))
         .with_state(pool.clone());
+
+    // Email-link sign-in: called from each merchant's orders app, so public CORS
+    let magic_link_routes = Router::new()
+        .route("/auth/magic-link", post(magic_link::request_magic_link))
+        .layer(public_cors.clone())
+        .with_state(auth_state.clone());
 
     // OAuth routes (no authentication required for initial authorize request)
     // Public CORS - third parties use authorization_code grant (never see passwords)
@@ -300,6 +306,7 @@ pub fn api_routes(
         .merge(account_delete_route.layer(auth_cors.clone())) // Auth CORS - session cookie from the Synvya web apps; Bearer still accepted
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer
         .merge(email_routes.layer(public_cors.clone()))
+        .merge(magic_link_routes) // Has public_cors (called from each merchant's orders app)
         .merge(oauth_routes) // Has public_cors (third-party safe)
         .merge(atproto_oauth_routes)
         .merge(connect_routes.layer(public_cors.clone()))
