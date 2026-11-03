@@ -76,6 +76,14 @@ pub fn api_routes(
             "/customer/account",
             delete(magic_link::delete_customer_account),
         )
+        .route(
+            "/customer/authorizations",
+            get(magic_link::list_customer_apps),
+        )
+        .route(
+            "/customer/authorizations/revoke",
+            post(magic_link::revoke_customer_app),
+        )
         .layer(public_cors.clone())
         .with_state(auth_state.clone());
 
@@ -241,6 +249,12 @@ pub fn api_routes(
         // Operator-side account deletion (sign-up approval). Refuses while the
         // person still belongs to a team.
         .route("/admin/users/:pubkey", delete(admin::delete_user))
+        .route(
+            "/admin/customer-origins",
+            get(admin::list_customer_origins)
+                .post(admin::add_customer_origin)
+                .delete(admin::remove_customer_origin),
+        )
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 

@@ -90,6 +90,7 @@ services:
       USE_GCP_KMS: ${USE_GCP_KMS:-false}
       BUNKER_RELAYS: ${BUNKER_RELAYS:?error}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?error}
+      ALLOW_LOCALHOST_ORIGINS: ${ALLOW_LOCALHOST_ORIGINS:-false}
       # Backend admin allowlist. Empty means NO admins recognized via the
       # pubkey path — keycast's `is_full_admin` falls through to `false`
       # and every /api/admin/* call from the synvya server returns 403.

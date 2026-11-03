@@ -127,8 +127,9 @@ fn inject_runtime_env(html: &str) -> String {
     }
 }
 
-fn origin_is_allowed(origin: &str, allowed_origins: &str) -> bool {
-    if origin.starts_with("http://localhost:") || origin == "http://localhost" {
+fn origin_is_allowed(origin: &str, allowed_origins: &str, allow_localhost: bool) -> bool {
+    if allow_localhost && (origin.starts_with("http://localhost:") || origin == "http://localhost")
+    {
         return true;
     }
 
@@ -637,11 +638,13 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
 
     let allowed_origins_str = env::var("ALLOWED_ORIGINS")?; // Validated above
     let allowed_origins_for_closure = allowed_origins_str.clone();
+    // Only for development: production never trusts a localhost origin
+    let allow_localhost = env::var("ALLOW_LOCALHOST_ORIGINS").is_ok_and(|value| value == "true");
 
     let auth_cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             let origin_str = origin.to_str().unwrap_or("");
-            origin_is_allowed(origin_str, &allowed_origins_for_closure)
+            origin_is_allowed(origin_str, &allowed_origins_for_closure, allow_localhost)
         }))
         .allow_methods([
             axum::http::Method::POST,
@@ -1159,10 +1162,33 @@ mod tests {
     }
 
     #[test]
+    fn test_localhost_is_refused_unless_explicitly_allowed() {
+        let allowed = "https://login.divine.video";
+
+        for origin in ["http://localhost", "http://localhost:5173"] {
+            assert!(!origin_is_allowed(origin, allowed, false), "{origin}");
+            assert!(origin_is_allowed(origin, allowed, true), "{origin}");
+        }
+
+        // The flag covers localhost and nothing else
+        assert!(!origin_is_allowed(
+            "http://localhost.evil.example.org",
+            allowed,
+            true
+        ));
+        assert!(!origin_is_allowed(
+            "https://evil.example.org",
+            allowed,
+            true
+        ));
+    }
+
+    #[test]
     fn test_origin_is_allowed_for_exact_match() {
         assert!(origin_is_allowed(
             "https://login.divine.video",
-            "https://login.divine.video,https://divine.video"
+            "https://login.divine.video,https://divine.video",
+            false
         ));
     }
 
@@ -1170,7 +1196,8 @@ mod tests {
     fn test_origin_is_allowed_for_pages_preview_wildcard() {
         assert!(origin_is_allowed(
             "https://f582401d.openvine-app.pages.dev",
-            "https://login.divine.video,https://*.openvine-app.pages.dev"
+            "https://login.divine.video,https://*.openvine-app.pages.dev",
+            false
         ));
     }
 
@@ -1178,11 +1205,13 @@ mod tests {
     fn test_origin_is_not_allowed_for_non_matching_wildcard_host() {
         assert!(!origin_is_allowed(
             "https://openvine-app.pages.dev",
-            "https://login.divine.video,https://*.openvine-app.pages.dev"
+            "https://login.divine.video,https://*.openvine-app.pages.dev",
+            false
         ));
         assert!(!origin_is_allowed(
             "https://evil.pages.dev",
-            "https://login.divine.video,https://*.openvine-app.pages.dev"
+            "https://login.divine.video,https://*.openvine-app.pages.dev",
+            false
         ));
     }
 }

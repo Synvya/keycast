@@ -33,6 +33,7 @@ services:
       MASTER_KEY_PATH: /app/master.key
       USE_GCP_KMS: "false"
       ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174
+      ALLOW_LOCALHOST_ORIGINS: "true"
       BUNKER_RELAYS: ${BUNKER_RELAYS:?Set BUNKER_RELAYS in .env}
       WEB_BUILD_DIR: /app/web
       FROM_EMAIL: test@localhost

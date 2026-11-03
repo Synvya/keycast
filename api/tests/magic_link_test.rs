@@ -10,7 +10,7 @@ use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
-use keycast_api::api::http::magic_link::{parse_app_url, send_link, LinkRequest};
+use keycast_api::api::http::magic_link::{allowed_app_url, send_link, LinkRequest};
 use keycast_api::api::http::routes::api_routes;
 use keycast_api::api::tenant::Tenant;
 use keycast_api::bcrypt_queue::BcryptQueue;
@@ -20,7 +20,7 @@ use keycast_api::redis::PrefixedRedis;
 use keycast_api::state::{get_tenant_cache, KeycastState, KEYCAST_STATE};
 use keycast_core::encryption::{KeyManager, KeyManagerError};
 use keycast_core::repositories::{
-    hash_magic_link_token, MagicLinkTokenRepository, PURPOSE_SIGN_IN,
+    hash_magic_link_token, CustomerAppOriginRepository, MagicLinkTokenRepository, PURPOSE_SIGN_IN,
 };
 use keycast_core::secret_pool::SecretPool;
 use moka::future::Cache;
@@ -73,6 +73,7 @@ async fn send_test_link(
             tenant_id: TENANT_ID,
             email,
             app_url: &app_url(),
+            merchant_name: "Example Shop",
             purpose: PURPOSE_SIGN_IN,
             request_ip,
         },
@@ -116,7 +117,7 @@ async fn test_stores_only_the_hash_and_creates_no_account() {
     let captured = sender.get_captured_emails();
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].to, email);
-    assert_eq!(captured[0].subject, "Sign in to example.com");
+    assert_eq!(captured[0].subject, "Sign in to Example Shop");
     let link = captured[0].verification_url.clone().unwrap();
     assert!(link.starts_with("https://orders.example.com/signin?token="));
     let token = token_from_link(&link);
@@ -408,12 +409,18 @@ async fn post_magic_link(
 
 fn set_customer_env() {
     std::env::set_var("CUSTOMER_TENANT_DOMAIN", CUSTOMER_HOST);
-    std::env::set_var("ALLOWED_ORIGINS", "https://orders.example.com");
 }
 
 fn clear_customer_env() {
     std::env::remove_var("CUSTOMER_TENANT_DOMAIN");
-    std::env::remove_var("ALLOWED_ORIGINS");
+}
+
+async fn allow_test_origin(pool: &PgPool) {
+    let tenant_id = upsert_tenant(pool, CUSTOMER_HOST).await.id;
+    CustomerAppOriginRepository::new(pool.clone())
+        .add(tenant_id, "https://orders.example.com", "Example Shop")
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -421,6 +428,7 @@ fn clear_customer_env() {
 async fn test_answer_is_the_same_for_known_and_unknown_emails() {
     let pool = common::setup_test_db().await;
     let router = test_router(pool.clone()).await;
+    allow_test_origin(&pool).await;
     set_customer_env();
 
     let known = unique_email();
@@ -449,7 +457,8 @@ async fn test_answer_is_the_same_for_known_and_unknown_emails() {
 #[serial]
 async fn test_malformed_email_is_refused() {
     let pool = common::setup_test_db().await;
-    let router = test_router(pool).await;
+    let router = test_router(pool.clone()).await;
+    allow_test_origin(&pool).await;
     set_customer_env();
 
     let (status, _) = post_magic_link(&router, CUSTOMER_HOST, "not-an-email", APP_URL).await;
@@ -462,7 +471,8 @@ async fn test_malformed_email_is_refused() {
 #[serial]
 async fn test_app_url_must_be_on_an_allowed_origin() {
     let pool = common::setup_test_db().await;
-    let router = test_router(pool).await;
+    let router = test_router(pool.clone()).await;
+    allow_test_origin(&pool).await;
     set_customer_env();
 
     let mut refused = Vec::new();
@@ -494,6 +504,7 @@ async fn test_app_url_must_be_on_an_allowed_origin() {
 async fn test_other_tenants_have_no_email_link_sign_in() {
     let pool = common::setup_test_db().await;
     let router = test_router(pool.clone()).await;
+    allow_test_origin(&pool).await;
     set_customer_env();
 
     let email = unique_email();
@@ -501,24 +512,43 @@ async fn test_other_tenants_have_no_email_link_sign_in() {
     clear_customer_env();
 
     // With nothing configured, not even the customer hostname has it
-    std::env::set_var("ALLOWED_ORIGINS", "https://orders.example.com");
     let (unconfigured, _) = post_magic_link(&router, CUSTOMER_HOST, &email, APP_URL).await;
-    clear_customer_env();
 
     assert_eq!(on_owner_host, StatusCode::NOT_FOUND);
     assert_eq!(unconfigured, StatusCode::NOT_FOUND);
     assert_eq!(row_count(&pool, &email).await, 0);
 }
 
-#[test]
-#[serial]
-fn test_parse_app_url_keeps_the_page() {
-    std::env::set_var("ALLOWED_ORIGINS", "https://orders.example.com");
-    let url = parse_app_url("https://orders.example.com/signin?next=cart");
-    std::env::remove_var("ALLOWED_ORIGINS");
+#[tokio::test]
+async fn test_allowed_app_url_keeps_the_page_and_finds_the_merchant() {
+    let pool = common::setup_test_db().await;
+    let tenant_id = 1_000_000 + rand::random::<u16>() as i64;
+    CustomerAppOriginRepository::new(pool.clone())
+        .add(tenant_id, "https://orders.example.com", "Example Shop")
+        .await
+        .unwrap();
 
-    assert_eq!(
-        url.map(|url| url.to_string()),
-        Some("https://orders.example.com/signin?next=cart".to_string())
+    let (url, merchant_name) = allowed_app_url(
+        &pool,
+        tenant_id,
+        "https://orders.example.com/signin?next=cart",
+    )
+    .await
+    .unwrap()
+    .expect("A page on an allowed origin is allowed");
+
+    assert_eq!(url.as_str(), "https://orders.example.com/signin?next=cart");
+    assert_eq!(merchant_name, "Example Shop");
+    assert!(
+        allowed_app_url(&pool, tenant_id + 1, "https://orders.example.com/signin")
+            .await
+            .unwrap()
+            .is_none(),
+        "Another tenant's origin is not allowed"
     );
+
+    let _ = sqlx::query("DELETE FROM customer_app_origins WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .execute(&pool)
+        .await;
 }

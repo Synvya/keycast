@@ -79,7 +79,6 @@ async fn setup() -> TestApp {
     let server_keys = Keys::parse(&std::env::var("SERVER_NSEC").unwrap()).unwrap();
     std::env::set_var("BUNKER_RELAYS", "wss://relay.example.com");
     std::env::set_var("CUSTOMER_TENANT_DOMAIN", CUSTOMER_HOST);
-    std::env::set_var("ALLOWED_ORIGINS", "https://orders.example.com");
 
     let bcrypt_queue = BcryptQueue::new();
     let secret_pool = SecretPool::new(4);

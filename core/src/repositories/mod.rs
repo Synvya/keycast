@@ -4,6 +4,7 @@
 mod atproto_oauth_session;
 mod authorization;
 mod claim_token;
+mod customer_app_origin;
 mod deletion_notice;
 mod error;
 mod magic_link_token;
@@ -24,6 +25,7 @@ pub use atproto_oauth_session::{
 };
 pub use authorization::AuthorizationRepository;
 pub use claim_token::ClaimTokenRepository;
+pub use customer_app_origin::{CustomerAppOrigin, CustomerAppOriginRepository};
 pub use deletion_notice::{DeletionNotice, DeletionNoticeRepository};
 pub use error::RepositoryError;
 pub use magic_link_token::{

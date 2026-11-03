@@ -21,7 +21,7 @@ use keycast_api::handlers::http_rpc_handler::new_http_handler_cache;
 use keycast_api::state::{get_tenant_cache, KeycastState, KEYCAST_STATE};
 use keycast_core::encryption::{KeyManager, KeyManagerError};
 use keycast_core::repositories::{
-    MagicLinkTokenRepository, PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
+    CustomerAppOriginRepository, MagicLinkTokenRepository, PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
 };
 use keycast_core::secret_pool::SecretPool;
 use moka::future::Cache;
@@ -87,7 +87,6 @@ async fn setup() -> TestApp {
     let server_keys = Keys::parse(&std::env::var("SERVER_NSEC").unwrap()).unwrap();
     std::env::set_var("BUNKER_RELAYS", "wss://relay.example.com");
     std::env::set_var("CUSTOMER_TENANT_DOMAIN", CUSTOMER_HOST);
-    std::env::set_var("ALLOWED_ORIGINS", "https://orders.example.com");
 
     let bcrypt_queue = BcryptQueue::new();
     let secret_pool = SecretPool::new(1);
@@ -108,6 +107,14 @@ async fn setup() -> TestApp {
     let customer = upsert_tenant(&pool, CUSTOMER_HOST).await;
     let owner = upsert_tenant(&pool, OWNER_HOST).await;
     let (customer_tenant, owner_tenant) = (customer.id, owner.id);
+    CustomerAppOriginRepository::new(pool.clone())
+        .add(
+            customer_tenant,
+            "https://orders.example.com",
+            "Example Shop",
+        )
+        .await
+        .unwrap();
     let tenant_cache = get_tenant_cache().unwrap();
     tenant_cache
         .insert(CUSTOMER_HOST.to_string(), Arc::new(customer))

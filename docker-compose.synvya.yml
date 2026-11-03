@@ -59,6 +59,8 @@ services:
       SERVER_NSEC: ${SERVER_NSEC:?error}
       BUNKER_RELAYS: ${BUNKER_RELAYS:?error}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?error}
+      # Development only: trust http://localhost origins for CORS
+      ALLOW_LOCALHOST_ORIGINS: ${ALLOW_LOCALHOST_ORIGINS:-false}
       ALLOWED_PUBKEYS: ${ALLOWED_PUBKEYS:-}
       PORT: 3000
       NODE_ENV: production

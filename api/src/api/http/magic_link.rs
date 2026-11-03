@@ -2,7 +2,7 @@
 // ABOUTME: Requesting a link never creates an account and answers the same for any email
 
 use super::auth::{
-    app_url_is_allowed, delete_account, generate_secure_token, generate_server_signed_ucan,
+    delete_account, generate_secure_token, generate_server_signed_ucan,
     generate_server_signed_ucan_with_lifetime, token_expiry_seconds, AuthError,
     DeleteAccountResponse,
 };
@@ -10,6 +10,7 @@ use super::oauth::{create_oauth_authorization, CreateAuthorizationParams};
 use super::routes::AuthState;
 use crate::api::tenant::TenantExtractor;
 use crate::email_service::{EmailSender, EmailService};
+use crate::handlers::http_rpc_handler::invalidate_handlers_for_bunker;
 use crate::rate_limit;
 use crate::redis::PrefixedRedis;
 use axum::extract::State;
@@ -17,8 +18,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{Duration, Utc};
+use keycast_core::authorization_channel::AuthorizationCommand;
 use keycast_core::repositories::{
-    MagicLinkTokenRepository, PolicyRepository, RepositoryError, UserRepository,
+    CustomerAppOriginRepository, MagicLinkTokenRepository, OAuthAuthorizationRepository,
+    PolicyRepository, RefreshTokenRepository, RepositoryError, UserRepository,
     PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
 };
 use nostr_sdk::{Keys, PublicKey, SecretKey, Url};
@@ -74,22 +77,28 @@ pub fn normalize_email(email: &str) -> Option<String> {
     well_formed.then_some(email)
 }
 
-/// Parse the page a link should land on, if its origin is allowed.
-pub fn parse_app_url(app_url: &str) -> Option<Url> {
-    let url = Url::parse(app_url.trim()).ok()?;
-    let is_web = matches!(url.scheme(), "http" | "https");
-    let has_no_credentials = url.username().is_empty() && url.password().is_none();
+/// Parse the page a link should land on, if it is on a merchant's allowed origin. Returns the
+/// page and the merchant's name, which comes from our table rather than the request, so a
+/// caller cannot put arbitrary text in the email.
+pub async fn allowed_app_url(
+    pool: &PgPool,
+    tenant_id: i64,
+    app_url: &str,
+) -> Result<Option<(Url, String)>, RepositoryError> {
+    let Ok(url) = Url::parse(app_url.trim()) else {
+        return Ok(None);
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Ok(None);
+    }
 
-    (is_web && has_no_credentials && app_url_is_allowed(&url.origin().ascii_serialization()))
-        .then_some(url)
-}
-
-/// The name a customer knows the merchant by, from the hostname of its orders app.
-/// It comes from the allowed origin, never from the request, so a caller cannot put
-/// arbitrary text in the email.
-pub fn merchant_name(app_url: &Url) -> String {
-    let host = app_url.host_str().unwrap_or_default();
-    host.strip_prefix("orders.").unwrap_or(host).to_string()
+    let merchant_name = CustomerAppOriginRepository::new(pool.clone())
+        .find_merchant_name(tenant_id, &url.origin().ascii_serialization())
+        .await?;
+    Ok(merchant_name.map(|merchant_name| (url, merchant_name)))
 }
 
 /// The link to send: the app's page with the token added to its query string.
@@ -105,6 +114,7 @@ pub struct LinkRequest<'a> {
     pub tenant_id: i64,
     pub email: &'a str,
     pub app_url: &'a Url,
+    pub merchant_name: &'a str,
     pub purpose: &'a str,
     pub request_ip: Option<IpAddr>,
 }
@@ -122,6 +132,7 @@ pub async fn send_link(
         tenant_id,
         email,
         app_url,
+        merchant_name,
         purpose,
         request_ip,
     } = request;
@@ -176,14 +187,13 @@ pub async fn send_link(
     }
 
     let link = magic_link(app_url, &token);
-    let merchant = merchant_name(app_url);
     let sent = if purpose == PURPOSE_DELETE_ACCOUNT {
         email_sender
-            .send_delete_account_email(email, &link, &merchant)
+            .send_delete_account_email(email, &link, merchant_name)
             .await
     } else {
         email_sender
-            .send_magic_link_email(email, &link, &merchant)
+            .send_magic_link_email(email, &link, merchant_name)
             .await
     };
     if let Err(e) = sent {
@@ -194,12 +204,8 @@ pub async fn send_link(
     true
 }
 
-/// The email of the customer signed in with this request's Bearer session.
-async fn signed_in_customer_email(
-    pool: &PgPool,
-    headers: &HeaderMap,
-    tenant_id: i64,
-) -> Result<String, AuthError> {
+/// The pubkey of the customer signed in with this request's Bearer session.
+async fn signed_in_customer(headers: &HeaderMap, tenant_id: i64) -> Result<String, AuthError> {
     let auth_header = headers
         .get("Authorization")
         .and_then(|value| value.to_str().ok())
@@ -207,7 +213,16 @@ async fn signed_in_customer_email(
     let (pubkey, _, _, _) = crate::ucan_auth::validate_ucan_token(auth_header, tenant_id)
         .await
         .map_err(|_| AuthError::InvalidToken)?;
+    Ok(pubkey)
+}
 
+/// The email of the customer signed in with this request's Bearer session.
+async fn signed_in_customer_email(
+    pool: &PgPool,
+    headers: &HeaderMap,
+    tenant_id: i64,
+) -> Result<String, AuthError> {
+    let pubkey = signed_in_customer(headers, tenant_id).await?;
     UserRepository::new(pool.clone())
         .get_email(&pubkey, tenant_id)
         .await
@@ -241,7 +256,8 @@ pub async fn request_magic_link(
     }
     .ok_or_else(|| AuthError::BadRequest("Invalid email address".to_string()))?;
     let purpose = purpose.to_string();
-    let app_url = parse_app_url(&req.app_url)
+    let (app_url, merchant_name) = allowed_app_url(&auth_state.state.db, tenant_id, &req.app_url)
+        .await?
         .ok_or_else(|| AuthError::BadRequest("app_url is not allowed".to_string()))?;
 
     let request_ip = rate_limit::client_ip(&headers);
@@ -263,6 +279,7 @@ pub async fn request_magic_link(
                 tenant_id,
                 email: &email,
                 app_url: &app_url,
+                merchant_name: &merchant_name,
                 purpose: &purpose,
                 request_ip,
             },
@@ -547,6 +564,92 @@ pub async fn verify_magic_link(
     .into_response())
 }
 
+#[derive(Debug, Serialize)]
+pub struct CustomerApp {
+    pub app_origin: String,
+    pub merchant_name: Option<String>,
+    pub granted_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CustomerAppsResponse {
+    pub authorizations: Vec<CustomerApp>,
+}
+
+/// GET /api/customer/authorizations - the apps that can act for the signed-in customer.
+pub async fn list_customer_apps(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+) -> Result<Response, AuthError> {
+    if !tenant.0.is_customer_tenant() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let tenant_id = tenant.0.id;
+    let pubkey = signed_in_customer(&headers, tenant_id).await?;
+
+    let authorizations = OAuthAuthorizationRepository::new(auth_state.state.db.clone())
+        .list_customer_apps(&pubkey, tenant_id)
+        .await?
+        .into_iter()
+        .map(|(app_origin, merchant_name, granted_at)| CustomerApp {
+            app_origin,
+            merchant_name,
+            granted_at,
+        })
+        .collect();
+
+    Ok(Json(CustomerAppsResponse { authorizations }).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeCustomerAppRequest {
+    pub app_origin: String,
+}
+
+/// POST /api/customer/authorizations/revoke - stop an app acting for the signed-in customer.
+/// Takes effect on the app's next call. Other apps keep working.
+pub async fn revoke_customer_app(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+    Json(req): Json<RevokeCustomerAppRequest>,
+) -> Result<Response, AuthError> {
+    if !tenant.0.is_customer_tenant() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let tenant_id = tenant.0.id;
+    let pubkey = signed_in_customer(&headers, tenant_id).await?;
+
+    let revoked = OAuthAuthorizationRepository::new(auth_state.state.db.clone())
+        .revoke_by_origin(&pubkey, &req.app_origin, tenant_id)
+        .await?;
+    if revoked.is_empty() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+
+    let refresh_tokens = RefreshTokenRepository::new(auth_state.state.db.clone());
+    for (authorization_id, bunker_pubkey) in &revoked {
+        refresh_tokens
+            .revoke_for_authorization(*authorization_id)
+            .await?;
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
+
+        if let Some(tx) = &auth_state.auth_tx {
+            if let Err(e) = tx
+                .send(AuthorizationCommand::Remove {
+                    bunker_pubkey: bunker_pubkey.clone(),
+                })
+                .await
+            {
+                tracing::warn!("Failed to notify signer of revocation: {}", e);
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })).into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,14 +678,6 @@ mod tests {
             normalize_email(&format!("{}@example.com", "a".repeat(256))),
             None
         );
-    }
-
-    #[test]
-    fn test_merchant_name_comes_from_the_hostname() {
-        let url = Url::parse("https://orders.example.com/signin").unwrap();
-        assert_eq!(merchant_name(&url), "example.com");
-        let url = Url::parse("https://shop.example.com/signin").unwrap();
-        assert_eq!(merchant_name(&url), "shop.example.com");
     }
 
     #[test]

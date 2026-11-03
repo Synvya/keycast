@@ -1910,7 +1910,7 @@ pub async fn forgot_password(
 /// exactly (case-insensitive, ignoring trailing slashes). Used to gate
 /// the `app_url` override on `forgot_password` — only the same origins
 /// CORS already trusts may steer the reset email link.
-pub(crate) fn app_url_is_allowed(candidate: &str) -> bool {
+fn app_url_is_allowed(candidate: &str) -> bool {
     let allowed = match std::env::var("ALLOWED_ORIGINS") {
         Ok(v) => v,
         Err(_) => return false,
