@@ -304,6 +304,7 @@ impl OAuthAuthorizationRepository {
              WHERE user_pubkey = $1
              AND redirect_origin = $2
              AND tenant_id = $3
+             AND revoked_at IS NULL
              AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(user_pubkey)
@@ -337,7 +338,7 @@ impl OAuthAuthorizationRepository {
         Ok(exists.is_some())
     }
 
-    /// Find the most recent bunker pubkey for a user.
+    /// Find the most recent bunker pubkey among a user's non-revoked authorizations.
     pub async fn find_latest_bunker_pubkey(
         &self,
         user_pubkey: &str,
@@ -348,6 +349,7 @@ impl OAuthAuthorizationRepository {
              FROM oauth_authorizations oa
              JOIN users u ON oa.user_pubkey = u.pubkey
              WHERE oa.user_pubkey = $1 AND u.tenant_id = $2
+             AND oa.revoked_at IS NULL
              ORDER BY oa.created_at DESC
              LIMIT 1",
         )

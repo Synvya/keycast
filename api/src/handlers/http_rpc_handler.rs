@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use keycast_core::secret_types::DecryptedPlaintext;
-use keycast_core::signing_session::{CacheKey, SigningSession};
+use keycast_core::signing_session::{parse_cache_key, CacheKey, SigningSession};
 use keycast_core::traits::CustomPermission;
 use moka::future::Cache;
 use nostr_sdk::nips::nip04;
@@ -337,7 +337,49 @@ pub fn new_http_handler_cache() -> HttpHandlerCache {
     Cache::builder()
         .max_capacity(cache_size)
         .time_to_idle(std::time::Duration::from_secs(3600)) // 1 hour idle timeout
+        .support_invalidation_closures()
         .build()
+}
+
+/// Remove every cached handler that matches, effective for the next lookup.
+/// Entries are keyed by token, so the ones to remove can only be found by looking at them.
+fn invalidate_handlers(
+    cache: &HttpHandlerCache,
+    matches: impl Fn(&HttpRpcHandler) -> bool + Send + Sync + 'static,
+) {
+    if let Err(e) = cache.invalidate_entries_if(move |_, handler| matches(handler)) {
+        // Revocation must still take effect, so give up the whole cache instead
+        tracing::error!("Failed to invalidate cached handlers: {}", e);
+        cache.invalidate_all();
+    }
+}
+
+/// Remove the cached handlers of a revoked authorization.
+pub fn invalidate_handlers_for_bunker(cache: &HttpHandlerCache, bunker_pubkey_hex: &str) {
+    match parse_cache_key(bunker_pubkey_hex) {
+        Ok(bunker_key) => {
+            invalidate_handlers(cache, move |handler| *handler.bunker_pubkey() == bunker_key)
+        }
+        Err(e) => {
+            tracing::error!("Invalid bunker pubkey when invalidating handlers: {}", e);
+            cache.invalidate_all();
+        }
+    }
+}
+
+/// Remove the cached handlers of a revoked authorization, by its id.
+pub fn invalidate_handlers_for_authorization(cache: &HttpHandlerCache, authorization_id: i64) {
+    invalidate_handlers(cache, move |handler| {
+        handler.is_oauth() && handler.authorization_id() == authorization_id
+    });
+}
+
+/// Remove the cached handlers of every authorization on a user's key.
+pub fn invalidate_handlers_for_user(cache: &HttpHandlerCache, user_pubkey_hex: &str) {
+    let user_pubkey_hex = user_pubkey_hex.to_string();
+    invalidate_handlers(cache, move |handler| {
+        handler.user_pubkey_hex() == user_pubkey_hex
+    });
 }
 
 /// Insert handler into cache under both keys for dual-path lookups

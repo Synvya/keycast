@@ -2862,6 +2862,10 @@ pub(crate) async fn create_oauth_authorization(
 
         oauth_auth_repo.revoke(old_auth_id).await?;
         METRICS.inc_oauth_revoked();
+        crate::handlers::http_rpc_handler::invalidate_handlers_for_authorization(
+            &auth_state.state.http_handler_cache,
+            i64::from(old_auth_id),
+        );
         tracing::info!(
             "Revoked old authorization {} after re-auth (signer will detect on next poll)",
             old_auth_id

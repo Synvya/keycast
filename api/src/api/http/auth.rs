@@ -14,6 +14,9 @@ use secrecy::{ExposeSecret, SecretString};
 use super::admin::{is_full_admin, is_support_admin};
 use crate::api::extractors::UcanAuth;
 use crate::bcrypt_queue::{BcryptJob, BcryptQueueError};
+use crate::handlers::http_rpc_handler::{
+    invalidate_handlers_for_bunker, invalidate_handlers_for_user,
+};
 use crate::nip98;
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
@@ -2235,6 +2238,9 @@ pub async fn revoke_session(
         .revoke_by_bunker_pubkey(&req.bunker_pubkey, &user_pubkey, tenant_id)
         .await?;
 
+    // Stop serving it from the HTTP RPC cache
+    invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, &req.bunker_pubkey);
+
     // Track OAuth authorization revoked
     METRICS.inc_oauth_revoked();
 
@@ -3145,6 +3151,9 @@ pub async fn change_key(
         )
         .await?;
 
+    // Stop serving the old key from the HTTP RPC cache
+    invalidate_handlers_for_user(&auth_state.state.http_handler_cache, &old_pubkey);
+
     // Signal signer daemon to remove old authorizations
     if let Some(tx) = &auth_state.auth_tx {
         use keycast_core::authorization_channel::AuthorizationCommand;
@@ -3300,6 +3309,11 @@ pub async fn delete_account(
             );
             AuthError::Database(sqlx::Error::Protocol(e.to_string()))
         })?;
+
+    // Stop serving them from the HTTP RPC cache
+    for bunker_pubkey in &result.bunker_pubkeys {
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
+    }
 
     // Signal signer daemon to remove bunker connections
     if let Some(tx) = &auth_state.auth_tx {

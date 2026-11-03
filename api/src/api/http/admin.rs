@@ -12,6 +12,7 @@ use secrecy::ExposeSecret;
 use super::routes::AuthState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extractors::UcanAuth;
+use crate::handlers::http_rpc_handler::invalidate_handlers_for_bunker;
 use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::metrics::METRICS;
@@ -1416,6 +1417,9 @@ pub async fn revoke_authorization(
         ));
     };
 
+    // Stop serving it from the HTTP RPC cache
+    invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, &bunker_pubkey);
+
     // Notify the signer daemon to drop the in-memory handler. If the channel
     // send fails, the DB write still stands; a daemon restart will pick up the
     // revoked state on next lazy load.
@@ -1688,6 +1692,8 @@ pub async fn release_team_support_access(
             continue;
         }
         revoked_count += 1;
+
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
 
         if let Some(tx) = &auth_state.auth_tx {
             use keycast_core::authorization_channel::AuthorizationCommand;
@@ -1983,6 +1989,10 @@ pub async fn delete_user(
             }
             other => ApiError::Internal(format!("Failed to delete user: {}", other)),
         })?;
+
+    for bunker_pubkey in &result.bunker_pubkeys {
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
+    }
 
     if let Some(tx) = &auth_state.auth_tx {
         use keycast_core::authorization_channel::AuthorizationCommand;
