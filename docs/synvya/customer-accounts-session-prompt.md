@@ -6,7 +6,7 @@ Copy everything below the line and paste it as the opening message of a new codi
 
 ## Project context
 
-Keycast is Synvya's Nostr key custody and signing service, a fork of `divinevideo/keycast`. Today it holds keys for restaurant owners, who sign in with a password. We are adding accounts for the **customers** of those restaurants: people who order through Synvya's orders app at `orders.<merchant-domain>`, sign in with an email link instead of a password, and never see a key or the word Nostr.
+Keycast is Synvya's Nostr key custody and signing service, a fork of `divinevideo/keycast`. Today it holds keys for restaurant owners, who sign in with a password. We are adding accounts for the **customers** of those restaurants: people who order through Synvya's orders app, served for each merchant at `orders.<merchant-domain>`, sign in with an email link instead of a password, and never see a key or the word Nostr.
 
 The design is written. Your job is to implement one issue from it, test it, and open a pull request.
 
@@ -22,8 +22,9 @@ Then read the code the spec section names before changing it. Line numbers in th
 
 ## Rules
 
-- Branch from `synvya-staging` as `orders/<short-name>` (not `synvya/*`: a branch named `synvya` exists, so Git refuses that prefix). Open the PR against `synvya-staging` on `Synvya/keycast`. Never branch from or target `main`.
-- One issue per branch and per PR. If the issue depends on another that is not merged, stop and say so.
+- All work is on the `alejandro-dev` branch. Bring it up to date with `synvya-staging` before you start. When the issue is done, open a PR from `alejandro-dev` to `synvya-staging`. Never use `main`, and never create another branch.
+- One issue per PR. If the issue depends on another that is not merged, stop and say so.
+- Keep it generic: this serves any merchant on Synvya's orders app. No merchant's name, domain or prices in code, config or tests; use `orders.example.com` in examples.
 - Write the tests the issue's "Done when" lists, and run them (`cd api && cargo test`). Run `cargo fmt` and `cargo clippy` before committing.
 - Do not change behaviour for restaurant owners unless the issue says to. Their tenant, password login and team flows must keep working.
 - Never log or return a customer's pubkey, npub, secret key or a plain sign-in token.

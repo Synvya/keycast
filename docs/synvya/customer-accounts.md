@@ -14,13 +14,16 @@ Spec for passwordless customer accounts in Keycast: sign-in by email link, a com
 
 ---
 
-## 0. Branches: this is Synvya-only work
+## 0. Branch: all work on `alejandro-dev`
 
-[SYNVYA.md](../../SYNVYA.md) rule 2 says work that could go upstream branches off `main` and goes to `divinevideo/keycast`. **Not this work.** Synvya decided not to contribute customer accounts upstream, even the parts that look generic (the email-link login).
+Every issue in this spec is done on the `alejandro-dev` branch of `Synvya/keycast`, one issue at a time.
 
-- Branch from `synvya-staging` as `orders/<short-name>`, one branch per issue. (`SYNVYA.md` suggests `synvya/*`, but a branch named `synvya` already exists, and Git cannot hold `synvya` and `synvya/<name>` at once.)
-- Open the PR against `synvya-staging` on `Synvya/keycast`.
+- Start from an `alejandro-dev` that is up to date with `synvya-staging`.
+- When an issue is done and tested, open a PR from `alejandro-dev` to `synvya-staging`. Start the next issue after it merges.
 - Production follows by merging `synvya-staging` into `synvya`, as usual.
+- Nothing goes upstream. [SYNVYA.md](../../SYNVYA.md) rule 2 sends work that could be contributed (the email-link login looks like it) to `main` and `divinevideo/keycast`; Synvya decided not to contribute this work.
+
+**Generic by design.** This is for any merchant that sells through Synvya's orders app, not one customer. No merchant's name, domain or prices belong in code, config defaults or tests; examples use `orders.example.com`.
 
 ---
 
@@ -101,7 +104,7 @@ Repository: `core/src/repositories/magic_link_token.rs` with `create`, `consume`
 
 **Request**
 ```json
-{ "email": "dana@example.com", "app_url": "https://orders.trailyouth.org/signin" }
+{ "email": "dana@example.com", "app_url": "https://orders.example.com/signin" }
 ```
 
 **Behaviour**
@@ -128,8 +131,8 @@ The orders app's landing page reads `token` from its URL and posts it. **POST on
 ```json
 {
   "token": "…",
-  "client_id": "orders.trailyouth.org",
-  "redirect_uri": "https://orders.trailyouth.org/signin",
+  "client_id": "orders.example.com",
+  "redirect_uri": "https://orders.example.com/signin",
   "scope": "policy:commerce_envelope",
   "merchant_pubkey": "<hex>",
   "local_key": "<hex secret key, optional>"
