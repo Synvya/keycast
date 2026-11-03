@@ -123,6 +123,33 @@ pub async fn generate_server_signed_ucan(
     is_first_party: bool,
     admin_role: Option<&str>,
 ) -> Result<String, AuthError> {
+    generate_server_signed_ucan_with_lifetime(
+        user_pubkey,
+        tenant_id,
+        email,
+        redirect_origin,
+        bunker_pubkey,
+        server_keys,
+        is_first_party,
+        admin_role,
+        token_expiry_seconds() as u64,
+    )
+    .await
+}
+
+/// Same as [`generate_server_signed_ucan`], for a session shorter than the usual one.
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_server_signed_ucan_with_lifetime(
+    user_pubkey: &nostr_sdk::PublicKey,
+    tenant_id: i64,
+    email: &str,
+    redirect_origin: &str,
+    bunker_pubkey: Option<&str>,
+    server_keys: &Keys,
+    is_first_party: bool,
+    admin_role: Option<&str>,
+    lifetime_seconds: u64,
+) -> Result<String, AuthError> {
     use crate::ucan_auth::{nostr_pubkey_to_did, NostrKeyMaterial};
     use serde_json::json;
     use ucan::builder::UcanBuilder;
@@ -148,7 +175,7 @@ pub async fn generate_server_signed_ucan(
     let ucan = UcanBuilder::default()
         .issued_by(&server_key_material) // Server issues
         .for_audience(&user_did) // For this user
-        .with_lifetime(token_expiry_seconds() as u64)
+        .with_lifetime(lifetime_seconds)
         .with_fact(facts)
         .build()
         .map_err(|e| AuthError::Internal(format!("Failed to build UCAN: {}", e)))?
@@ -3316,7 +3343,6 @@ pub async fn delete_account(
         tracing::warn!(
             event = "account_deletion_denied",
             tenant_id = tenant_id,
-            user = &user_pubkey[..8],
             redirect_origin = %redirect_origin,
             "Denied: not user-signed and not first-party"
         );
@@ -3329,7 +3355,6 @@ pub async fn delete_account(
     tracing::info!(
         event = "account_deletion_started",
         tenant_id = tenant_id,
-        user = &user_pubkey[..8],
         is_user_signed = is_user_signed,
         is_first_party = is_first_party,
         redirect_origin = %redirect_origin,
@@ -3338,19 +3363,22 @@ pub async fn delete_account(
 
     // Execute account deletion
     let user_repo = UserRepository::new(pool.clone());
-    let result = user_repo
-        .delete_account(&user_pubkey, tenant_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                event = "account_deletion_failed",
-                tenant_id = tenant_id,
-                user = &user_pubkey[..8],
-                error = %e,
-                "Database error during deletion"
-            );
-            AuthError::Database(sqlx::Error::Protocol(e.to_string()))
-        })?;
+    let deletion = if tenant.0.is_customer_tenant() {
+        user_repo
+            .delete_customer_account(&user_pubkey, tenant_id)
+            .await
+    } else {
+        user_repo.delete_account(&user_pubkey, tenant_id).await
+    };
+    let result = deletion.map_err(|e| {
+        tracing::error!(
+            event = "account_deletion_failed",
+            tenant_id = tenant_id,
+            error = %e,
+            "Database error during deletion"
+        );
+        AuthError::Database(sqlx::Error::Protocol(e.to_string()))
+    })?;
 
     // Stop serving them from the HTTP RPC cache
     for bunker_pubkey in &result.bunker_pubkeys {
@@ -3378,7 +3406,6 @@ pub async fn delete_account(
     tracing::info!(
         event = "account_deletion_completed",
         tenant_id = tenant_id,
-        user = &user_pubkey[..8],
         teams_removed = result.teams_removed,
         oauth_auths_deleted = result.oauth_authorizations_deleted,
         bunkers_notified = result.bunker_pubkeys.len(),

@@ -335,6 +335,7 @@ async fn test_bad_links_all_fail_the_same_way() {
     let app = setup().await;
 
     let expired = new_link_for(&app, &unique_email(), PURPOSE_SIGN_IN, -1).await;
+    // For an email with no account, a deletion link is as good as unknown
     let wrong_purpose = new_link_for(&app, &unique_email(), PURPOSE_DELETE_ACCOUNT, 15).await;
     let other_tenant = Uuid::new_v4().to_string();
     MagicLinkTokenRepository::new(app.pool.clone())

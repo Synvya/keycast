@@ -10,7 +10,7 @@ use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
-use keycast_api::api::http::magic_link::{parse_app_url, send_sign_in_link};
+use keycast_api::api::http::magic_link::{parse_app_url, send_link, LinkRequest};
 use keycast_api::api::http::routes::api_routes;
 use keycast_api::api::tenant::Tenant;
 use keycast_api::bcrypt_queue::BcryptQueue;
@@ -27,6 +27,7 @@ use moka::future::Cache;
 use nostr_sdk::{Keys, Url};
 use serial_test::serial;
 use sqlx::PgPool;
+use std::net::IpAddr;
 use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
@@ -57,6 +58,28 @@ async fn test_redis() -> PrefixedRedis {
     PrefixedRedis::new(conn, Some(format!("test-{}", Uuid::new_v4())))
 }
 
+async fn send_test_link(
+    pool: &PgPool,
+    redis: Option<&PrefixedRedis>,
+    sender: &DevEmailSender,
+    email: &str,
+    request_ip: Option<IpAddr>,
+) -> bool {
+    send_link(
+        pool,
+        redis,
+        sender,
+        LinkRequest {
+            tenant_id: TENANT_ID,
+            email,
+            app_url: &app_url(),
+            purpose: PURPOSE_SIGN_IN,
+            request_ip,
+        },
+    )
+    .await
+}
+
 fn token_from_link(link: &str) -> String {
     Url::parse(link)
         .unwrap()
@@ -80,13 +103,11 @@ async fn test_stores_only_the_hash_and_creates_no_account() {
     let sender = DevEmailSender::new();
     let email = unique_email();
 
-    let sent = send_sign_in_link(
+    let sent = send_test_link(
         &pool,
         None,
         &sender,
-        TENANT_ID,
         &email,
-        &app_url(),
         Some("203.0.113.7".parse().unwrap()),
     )
     .await;
@@ -135,16 +156,7 @@ async fn test_one_link_per_email_per_minute() {
 
     for expected in [true, false] {
         assert_eq!(
-            send_sign_in_link(
-                &pool,
-                Some(&redis),
-                &sender,
-                TENANT_ID,
-                &email,
-                &app_url(),
-                None
-            )
-            .await,
+            send_test_link(&pool, Some(&redis), &sender, &email, None).await,
             expected
         );
     }
@@ -161,9 +173,9 @@ async fn test_five_links_per_email_per_hour() {
 
     // No Redis here, so only the hourly count can stop it
     for _ in 0..5 {
-        assert!(send_sign_in_link(&pool, None, &sender, TENANT_ID, &email, &app_url(), None).await);
+        assert!(send_test_link(&pool, None, &sender, &email, None).await);
     }
-    assert!(!send_sign_in_link(&pool, None, &sender, TENANT_ID, &email, &app_url(), None).await);
+    assert!(!send_test_link(&pool, None, &sender, &email, None).await);
 
     assert_eq!(sender.get_captured_emails().len(), 5);
     assert_eq!(row_count(&pool, &email).await, 5);
@@ -177,31 +189,9 @@ async fn test_twenty_requests_per_ip_per_hour() {
     let ip = Some("203.0.113.8".parse().unwrap());
 
     for _ in 0..20 {
-        assert!(
-            send_sign_in_link(
-                &pool,
-                Some(&redis),
-                &sender,
-                TENANT_ID,
-                &unique_email(),
-                &app_url(),
-                ip
-            )
-            .await
-        );
+        assert!(send_test_link(&pool, Some(&redis), &sender, &unique_email(), ip).await);
     }
-    assert!(
-        !send_sign_in_link(
-            &pool,
-            Some(&redis),
-            &sender,
-            TENANT_ID,
-            &unique_email(),
-            &app_url(),
-            ip
-        )
-        .await
-    );
+    assert!(!send_test_link(&pool, Some(&redis), &sender, &unique_email(), ip).await);
     assert_eq!(sender.get_captured_emails().len(), 20);
 }
 

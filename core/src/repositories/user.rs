@@ -1372,8 +1372,44 @@ impl UserRepository {
         pubkey: &str,
         tenant_id: i64,
     ) -> Result<DeleteAccountResult, RepositoryError> {
+        let tx = self.pool.begin().await?;
+        Self::delete_account_in(tx, pubkey, tenant_id).await
+    }
+
+    /// Delete a customer account, and in the same transaction record the notice that tells
+    /// Synvya Server, so a notice exists if and only if the account is gone.
+    pub async fn delete_customer_account(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<DeleteAccountResult, RepositoryError> {
         let mut tx = self.pool.begin().await?;
 
+        sqlx::query("INSERT INTO customer_deletion_notices (tenant_id, pubkey) VALUES ($1, $2)")
+            .bind(tenant_id)
+            .bind(pubkey)
+            .execute(&mut *tx)
+            .await?;
+
+        // A sign-in link still in the customer's inbox must not bring the account back
+        sqlx::query(
+            "DELETE FROM magic_link_tokens
+             WHERE tenant_id = $1
+               AND email = (SELECT email FROM users WHERE pubkey = $2 AND tenant_id = $1)",
+        )
+        .bind(tenant_id)
+        .bind(pubkey)
+        .execute(&mut *tx)
+        .await?;
+
+        Self::delete_account_in(tx, pubkey, tenant_id).await
+    }
+
+    async fn delete_account_in(
+        mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+        pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<DeleteAccountResult, RepositoryError> {
         // Count teams for logging
         let teams_removed: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM team_users WHERE user_pubkey = $1")

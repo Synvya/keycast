@@ -573,6 +573,10 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
     let bcrypt_queue = keycast_api::bcrypt_queue::BcryptQueue::new();
     let bcrypt_sender = bcrypt_queue.sender();
     let _bcrypt_worker_handles = bcrypt_queue.spawn_workers(database.pool.clone());
+    let _deletion_notice_handle = keycast_api::customer_deletion::spawn_delivery_task(
+        database.pool.clone(),
+        server_keys.clone(),
+    );
     let _bcrypt_cleanup_handle =
         keycast_api::bcrypt_queue::spawn_cleanup_task(database.pool.clone());
     tracing::info!(

@@ -4,6 +4,7 @@
 mod atproto_oauth_session;
 mod authorization;
 mod claim_token;
+mod deletion_notice;
 mod error;
 mod magic_link_token;
 mod oauth_authorization;
@@ -23,6 +24,7 @@ pub use atproto_oauth_session::{
 };
 pub use authorization::AuthorizationRepository;
 pub use claim_token::ClaimTokenRepository;
+pub use deletion_notice::{DeletionNotice, DeletionNoticeRepository};
 pub use error::RepositoryError;
 pub use magic_link_token::{
     hash_magic_link_token, ConsumedMagicLink, MagicLinkTokenRepository, PURPOSE_DELETE_ACCOUNT,

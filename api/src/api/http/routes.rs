@@ -72,6 +72,10 @@ pub fn api_routes(
             "/auth/magic-link/verify",
             post(magic_link::verify_magic_link),
         )
+        .route(
+            "/customer/account",
+            delete(magic_link::delete_customer_account),
+        )
         .layer(public_cors.clone())
         .with_state(auth_state.clone());
 

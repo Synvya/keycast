@@ -106,7 +106,7 @@ fn request_domain(parts: &Parts) -> Option<String> {
 fn is_customer_route(path: &str) -> bool {
     matches!(
         path,
-        "/nostr" | "/auth/magic-link" | "/auth/magic-link/verify"
+        "/nostr" | "/auth/magic-link" | "/auth/magic-link/verify" | "/customer/account"
     )
 }
 

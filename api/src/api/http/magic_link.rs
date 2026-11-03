@@ -2,8 +2,9 @@
 // ABOUTME: Requesting a link never creates an account and answers the same for any email
 
 use super::auth::{
-    app_url_is_allowed, generate_secure_token, generate_server_signed_ucan, token_expiry_seconds,
-    AuthError,
+    app_url_is_allowed, delete_account, generate_secure_token, generate_server_signed_ucan,
+    generate_server_signed_ucan_with_lifetime, token_expiry_seconds, AuthError,
+    DeleteAccountResponse,
 };
 use super::oauth::{create_oauth_authorization, CreateAuthorizationParams};
 use super::routes::AuthState;
@@ -17,7 +18,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{Duration, Utc};
 use keycast_core::repositories::{
-    MagicLinkTokenRepository, PolicyRepository, RepositoryError, UserRepository, PURPOSE_SIGN_IN,
+    MagicLinkTokenRepository, PolicyRepository, RepositoryError, UserRepository,
+    PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
 };
 use nostr_sdk::{Keys, PublicKey, SecretKey, Url};
 use serde::{Deserialize, Serialize};
@@ -37,13 +39,18 @@ const HOUR_SECONDS: u64 = 3600;
 const MAX_EMAIL_LENGTH: usize = 255;
 /// The only scope email-link sign-in can grant.
 const COMMERCE_SCOPE: &str = "policy:commerce_envelope";
+/// How long the session from a deletion link lasts.
+const DELETE_SESSION_SECONDS: i64 = 600;
 /// One answer for an unknown, used, expired or other-tenant token.
 const INVALID_LINK: &str = "invalid_or_expired_link";
 
 #[derive(Debug, Deserialize)]
 pub struct MagicLinkRequest {
-    pub email: String,
+    /// Who to send a sign-in link to. A deletion link goes to the signed-in customer instead.
+    pub email: Option<String>,
     pub app_url: String,
+    /// "sign_in" (the default) or "delete_account"
+    pub purpose: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,18 +100,32 @@ pub fn magic_link(app_url: &Url, token: &str) -> String {
     link.to_string()
 }
 
+/// A link to send.
+pub struct LinkRequest<'a> {
+    pub tenant_id: i64,
+    pub email: &'a str,
+    pub app_url: &'a Url,
+    pub purpose: &'a str,
+    pub request_ip: Option<IpAddr>,
+}
+
 /// Apply the limits, store the token and send the email. Returns whether a link was sent.
 ///
 /// Throttled requests send nothing and are only logged: the caller's answer never changes.
-pub async fn send_sign_in_link(
+pub async fn send_link(
     pool: &PgPool,
     redis: Option<&PrefixedRedis>,
     email_sender: &dyn EmailSender,
-    tenant_id: i64,
-    email: &str,
-    app_url: &Url,
-    request_ip: Option<IpAddr>,
+    request: LinkRequest<'_>,
 ) -> bool {
+    let LinkRequest {
+        tenant_id,
+        email,
+        app_url,
+        purpose,
+        request_ip,
+    } = request;
+
     if let Some(ip) = request_ip {
         let key = format!("magic_link:ip:{tenant_id}:{ip}");
         if !rate_limit::under_limit(redis, &key, IP_HOURLY_LIMIT, HOUR_SECONDS).await {
@@ -143,7 +164,7 @@ pub async fn send_sign_in_link(
             tenant_id,
             email,
             &token,
-            PURPOSE_SIGN_IN,
+            purpose,
             app_url.as_str(),
             expires_at,
             request_ip,
@@ -155,15 +176,42 @@ pub async fn send_sign_in_link(
     }
 
     let link = magic_link(app_url, &token);
-    if let Err(e) = email_sender
-        .send_magic_link_email(email, &link, &merchant_name(app_url))
-        .await
-    {
+    let merchant = merchant_name(app_url);
+    let sent = if purpose == PURPOSE_DELETE_ACCOUNT {
+        email_sender
+            .send_delete_account_email(email, &link, &merchant)
+            .await
+    } else {
+        email_sender
+            .send_magic_link_email(email, &link, &merchant)
+            .await
+    };
+    if let Err(e) = sent {
         tracing::error!("Failed to send sign-in link: {}", e);
         return false;
     }
 
     true
+}
+
+/// The email of the customer signed in with this request's Bearer session.
+async fn signed_in_customer_email(
+    pool: &PgPool,
+    headers: &HeaderMap,
+    tenant_id: i64,
+) -> Result<String, AuthError> {
+    let auth_header = headers
+        .get("Authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthError::MissingToken)?;
+    let (pubkey, _, _, _) = crate::ucan_auth::validate_ucan_token(auth_header, tenant_id)
+        .await
+        .map_err(|_| AuthError::InvalidToken)?;
+
+    UserRepository::new(pool.clone())
+        .get_email(&pubkey, tenant_id)
+        .await
+        .map_err(|_| AuthError::InvalidToken)
 }
 
 /// POST /api/auth/magic-link - email a sign-in link.
@@ -181,12 +229,21 @@ pub async fn request_magic_link(
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
 
-    let email = normalize_email(&req.email)
-        .ok_or_else(|| AuthError::BadRequest("Invalid email address".to_string()))?;
+    let tenant_id = tenant.0.id;
+    let purpose = req.purpose.as_deref().unwrap_or(PURPOSE_SIGN_IN);
+    let email = match purpose {
+        PURPOSE_SIGN_IN => req.email.as_deref().and_then(normalize_email),
+        // Only for the signed-in customer, and only ever to their own address
+        PURPOSE_DELETE_ACCOUNT => {
+            Some(signed_in_customer_email(&auth_state.state.db, &headers, tenant_id).await?)
+        }
+        _ => return Err(AuthError::BadRequest("Invalid purpose".to_string())),
+    }
+    .ok_or_else(|| AuthError::BadRequest("Invalid email address".to_string()))?;
+    let purpose = purpose.to_string();
     let app_url = parse_app_url(&req.app_url)
         .ok_or_else(|| AuthError::BadRequest("app_url is not allowed".to_string()))?;
 
-    let tenant_id = tenant.0.id;
     let request_ip = rate_limit::client_ip(&headers);
     let state = auth_state.state.clone();
 
@@ -198,14 +255,17 @@ pub async fn request_magic_link(
                 return;
             }
         };
-        send_sign_in_link(
+        send_link(
             &state.db,
             state.redis.as_ref(),
             email_service.sender(),
-            tenant_id,
-            &email,
-            &app_url,
-            request_ip,
+            LinkRequest {
+                tenant_id,
+                email: &email,
+                app_url: &app_url,
+                purpose: &purpose,
+                request_ip,
+            },
         )
         .await;
     });
@@ -327,6 +387,60 @@ async fn find_or_create_customer(
         })
 }
 
+/// The answer to a deletion link: a short session, and the only kind allowed to delete an
+/// account. An ordinary session, even a stolen one, cannot delete.
+async fn delete_session(
+    auth_state: &AuthState,
+    tenant_id: i64,
+    email: &str,
+    app_url: &str,
+) -> Result<Response, AuthError> {
+    let pubkey_hex = UserRepository::new(auth_state.state.db.clone())
+        .find_pubkey_by_email(email, tenant_id)
+        .await?
+        .ok_or_else(|| AuthError::BadRequest(INVALID_LINK.to_string()))?;
+    let pubkey = PublicKey::from_hex(&pubkey_hex)
+        .map_err(|e| AuthError::Internal(format!("Invalid pubkey: {}", e)))?;
+
+    let session_token = generate_server_signed_ucan_with_lifetime(
+        &pubkey,
+        tenant_id,
+        email,
+        app_url,
+        None,
+        &auth_state.state.server_keys,
+        true,
+        None,
+        DELETE_SESSION_SECONDS as u64,
+    )
+    .await?;
+
+    Ok(Json(VerifyMagicLinkResponse {
+        success: true,
+        session_token,
+        expires_in: DELETE_SESSION_SECONDS,
+        authorization: None,
+    })
+    .into_response())
+}
+
+/// DELETE /api/customer/account - delete the signed-in customer's account.
+///
+/// Public CORS, unlike /user/account, because each merchant's orders app is its own origin and
+/// sends a Bearer token. Only the session from a deletion link passes the check inside.
+pub async fn delete_customer_account(
+    tenant: TenantExtractor,
+    state: State<AuthState>,
+    headers: HeaderMap,
+) -> Result<Json<DeleteAccountResponse>, Response> {
+    if !tenant.0.is_customer_tenant() {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    delete_account(tenant, state, headers)
+        .await
+        .map_err(IntoResponse::into_response)
+}
+
 /// POST /api/auth/magic-link/verify - sign in with the token from a link.
 ///
 /// POST only, because email scanners open links with GET. The session goes in the response:
@@ -357,8 +471,11 @@ pub async fn verify_magic_link(
     let link = MagicLinkTokenRepository::new(auth_state.state.db.clone())
         .consume(&req.token, tenant_id)
         .await?
-        .filter(|link| link.purpose == PURPOSE_SIGN_IN)
         .ok_or_else(|| AuthError::BadRequest(INVALID_LINK.to_string()))?;
+
+    if link.purpose == PURPOSE_DELETE_ACCOUNT {
+        return delete_session(&auth_state, tenant_id, &link.email, &link.app_origin).await;
+    }
 
     if let Some(grant) = &grant {
         if !same_origin(&grant.redirect_uri, &link.app_origin) {

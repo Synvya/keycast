@@ -79,6 +79,14 @@ pub trait EmailSender: Send + Sync {
         merchant_name: &str,
     ) -> Result<(), String>;
 
+    /// Send a customer the link that lets them delete their account.
+    async fn send_delete_account_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String>;
+
     /// Get captured emails (only available in dev/test mode)
     fn get_captured_emails(&self) -> Vec<CapturedEmail> {
         vec![]
@@ -401,6 +409,34 @@ fn team_invite_text(
 // ---------------------------------------------------------------------------
 
 /// Development email sender - logs URLs to console and captures emails for testing
+fn delete_account_subject(merchant_name: &str) -> String {
+    format!("Delete your {} account", merchant_name)
+}
+
+fn delete_account_html(link: &str, merchant_name: &str) -> String {
+    let link = html_escape(link);
+    let merchant_name = html_escape(merchant_name);
+
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1a1a1a; max-width: 480px; margin: 0 auto; padding: 24px;">
+  <h1 style="font-size: 20px;">Delete your {merchant_name} account</h1>
+  <p>This removes your account and cancels your subscriptions. It cannot be undone.</p>
+  <p><a href="{link}" style="display: inline-block; background: #1a1a1a; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px;">Delete my account</a></p>
+  <p style="color: #666666; font-size: 14px;">This link works once and expires in 15 minutes.</p>
+  <p style="color: #666666; font-size: 14px;">If you did not ask for it, you can ignore this email and nothing will change.</p>
+</body>
+</html>"#
+    )
+}
+
+fn delete_account_text(link: &str, merchant_name: &str) -> String {
+    format!(
+        "Delete your {merchant_name} account\n\nThis removes your account and cancels your subscriptions. It cannot be undone.\n\n{link}\n\nThis link works once and expires in 15 minutes.\n\nIf you did not ask for it, you can ignore this email and nothing will change.\n"
+    )
+}
+
 fn magic_link_subject(merchant_name: &str) -> String {
     format!("Sign in to {}", merchant_name)
 }
@@ -470,6 +506,29 @@ impl Default for DevEmailSender {
 
 #[async_trait]
 impl EmailSender for DevEmailSender {
+    async fn send_delete_account_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String> {
+        eprintln!(
+            "\n\x1b[35m[DEV EMAIL]\x1b[0m Account deletion link for {} at {}: \x1b[4m{}\x1b[0m\n",
+            to_email, merchant_name, link
+        );
+
+        if let Ok(mut captured) = self.captured.lock() {
+            captured.push(CapturedEmail {
+                to: to_email.to_string(),
+                subject: delete_account_subject(merchant_name),
+                verification_url: Some(link.to_string()),
+                reset_url: None,
+            });
+        }
+
+        Ok(())
+    }
+
     async fn send_magic_link_email(
         &self,
         to_email: &str,
@@ -828,6 +887,19 @@ impl SendGridEmailSender {
 
 #[async_trait]
 impl EmailSender for SendGridEmailSender {
+    async fn send_delete_account_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String> {
+        let subject = delete_account_subject(merchant_name);
+        let html = delete_account_html(link, merchant_name);
+        let text = delete_account_text(link, merchant_name);
+
+        self.send_email(to_email, &subject, &html, &text).await
+    }
+
     async fn send_magic_link_email(
         &self,
         to_email: &str,
@@ -1046,6 +1118,19 @@ impl SesEmailSender {
 #[cfg(feature = "aws")]
 #[async_trait]
 impl EmailSender for SesEmailSender {
+    async fn send_delete_account_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        merchant_name: &str,
+    ) -> Result<(), String> {
+        let subject = delete_account_subject(merchant_name);
+        let html = delete_account_html(link, merchant_name);
+        let text = delete_account_text(link, merchant_name);
+
+        self.send_email(to_email, &subject, &html, &text).await
+    }
+
     async fn send_magic_link_email(
         &self,
         to_email: &str,
@@ -1299,6 +1384,22 @@ mod magic_link_email_tests {
                 assert!(!body.contains(word), "{word}");
             }
         }
+    }
+
+    #[test]
+    fn test_deletion_email_says_what_it_does_and_never_mentions_what_is_behind_the_app() {
+        for body in [
+            delete_account_subject("example.com"),
+            delete_account_html(LINK, "example.com"),
+            delete_account_text(LINK, "example.com"),
+        ] {
+            assert!(body.contains("example.com"));
+            let body = body.to_lowercase();
+            for word in ["keycast", "synvya", "nostr", "npub", "pubkey", "secret key"] {
+                assert!(!body.contains(word), "{word}");
+            }
+        }
+        assert!(delete_account_text(LINK, "example.com").contains("cannot be undone"));
     }
 
     #[test]
