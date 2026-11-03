@@ -1,4 +1,5 @@
 pub mod allowed_kinds;
+pub mod commerce_envelope;
 pub mod content_filter;
 pub mod decrypt_only;
 pub mod encrypt_to_self;
@@ -7,8 +8,9 @@ pub mod full_access;
 use serde::Serialize;
 
 /// The list of available permissions
-pub static AVAILABLE_PERMISSIONS: [&str; 5] = [
+pub static AVAILABLE_PERMISSIONS: [&str; 6] = [
     "allowed_kinds",
+    "commerce_envelope",
     "content_filter",
     "decrypt_only",
     "encrypt_to_self",

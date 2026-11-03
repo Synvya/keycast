@@ -83,6 +83,7 @@ export type PolicyWithPermissions = {
 
 export const AVAILABLE_PERMISSIONS = [
     "allowed_kinds",
+    "commerce_envelope",
     "content_filter",
     "encrypt_to_self",
 ];
@@ -99,6 +100,10 @@ export type AllowedKindsConfig = {
     sign: number[] | null;
     encrypt: number[] | null;
     decrypt: number[] | null;
+};
+
+export type CommerceEnvelopeConfig = {
+    merchant_pubkey: string;
 };
 
 export type ContentFilterConfig = {
