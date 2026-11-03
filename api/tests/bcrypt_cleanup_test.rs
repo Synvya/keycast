@@ -4,6 +4,7 @@
 // ABOUTME: Verifies that cleanup only removes stale signups, not preloaded users
 
 use chrono::Utc;
+use keycast_api::bcrypt_queue::STALE_SIGNUP_CONDITION;
 use sqlx::PgPool;
 
 /// Helper to create a test database pool
@@ -30,13 +31,138 @@ async fn cleanup_test_data(pool: &PgPool, pubkeys: &[&str]) {
     }
 }
 
-/// The cleanup query that should be tested - mirrors bcrypt_queue.rs
+/// The cleanup query that should be tested - the condition is the one the task runs.
 /// This version is scoped to specific pubkeys for safe testing
-const CLEANUP_QUERY_SCOPED: &str = "DELETE FROM users WHERE password_hash IS NULL
-                                    AND vine_id IS NULL
-                                    AND email IS NOT NULL
-                                    AND created_at < NOW() - INTERVAL '10 minutes'
-                                    AND pubkey = ANY($1)";
+fn cleanup_query_scoped() -> String {
+    format!("DELETE FROM users WHERE {STALE_SIGNUP_CONDITION} AND pubkey = ANY($1)")
+}
+
+#[tokio::test]
+async fn test_cleanup_preserves_passwordless_accounts() {
+    let pool = setup_test_db().await;
+
+    let pubkey = "cleanup_test_passwordless_001";
+
+    cleanup_test_data(&pool, &[pubkey]).await;
+
+    // A customer account: email, no password, no verification token, 15 minutes old
+    let old_timestamp = Utc::now() - chrono::Duration::minutes(15);
+
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, email, email_verified, created_at, updated_at)
+         VALUES ($1, 1, $2, true, $3, $4)",
+    )
+    .bind(pubkey)
+    .bind("passwordless_test@example.com")
+    .bind(old_timestamp)
+    .bind(old_timestamp)
+    .execute(&pool)
+    .await
+    .expect("Failed to create passwordless account");
+
+    sqlx::query(
+        "INSERT INTO personal_keys (user_pubkey, encrypted_secret_key, tenant_id, created_at, updated_at)
+         VALUES ($1, $2, 1, $3, $4)",
+    )
+    .bind(pubkey)
+    .bind(b"test-encrypted-key" as &[u8])
+    .bind(old_timestamp)
+    .bind(old_timestamp)
+    .execute(&pool)
+    .await
+    .expect("Failed to create personal key");
+
+    let result = sqlx::query(&cleanup_query_scoped())
+        .bind(vec![pubkey])
+        .execute(&pool)
+        .await
+        .expect("Cleanup query failed");
+
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE pubkey = $1")
+        .bind(pubkey)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let key_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM personal_keys WHERE user_pubkey = $1")
+            .bind(pubkey)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        result.rows_affected(),
+        0,
+        "No rows should be deleted for a passwordless account"
+    );
+    assert_eq!(user_count.0, 1, "Passwordless account should survive");
+    assert_eq!(key_count.0, 1, "Passwordless account's key should survive");
+
+    cleanup_test_data(&pool, &[pubkey]).await;
+
+    println!("✅ Passwordless account and its key preserved by cleanup");
+}
+
+/// An abandoned password signup goes, and its key goes with it.
+#[tokio::test]
+async fn test_cleanup_deletes_key_of_abandoned_signup() {
+    let pool = setup_test_db().await;
+
+    let pubkey = "cleanup_test_abandoned_001";
+
+    cleanup_test_data(&pool, &[pubkey]).await;
+
+    let old_timestamp = Utc::now() - chrono::Duration::minutes(15);
+
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, email, email_verification_token, created_at, updated_at)
+         VALUES ($1, 1, $2, $3, $4, $5)",
+    )
+    .bind(pubkey)
+    .bind("abandoned_test@example.com")
+    .bind("abandoned_verification_token_123")
+    .bind(old_timestamp)
+    .bind(old_timestamp)
+    .execute(&pool)
+    .await
+    .expect("Failed to create abandoned signup");
+
+    sqlx::query(
+        "INSERT INTO personal_keys (user_pubkey, encrypted_secret_key, tenant_id, created_at, updated_at)
+         VALUES ($1, $2, 1, $3, $4)",
+    )
+    .bind(pubkey)
+    .bind(b"test-encrypted-key" as &[u8])
+    .bind(old_timestamp)
+    .bind(old_timestamp)
+    .execute(&pool)
+    .await
+    .expect("Failed to create personal key");
+
+    let result = sqlx::query(&cleanup_query_scoped())
+        .bind(vec![pubkey])
+        .execute(&pool)
+        .await
+        .expect("Cleanup query failed");
+
+    let key_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM personal_keys WHERE user_pubkey = $1")
+            .bind(pubkey)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        result.rows_affected(),
+        1,
+        "Abandoned signup should be deleted"
+    );
+    assert_eq!(key_count.0, 0, "Abandoned signup's key should be deleted");
+
+    cleanup_test_data(&pool, &[pubkey]).await;
+
+    println!("✅ Abandoned signup and its key deleted by cleanup");
+}
 
 #[tokio::test]
 async fn test_cleanup_does_not_delete_preloaded_users() {
@@ -78,7 +204,7 @@ async fn test_cleanup_does_not_delete_preloaded_users() {
     );
 
     // Run the scoped cleanup query
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(&test_pubkeys)
         .execute(&pool)
         .await
@@ -144,7 +270,7 @@ async fn test_cleanup_deletes_stale_signups() {
     );
 
     // Run the scoped cleanup query
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(&test_pubkeys)
         .execute(&pool)
         .await
@@ -199,7 +325,7 @@ async fn test_cleanup_preserves_recent_signups() {
     .expect("Failed to create recent signup");
 
     // Run the scoped cleanup query
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(&test_pubkeys)
         .execute(&pool)
         .await
@@ -254,7 +380,7 @@ async fn test_cleanup_preserves_users_with_password() {
     .expect("Failed to create normal user");
 
     // Run the scoped cleanup query
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(&test_pubkeys)
         .execute(&pool)
         .await
@@ -314,11 +440,12 @@ async fn test_cleanup_mixed_scenario() {
 
     // Create stale signup (should be deleted)
     sqlx::query(
-        "INSERT INTO users (pubkey, tenant_id, email, created_at, updated_at)
-         VALUES ($1, 1, $2, $3, $4)",
+        "INSERT INTO users (pubkey, tenant_id, email, email_verification_token, created_at, updated_at)
+         VALUES ($1, 1, $2, $3, $4, $5)",
     )
     .bind(stale_pubkey)
     .bind("stale_mixed@example.com")
+    .bind("stale_mixed_verification_token")
     .bind(old_timestamp)
     .bind(old_timestamp)
     .execute(&pool)
@@ -348,7 +475,7 @@ async fn test_cleanup_mixed_scenario() {
     assert_eq!(count_before.0, 3, "Should have 3 users before cleanup");
 
     // Run scoped cleanup
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(&all_pubkeys)
         .execute(&pool)
         .await
@@ -398,10 +525,11 @@ async fn test_cleanup_mixed_scenario() {
 async fn test_cleanup_query_includes_vine_id_check() {
     // The cleanup query in bcrypt_queue.rs should contain these conditions
     let expected_conditions = vec![
-        "password_hash IS NULL", // Must have no password
-        "vine_id IS NULL",       // Must NOT be a preloaded user
-        "email IS NOT NULL",     // Must be an email signup, not a pubkey-only user
-        "created_at < NOW()",    // Must be older than threshold
+        "password_hash IS NULL",                // Must have no password
+        "vine_id IS NULL",                      // Must NOT be a preloaded user
+        "email IS NOT NULL",                    // Must be an email signup, not a pubkey-only user
+        "email_verification_token IS NOT NULL", // Must be a password signup, not passwordless
+        "created_at < NOW()",                   // Must be older than threshold
     ];
 
     let source = include_str!("../src/bcrypt_queue.rs");
@@ -483,7 +611,7 @@ async fn test_cleanup_preserves_pubkey_only_user() {
     .expect("Failed to create pubkey-only user");
 
     // Cleanup query with email IS NOT NULL should skip this user
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(&test_pubkeys)
         .execute(&pool)
         .await
@@ -555,7 +683,7 @@ async fn test_cleanup_preserves_team_member() {
     .expect("Failed to add team member");
 
     // Cleanup should not even try to delete this user (no email = not a stale signup)
-    let result = sqlx::query(CLEANUP_QUERY_SCOPED)
+    let result = sqlx::query(&cleanup_query_scoped())
         .bind(vec![pubkey])
         .execute(&pool)
         .await
