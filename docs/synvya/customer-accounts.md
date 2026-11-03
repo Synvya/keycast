@@ -158,9 +158,13 @@ The orders app's landing page reads `token` from its URL and posts it. **POST on
 
 `expires_in` is the same session length Keycast uses today (`token_expiry_seconds`).
 
-**How the app holds the session — decision needed.** Keycast's session cookie is `SameSite=Lax` (`format_session_cookie`). The orders app (`orders.<merchant-domain>`) and the customer tenant's hostname are different sites, so a browser will not send that cookie on the app's background calls, and Safari blocks it as a third-party cookie. The route also sits on `public_cors` today for exactly this reason ("same-origin sets cookie, cross-origin uses Bearer"). This spec therefore returns the session as `session_token` in the body and the app sends it as `Authorization: Bearer`. The alternative is to proxy the customer tenant under each merchant's hostname (for example `orders.<merchant-domain>/id/*`), which makes the cookie first-party. Confirm the choice before building #90.
+**How the app holds the session — decided: a Bearer token the app keeps.** Keycast's session cookie is `SameSite=Lax` (`format_session_cookie`), and the orders app (`orders.<merchant-domain>`) is a different site from the customer tenant's hostname, so browsers would not send the cookie on the app's calls (Safari blocks it outright). Keycast already handles cross-origin callers this way ("same-origin sets cookie, cross-origin uses Bearer" in `routes.rs`). So:
 
-**Route.** If the session is returned in the body, put the route on `public_cors` like `verify_email`. If the proxy route is chosen, put it on `auth_cors` and set the cookie with `format_session_cookie`.
+- Verify returns the session as `session_token` in the response body. It does **not** set a cookie.
+- The orders app keeps the token and sends it as `Authorization: Bearer <token>` on every call to Keycast. Every customer endpoint (sign-in, `/api/nostr`, the account page API, deletion) must accept the Bearer header; the existing extractors in `api/src/api/extractors.rs` already read it.
+- The token never appears in a URL, a log line or an error message.
+
+**Route.** `public_cors`, like `verify_email`.
 
 **Not in this issue.** Opening the link on a different device from the one that asked. Keycast's device-code polling (`oauth_poll:*` in Redis) could do this later.
 
@@ -282,7 +286,7 @@ All of it is in PR #100. The order is the order of commits on `alejandro-dev`:
 | 3 | #91 relay-path checks | Before #92 means anything |
 | 4 | #92 commerce permission | Granted by #90 |
 | 5 | #89 request a link | |
-| 6 | #90 verify and sign in | Needs the session decision in §3.3; if it is still open, do the rest first |
+| 6 | #90 verify and sign in | Returns the session as a Bearer token (§3.3) |
 | 7 | #94 revocation, #95 rate limits | Small, independent |
 | 8 | #96 deletion, #97 across merchants | Build on #90 |
 | 9 | #98 fewer KMS calls | Measure first; record the numbers in the PR |

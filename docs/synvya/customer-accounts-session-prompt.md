@@ -28,7 +28,7 @@ Then read the code the spec section names before changing it. Line numbers in th
 - Write the tests the issue's "Done when" lists, and run them (`cd api && cargo test`). Run `cargo fmt` and `cargo clippy` before committing.
 - Do not change behaviour for restaurant owners unless the issue says to. Their tenant, password login and team flows must keep working.
 - Never log or return a customer's pubkey, npub, secret key or a plain sign-in token.
-- If the spec and the code disagree in a way that changes the design, stop and ask rather than choosing. Known open decision: how the orders app holds the session (spec §3.3). Do not start #90 until it is answered.
+- If the spec and the code disagree in a way that changes the design, stop and ask rather than choosing.
 - Keep PR #100's description current: which issues are done, how each was tested, and anything in the spec that turned out wrong.
 
 ## Start
