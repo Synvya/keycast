@@ -561,6 +561,13 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         .build();
     tracing::info!("✔︎ Tenant cache initialized (preload deferred)");
 
+    // Customer accounts live in their own tenant, created here rather than by a request
+    match keycast_api::api::tenant::ensure_customer_tenant(&database.pool).await {
+        Ok(Some(tenant)) => tracing::info!("✔︎ Customer tenant ready (id {})", tenant.id),
+        Ok(None) => tracing::info!("CUSTOMER_TENANT_DOMAIN not set; customer accounts are off"),
+        Err(e) => tracing::error!("Failed to create the customer tenant: {}", e),
+    }
+
     // Create bcrypt queue for async password hashing during registration
     // Uses email verification latency as natural buffer for CPU-intensive work
     let bcrypt_queue = keycast_api::bcrypt_queue::BcryptQueue::new();

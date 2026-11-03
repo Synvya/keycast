@@ -1,3 +1,4 @@
+use crate::api::tenant::TenantExtractor;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{async_trait, extract::FromRequestParts, http::request::Parts};
@@ -46,8 +47,8 @@ where
 {
     type Rejection = AuthError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let path = parts.uri.path();
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let path = parts.uri.path().to_string();
 
         // Try 0: NIP-98 service-auth (Authorization: Nostr <base64>).
         // Exclusive — if the header is present, this path either succeeds
@@ -56,12 +57,19 @@ where
             return result;
         }
 
+        // The session must belong to the tenant of the hostname it is used on
+        let tenant_id = TenantExtractor::from_request_parts(parts, state)
+            .await
+            .map_err(|(status, message)| AuthError { status, message })?
+            .0
+            .id;
+
         // Try 1: UCAN Bearer Token
         if let Some(auth_header) = parts.headers.get("Authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
                 if auth_str.starts_with("Bearer ") {
                     let (pubkey, _redirect_origin, _bunker_pubkey, ucan) =
-                        crate::ucan_auth::validate_ucan_token(auth_str, 0)
+                        crate::ucan_auth::validate_ucan_token(auth_str, tenant_id)
                             .await
                             .map_err(|e| {
                                 let msg = format!("Invalid UCAN token: {}", e);
@@ -90,16 +98,19 @@ where
                     let cookie = cookie.trim();
                     if let Some(value) = cookie.strip_prefix("keycast_session=") {
                         let (pubkey, _redirect_origin, _bunker_pubkey, ucan) =
-                            crate::ucan_auth::validate_ucan_token(&format!("Bearer {}", value), 0)
-                                .await
-                                .map_err(|e| {
-                                    let msg = format!("Invalid UCAN cookie: {}", e);
-                                    tracing::warn!("{} (path: {})", msg, path);
-                                    AuthError {
-                                        status: StatusCode::UNAUTHORIZED,
-                                        message: msg,
-                                    }
-                                })?;
+                            crate::ucan_auth::validate_ucan_token(
+                                &format!("Bearer {}", value),
+                                tenant_id,
+                            )
+                            .await
+                            .map_err(|e| {
+                                let msg = format!("Invalid UCAN cookie: {}", e);
+                                tracing::warn!("{} (path: {})", msg, path);
+                                AuthError {
+                                    status: StatusCode::UNAUTHORIZED,
+                                    message: msg,
+                                }
+                            })?;
 
                         let admin_role = extract_admin_role(&ucan);
 

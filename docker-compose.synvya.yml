@@ -71,6 +71,10 @@ services:
       EMAIL_PROVIDER: ses
       FROM_EMAIL: ${FROM_EMAIL:-noreply@synvya.com}
       FROM_NAME: ${FROM_NAME:-Synvya}
+      # Hostnames that may serve a tenant; any other Host header is refused
+      ALLOWED_TENANT_DOMAINS: ${ALLOWED_TENANT_DOMAINS:?error}
+      # Hostname of the customer tenant; customer accounts are off when empty
+      CUSTOMER_TENANT_DOMAIN: ${CUSTOMER_TENANT_DOMAIN:-}
       BASE_URL: ${BASE_URL:?error}
       APP_URL: ${APP_URL:?error}
       INVITE_BASE_URL: ${INVITE_BASE_URL:?error}

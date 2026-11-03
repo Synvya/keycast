@@ -245,6 +245,7 @@ async fn load_handler_on_demand(
     pool: &sqlx::PgPool,
     bunker_pubkey_hex: &str,
     token_user_pubkey: &str,
+    tenant_id: i64,
 ) -> Result<Arc<HttpRpcHandler>, RpcError> {
     let key_manager = auth_state.state.key_manager.as_ref();
 
@@ -285,7 +286,7 @@ async fn load_handler_on_demand(
     // Get user's encrypted secret key
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret: Vec<u8> = personal_keys_repo
-        .find_encrypted_key(&user_pubkey)
+        .find_encrypted_key_for_tenant(&user_pubkey, tenant_id)
         .await
         .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| RpcError::Internal("Personal keys not found".to_string()))?;
@@ -335,9 +336,14 @@ async fn load_handler_on_demand(
 
 /// Compute BLAKE3 hash of token for cache lookup
 /// BLAKE3 is ~500ns for 500-byte token vs ~1-2ms for Schnorr verification (2000-4000x faster)
-fn compute_token_cache_key(auth_header: &str) -> Option<CacheKey> {
+/// The tenant is part of the key: a cache hit skips the session's tenant check, so a token
+/// verified on one tenant must not hit on another
+fn compute_token_cache_key(auth_header: &str, tenant_id: i64) -> Option<CacheKey> {
     let token = auth_header.strip_prefix("Bearer ")?;
-    Some(*blake3::hash(token.as_bytes()).as_bytes())
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&tenant_id.to_le_bytes());
+    hasher.update(token.as_bytes());
+    Some(*hasher.finalize().as_bytes())
 }
 
 /// Check if issuer matches server pubkey (server-signed UCAN)
@@ -375,7 +381,7 @@ async fn load_preloaded_user_handler(
     // Get user's encrypted secret key directly from personal_keys
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret: Vec<u8> = personal_keys_repo
-        .find_encrypted_key(user_pubkey_hex)
+        .find_encrypted_key_for_tenant(user_pubkey_hex, tenant_id)
         .await
         .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| {
@@ -439,8 +445,8 @@ async fn get_handler(
     tenant_id: i64,
 ) -> Result<Arc<HttpRpcHandler>, RpcError> {
     // Compute BLAKE3 hash for cache lookup (~500ns)
-    let blake3_key =
-        compute_token_cache_key(auth_header).ok_or(RpcError::Auth(AuthError::InvalidToken))?;
+    let blake3_key = compute_token_cache_key(auth_header, tenant_id)
+        .ok_or(RpcError::Auth(AuthError::InvalidToken))?;
 
     // FAST PATH: Check cache by BLAKE3(token) - skips UCAN entirely!
     if let Some(handler) = auth_state.state.http_handler_cache.get(&blake3_key).await {
@@ -465,14 +471,15 @@ async fn get_handler(
 
     // Verify UCAN and extract bunker_pubkey (Schnorr signature verification ~1-2ms)
     let (user_pubkey, _redirect_origin, bunker_pubkey, ucan) =
-        crate::ucan_auth::validate_ucan_token(auth_header, 0)
+        crate::ucan_auth::validate_ucan_token(auth_header, tenant_id)
             .await
             .map_err(|_| RpcError::Auth(AuthError::InvalidToken))?;
 
     // Determine which authentication mode to use
     let handler = if let Some(bunker_key_hex) = bunker_pubkey {
         // MODE 1: OAuth token with bunker_pubkey - load from oauth_authorizations
-        let h = load_handler_on_demand(auth_state, pool, &bunker_key_hex, &user_pubkey).await?;
+        let h = load_handler_on_demand(auth_state, pool, &bunker_key_hex, &user_pubkey, tenant_id)
+            .await?;
         tracing::debug!(
             "RPC: Loaded OAuth handler for bunker {}",
             &bunker_key_hex[..8]
@@ -848,7 +855,7 @@ mod authorization_owner_tests {
             matches!(handler, Err(RpcError::Auth(AuthError::InvalidToken))),
             "A token must not load an authorization its user does not own"
         );
-        let cache_key = compute_token_cache_key(&auth_header).unwrap();
+        let cache_key = compute_token_cache_key(&auth_header, 1).unwrap();
         assert!(
             auth_state
                 .state

@@ -15,19 +15,6 @@ impl PersonalKeysRepository {
         Self { pool }
     }
 
-    /// Find encrypted secret key by user pubkey.
-    /// Returns None if user has no personal keys.
-    pub async fn find_encrypted_key(
-        &self,
-        user_pubkey: &str,
-    ) -> Result<Option<Vec<u8>>, RepositoryError> {
-        sqlx::query_scalar("SELECT encrypted_secret_key FROM personal_keys WHERE user_pubkey = $1")
-            .bind(user_pubkey)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Into::into)
-    }
-
     /// Find encrypted secret key with tenant isolation.
     /// Joins with users table to verify tenant membership.
     pub async fn find_encrypted_key_for_tenant(
@@ -125,7 +112,7 @@ mod tests {
         let repo = PersonalKeysRepository::new(pool);
 
         let result = repo
-            .find_encrypted_key("nonexistent_pubkey_12345")
+            .find_encrypted_key_for_tenant("nonexistent_pubkey_12345", 1)
             .await
             .unwrap();
         assert!(result.is_none());
@@ -155,7 +142,10 @@ mod tests {
         repo.create(&user_pubkey, &encrypted_key, 1).await.unwrap();
 
         // Find should return the key
-        let found = repo.find_encrypted_key(&user_pubkey).await.unwrap();
+        let found = repo
+            .find_encrypted_key_for_tenant(&user_pubkey, 1)
+            .await
+            .unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap(), encrypted_key);
 
@@ -163,7 +153,10 @@ mod tests {
         repo.delete_by_user(&user_pubkey).await.unwrap();
 
         // Should be gone
-        let found = repo.find_encrypted_key(&user_pubkey).await.unwrap();
+        let found = repo
+            .find_encrypted_key_for_tenant(&user_pubkey, 1)
+            .await
+            .unwrap();
         assert!(found.is_none());
     }
 }

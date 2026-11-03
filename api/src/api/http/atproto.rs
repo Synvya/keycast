@@ -267,7 +267,7 @@ pub async fn enable_atproto(
     headers: HeaderMap,
     Json(request): Json<EnableAtprotoRequest>,
 ) -> Result<(StatusCode, Json<AtprotoStatusResponse>), AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     let repo = UserRepository::new(pool);
 
@@ -291,7 +291,7 @@ pub async fn atproto_status(
     State(pool): State<PgPool>,
     headers: HeaderMap,
 ) -> Result<Json<AtprotoStatusResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     let repo = UserRepository::new(pool);
 
@@ -338,7 +338,7 @@ pub async fn disable_atproto(
     State(pool): State<PgPool>,
     headers: HeaderMap,
 ) -> Result<Json<AtprotoStatusResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     let user_repo = UserRepository::new(pool.clone());
     let session_repo = AtprotoOAuthSessionRepository::new(pool);

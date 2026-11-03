@@ -39,6 +39,9 @@ fi
 
 EXTRA_ALLOWED_ORIGINS="https://account.synvya.com,https://account.staging.synvya.com,https://server.synvya.com,https://server.staging.synvya.com,https://admin.synvya.com,https://admin.staging.synvya.com"
 ALLOWED_PUBKEYS=$(get_secret synvya/$ENV/keycast/allowed-pubkeys 2>/dev/null || echo "")
+CUSTOMER_TENANT_DOMAIN=$(get_secret synvya/$ENV/keycast/customer-tenant-domain 2>/dev/null || echo "")
+# localhost: the post-deploy QA tests run on the host against http://localhost:3000
+ALLOWED_TENANT_DOMAINS=$DOMAIN,localhost${CUSTOMER_TENANT_DOMAIN:+,$CUSTOMER_TENANT_DOMAIN}
 
 cat > /opt/synvya/.env <<EOF
 # IMPORTANT: POSTGRES_PASSWORD must be alphanumeric only (no @, /, #, $ etc.)
@@ -52,6 +55,8 @@ BUNKER_RELAYS=$BUNKER_RELAYS
 VITE_NDK_EXPLICIT_RELAYS=$VITE_NDK_EXPLICIT_RELAYS
 VITE_NDK_BUNKER_RELAYS=$VITE_NDK_BUNKER_RELAYS
 ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS
+ALLOWED_TENANT_DOMAINS=$ALLOWED_TENANT_DOMAINS
+CUSTOMER_TENANT_DOMAIN=$CUSTOMER_TENANT_DOMAIN
 BASE_URL=https://$DOMAIN
 APP_URL=https://$DOMAIN
 INVITE_BASE_URL=$INVITE_BASE_URL

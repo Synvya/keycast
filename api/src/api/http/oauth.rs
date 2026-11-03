@@ -2326,7 +2326,7 @@ async fn handle_refresh_token_grant(
     // Get user's encrypted keys for bunker key derivation
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_user_key = personal_keys_repo
-        .find_encrypted_key(&oauth_auth.user_pubkey)
+        .find_encrypted_key_for_tenant(&oauth_auth.user_pubkey, tenant_id)
         .await?
         .ok_or_else(|| OAuthError::InvalidGrant("User keys not found".into()))?;
 
@@ -2677,8 +2677,9 @@ async fn create_oauth_authorization_and_token(
 
     // Check if personal_keys exist
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
-    let encrypted_user_key: Option<Vec<u8>> =
-        personal_keys_repo.find_encrypted_key(user_pubkey).await?;
+    let encrypted_user_key: Option<Vec<u8>> = personal_keys_repo
+        .find_encrypted_key_for_tenant(user_pubkey, tenant_id)
+        .await?;
 
     let (encrypted_user_key, _keys_just_created) = if let Some(existing_key) = encrypted_user_key {
         // Keys already exist
@@ -2997,7 +2998,7 @@ pub async fn oauth_login(
     // Get user's keys for UCAN generation
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret = personal_keys_repo
-        .find_encrypted_key(&public_key)
+        .find_encrypted_key_for_tenant(&public_key, tenant_id)
         .await?
         .ok_or_else(|| {
             tracing::warn!("User {} has no personal_keys - they registered via OAuth but haven't completed token exchange yet", public_key);
@@ -3778,7 +3779,7 @@ pub async fn connect_post(
     }
 
     // Extract user public key from JWT token in Authorization header
-    let user_pubkey = super::auth::extract_user_from_token(&headers)
+    let user_pubkey = super::auth::extract_user_from_token(&headers, tenant_id)
         .await
         .map_err(|_| OAuthError::Unauthorized)?;
 
