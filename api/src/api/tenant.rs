@@ -3,8 +3,10 @@
 
 use axum::{
     async_trait,
-    extract::FromRequestParts,
+    extract::{FromRequestParts, Request},
     http::{request::Parts, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -85,6 +87,50 @@ pub fn customer_tenant_domain() -> Option<String> {
         .filter(|domain| !domain.is_empty())
 }
 
+/// The hostname a request is for, without its port.
+fn request_domain(parts: &Parts) -> Option<String> {
+    // Extract host from Host header (HTTP/1.1) or URI authority (HTTP/2)
+    // In HTTP/2, the :authority pseudo-header replaces Host, and hyper puts it in the URI
+    let host = parts
+        .headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| parts.uri.host().map(|h| h.to_string()))?;
+
+    // Remove port if present (e.g., "localhost:3000" -> "localhost")
+    host.split(':').next().map(|domain| domain.to_string())
+}
+
+/// The API routes that exist on the customer tenant's hostname.
+fn is_customer_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/nostr" | "/auth/magic-link" | "/auth/magic-link/verify"
+    )
+}
+
+/// Keep the customer tenant to its own routes.
+///
+/// A customer's session is held by the orders app, whose permission is limited to placing
+/// orders. Most other routes would undo that (creating a full-access bunker, signing directly)
+/// or give the customer a password. Other tenants are not affected.
+pub async fn customer_tenant_guard(request: Request, next: Next) -> Response {
+    let (parts, body) = request.into_parts();
+
+    if let (Some(customer_domain), Some(domain)) =
+        (customer_tenant_domain(), request_domain(&parts))
+    {
+        let path = parts.uri.path();
+        let path = path.strip_prefix("/api").unwrap_or(path);
+        if domain == customer_domain && !is_customer_route(path) {
+            return (StatusCode::NOT_FOUND, "Not found").into_response();
+        }
+    }
+
+    next.run(Request::from_parts(parts, body)).await
+}
+
 /// Extractor for tenant context
 /// Usage in handlers: `async fn handler(tenant: TenantExtractor, ...)`
 pub struct TenantExtractor(pub Arc<Tenant>);
@@ -97,18 +143,9 @@ where
     type Rejection = (StatusCode, String);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Extract host from Host header (HTTP/1.1) or URI authority (HTTP/2)
-        // In HTTP/2, the :authority pseudo-header replaces Host, and hyper puts it in the URI
-        let host = parts
-            .headers
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string())
-            .or_else(|| parts.uri.host().map(|h| h.to_string()))
+        let domain = request_domain(parts)
             .ok_or((StatusCode::BAD_REQUEST, "Missing Host header".to_string()))?;
-
-        // Remove port if present (e.g., "localhost:3000" -> "localhost")
-        let domain = host.split(':').next().unwrap_or(&host);
+        let domain = domain.as_str();
 
         // Checked before the cache: the cache is preloaded from every tenant in the database,
         // including any provisioned before the allowlist was set

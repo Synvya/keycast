@@ -68,6 +68,10 @@ pub fn api_routes(
     // Email-link sign-in: called from each merchant's orders app, so public CORS
     let magic_link_routes = Router::new()
         .route("/auth/magic-link", post(magic_link::request_magic_link))
+        .route(
+            "/auth/magic-link/verify",
+            post(magic_link::verify_magic_link),
+        )
         .layer(public_cors.clone())
         .with_state(auth_state.clone());
 
@@ -323,6 +327,9 @@ pub fn api_routes(
         .merge(metrics_route.layer(public_cors.clone())) // Public - Prometheus metrics
         .merge(docs_route.layer(public_cors))
         .fallback(api_not_found) // Return 404 for unmatched API routes
+        .layer(axum::middleware::from_fn(
+            crate::api::tenant::customer_tenant_guard,
+        ))
 }
 
 /// Serve OpenAPI specification as JSON

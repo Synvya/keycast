@@ -2632,6 +2632,7 @@ async fn handle_authorization_code_grant(
             nsec_from_verifier,
             previous_auth_id,
             is_headless,
+            policy_id: None,
         },
         auth_state,
     )
@@ -2641,17 +2642,19 @@ async fn handle_authorization_code_grant(
 // handle_password_grant() removed - ROPC grant type deprecated and removed
 
 /// Parameters for creating OAuth authorization and generating token
-struct CreateAuthorizationParams<'a> {
-    tenant_id: i64,
-    user_pubkey: &'a str,
-    email: &'a str,
-    client_id: &'a str,
-    scope: &'a str,
-    redirect_uri: &'a str,
-    nsec_from_verifier: Option<String>,
-    previous_auth_id: Option<i32>,
+pub(crate) struct CreateAuthorizationParams<'a> {
+    pub(crate) tenant_id: i64,
+    pub(crate) user_pubkey: &'a str,
+    pub(crate) email: &'a str,
+    pub(crate) client_id: &'a str,
+    pub(crate) scope: &'a str,
+    pub(crate) redirect_uri: &'a str,
+    pub(crate) nsec_from_verifier: Option<String>,
+    pub(crate) previous_auth_id: Option<i32>,
     /// Whether this code was issued via headless flow (for first_party UCAN fact)
-    is_headless: bool,
+    pub(crate) is_headless: bool,
+    /// The policy to grant, when it does not come from the scope
+    pub(crate) policy_id: Option<i32>,
 }
 
 /// Common function to create OAuth authorization and generate TokenResponse
@@ -2661,6 +2664,14 @@ async fn create_oauth_authorization_and_token(
     params: CreateAuthorizationParams<'_>,
     auth_state: super::routes::AuthState,
 ) -> Result<Response, OAuthError> {
+    Ok(Json(create_oauth_authorization(params, auth_state).await?).into_response())
+}
+
+/// Create the OAuth authorization and return what the app needs to use it.
+pub(crate) async fn create_oauth_authorization(
+    params: CreateAuthorizationParams<'_>,
+    auth_state: super::routes::AuthState,
+) -> Result<TokenResponse, OAuthError> {
     let CreateAuthorizationParams {
         tenant_id,
         user_pubkey,
@@ -2671,6 +2682,7 @@ async fn create_oauth_authorization_and_token(
         nsec_from_verifier,
         previous_auth_id,
         is_headless,
+        policy_id,
     } = params;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
@@ -2684,18 +2696,12 @@ async fn create_oauth_authorization_and_token(
     let (encrypted_user_key, _keys_just_created) = if let Some(existing_key) = encrypted_user_key {
         // Keys already exist
         if nsec_from_verifier.is_some() {
-            tracing::warn!(
-                "User {} already has personal_keys, ignoring nsec from code_verifier",
-                user_pubkey
-            );
+            tracing::warn!("User already has personal_keys, ignoring nsec from code_verifier");
         }
         (existing_key, false)
     } else {
         // Create personal_keys from code_verifier nsec or auto-generate
-        tracing::info!(
-            "Creating personal_keys for user {} during token exchange",
-            user_pubkey
-        );
+        tracing::info!("Creating personal_keys during token exchange");
 
         let keys = if let Some(nsec_str) = nsec_from_verifier {
             tracing::info!("Using nsec from code_verifier (BYOK)");
@@ -2789,8 +2795,11 @@ async fn create_oauth_authorization_and_token(
     let relays_json = serde_json::to_string(&vec![relay_url])
         .map_err(|e| OAuthError::InvalidRequest(format!("Failed to serialize relays: {}", e)))?;
 
-    // Resolve policy from scope (policy:slug format)
-    let policy_id = resolve_policy_from_scope(pool, scope).await?;
+    // Resolve policy from scope (policy:slug format) unless the caller already chose one
+    let policy_id = match policy_id {
+        Some(policy_id) => policy_id,
+        None => resolve_policy_from_scope(pool, scope).await?,
+    };
 
     // Generate authorization handle for silent re-authentication
     let authorization_handle = generate_authorization_handle();
@@ -2819,9 +2828,8 @@ async fn create_oauth_authorization_and_token(
         .await?;
 
     tracing::info!(
-        "Created OAuth authorization {} for user {} app {}",
+        "Created OAuth authorization {} for app {}",
         auth_id,
-        user_pubkey,
         redirect_origin
     );
 
@@ -2919,7 +2927,7 @@ async fn create_oauth_authorization_and_token(
     };
 
     // Return bunker URL with access_token for REST RPC API
-    Ok(Json(TokenResponse {
+    Ok(TokenResponse {
         bunker_url,
         access_token: Some(access_token),
         token_type: "Bearer".to_string(),
@@ -2929,7 +2937,6 @@ async fn create_oauth_authorization_and_token(
         authorization_handle: Some(authorization_handle),
         refresh_token: Some(refresh_token),
     })
-    .into_response())
 }
 
 // ============================================================================

@@ -365,6 +365,63 @@ impl UserRepository {
         Ok(())
     }
 
+    /// Find the passwordless account for this email, creating it with this key if there is none.
+    ///
+    /// Returns the account's pubkey, which is not the given one if the account already existed:
+    /// an existing account's key is never replaced. The account never gets a password or a
+    /// verification token, so the signup cleanup leaves it alone.
+    pub async fn find_or_create_passwordless(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+        email: &str,
+        encrypted_secret: &[u8],
+    ) -> Result<String, RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now();
+
+        let created: Option<String> = sqlx::query_scalar(
+            "INSERT INTO users (pubkey, tenant_id, email, email_verified, created_at, updated_at)
+             VALUES ($1, $2, $3, true, $4, $5)
+             ON CONFLICT (tenant_id, email) WHERE email IS NOT NULL DO NOTHING
+             RETURNING pubkey",
+        )
+        .bind(pubkey)
+        .bind(tenant_id)
+        .bind(email)
+        .bind(now)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let account_pubkey = match created {
+            Some(created) => {
+                sqlx::query(
+                    "INSERT INTO personal_keys (user_pubkey, encrypted_secret_key, tenant_id, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(&created)
+                .bind(encrypted_secret)
+                .bind(tenant_id)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                created
+            }
+            None => {
+                sqlx::query_scalar("SELECT pubkey FROM users WHERE email = $1 AND tenant_id = $2")
+                    .bind(email)
+                    .bind(tenant_id)
+                    .fetch_one(&mut *tx)
+                    .await?
+            }
+        };
+
+        tx.commit().await?;
+        Ok(account_pubkey)
+    }
+
     // =========================================================================
     // Email verification methods
     // =========================================================================

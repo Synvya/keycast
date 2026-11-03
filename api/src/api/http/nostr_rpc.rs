@@ -371,10 +371,7 @@ async fn load_preloaded_user_handler(
 
     if is_unclaimed != Some(true) {
         // User either doesn't exist or has already claimed their account
-        tracing::warn!(
-            "Preloaded user RPC denied: user {} not unclaimed",
-            &user_pubkey_hex[..8]
-        );
+        tracing::warn!("Preloaded user RPC denied: user not unclaimed");
         return Err(RpcError::Auth(AuthError::InvalidToken));
     }
 
@@ -497,10 +494,7 @@ async fn get_handler(
     } else {
         // MODE 3: Session UCAN (user-signed, no bunker_pubkey) - not valid for RPC
         // Users must go through OAuth flow to get a bunker_pubkey token
-        tracing::warn!(
-            "RPC: Rejected session UCAN for user {} (no bunker_pubkey, not server-signed)",
-            &user_pubkey[..8]
-        );
+        tracing::warn!("RPC: Rejected session UCAN (no bunker_pubkey, not server-signed)");
         return Err(RpcError::Auth(AuthError::InvalidToken));
     };
 

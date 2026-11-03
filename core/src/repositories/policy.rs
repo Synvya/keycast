@@ -105,6 +105,59 @@ impl PolicyRepository {
         .map_err(Into::into)
     }
 
+    /// The policy that lets an orders app place orders with one merchant, created on first use.
+    ///
+    /// Each merchant has its own row because the permission's config names the merchant. The
+    /// row is found by name: slugs are public and too short to hold a pubkey.
+    pub async fn find_or_create_commerce_envelope(
+        &self,
+        merchant_pubkey: &str,
+    ) -> Result<i32, RepositoryError> {
+        let name = format!("commerce_envelope:{merchant_pubkey}");
+
+        let existing: Option<i32> = sqlx::query_scalar(
+            "SELECT id FROM policies WHERE name = $1 AND team_id IS NULL ORDER BY id LIMIT 1",
+        )
+        .bind(&name)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(policy_id) = existing {
+            return Ok(policy_id);
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        let policy_id: i32 = sqlx::query_scalar(
+            "INSERT INTO policies (name, team_id, created_at, updated_at)
+             VALUES ($1, NULL, NOW(), NOW())
+             RETURNING id",
+        )
+        .bind(&name)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let permission_id: i32 = sqlx::query_scalar(
+            "INSERT INTO permissions (identifier, config, created_at, updated_at)
+             VALUES ('commerce_envelope', $1, NOW(), NOW())
+             RETURNING id",
+        )
+        .bind(serde_json::json!({ "merchant_pubkey": merchant_pubkey }))
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO policy_permissions (policy_id, permission_id, created_at, updated_at)
+             VALUES ($1, $2, NOW(), NOW())",
+        )
+        .bind(policy_id)
+        .bind(permission_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(policy_id)
+    }
+
     /// Create a permission.
     pub async fn create_permission(
         &self,

@@ -145,6 +145,7 @@ Existing permissions:
 - `allowed_kinds`: Restrict signing/encryption by Nostr event kind
 - `content_filter`: Filter events by content regex patterns
 - `encrypt_to_self`: Restrict encryption/decryption to user's own pubkey
+- `commerce_envelope`: Let an orders app encrypt kind 1327 orders to one merchant and sign kind 13 seals, nothing else
 
 ### Signer Daemon Architecture
 
@@ -165,6 +166,13 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - `/api/auth/login`: Login with email/password, sets UCAN session cookie
 - `/api/auth/logout`: Clears session cookie
 - CORS: Restrictive (ALLOWED_ORIGINS env var)
+
+**Customer accounts (customer tenant only)**:
+- `/api/auth/magic-link`: Email a sign-in link. Same answer for any email; creates nothing
+- `/api/auth/magic-link/verify`: Sign in with the link's token. Creates the account and key on the first click and returns the session as a Bearer token (no cookie)
+- `/api/nostr`: Signing under the `commerce_envelope` permission
+- All other `/api` routes return 404 on the customer hostname (`customer_tenant_guard`). A new customer route must be added to `is_customer_route`
+- CORS: Permissive (each merchant's orders app is its own origin)
 
 **OAuth (Third-Party)**:
 - `/api/oauth/authorize`: OAuth authorization flow (GET shows approval page, POST processes approval)

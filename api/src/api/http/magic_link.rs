@@ -1,7 +1,11 @@
 // ABOUTME: Email-link sign-in for customer accounts, which have no password
 // ABOUTME: Requesting a link never creates an account and answers the same for any email
 
-use super::auth::{app_url_is_allowed, generate_secure_token, AuthError};
+use super::auth::{
+    app_url_is_allowed, generate_secure_token, generate_server_signed_ucan, token_expiry_seconds,
+    AuthError,
+};
+use super::oauth::{create_oauth_authorization, CreateAuthorizationParams};
 use super::routes::AuthState;
 use crate::api::tenant::TenantExtractor;
 use crate::email_service::{EmailSender, EmailService};
@@ -12,8 +16,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{Duration, Utc};
-use keycast_core::repositories::{MagicLinkTokenRepository, PURPOSE_SIGN_IN};
-use nostr_sdk::Url;
+use keycast_core::repositories::{
+    MagicLinkTokenRepository, PolicyRepository, RepositoryError, UserRepository, PURPOSE_SIGN_IN,
+};
+use nostr_sdk::{Keys, PublicKey, SecretKey, Url};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::net::IpAddr;
@@ -29,6 +35,10 @@ const IP_HOURLY_LIMIT: u64 = 20;
 const HOUR_SECONDS: u64 = 3600;
 /// The longest address the email column holds.
 const MAX_EMAIL_LENGTH: usize = 255;
+/// The only scope email-link sign-in can grant.
+const COMMERCE_SCOPE: &str = "policy:commerce_envelope";
+/// One answer for an unknown, used, expired or other-tenant token.
+const INVALID_LINK: &str = "invalid_or_expired_link";
 
 #[derive(Debug, Deserialize)]
 pub struct MagicLinkRequest {
@@ -201,6 +211,223 @@ pub async fn request_magic_link(
     });
 
     Ok(Json(MagicLinkResponse { success: true }).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyMagicLinkRequest {
+    pub token: String,
+    pub client_id: Option<String>,
+    pub redirect_uri: Option<String>,
+    pub scope: Option<String>,
+    pub merchant_pubkey: Option<String>,
+    /// A secret key from the browser, stored as the key of a new account.
+    pub local_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifiedAuthorization {
+    pub bunker_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VerifyMagicLinkResponse {
+    pub success: bool,
+    pub session_token: String,
+    pub expires_in: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<VerifiedAuthorization>,
+}
+
+/// What the app asked to be allowed to do for the customer.
+struct CommerceGrant {
+    client_id: String,
+    redirect_uri: String,
+    merchant_pubkey: PublicKey,
+}
+
+/// Read the grant from the request. The four fields come together or not at all.
+fn parse_commerce_grant(req: &VerifyMagicLinkRequest) -> Result<Option<CommerceGrant>, AuthError> {
+    let (client_id, redirect_uri, scope, merchant_pubkey) = match (
+        req.client_id.as_deref(),
+        req.redirect_uri.as_deref(),
+        req.scope.as_deref(),
+        req.merchant_pubkey.as_deref(),
+    ) {
+        (None, None, None, None) => return Ok(None),
+        (Some(client_id), Some(redirect_uri), Some(scope), Some(merchant_pubkey)) => {
+            (client_id, redirect_uri, scope, merchant_pubkey)
+        }
+        _ => {
+            return Err(AuthError::BadRequest(
+                "client_id, redirect_uri, scope and merchant_pubkey must be sent together"
+                    .to_string(),
+            ))
+        }
+    };
+
+    if client_id.trim().is_empty() {
+        return Err(AuthError::BadRequest("Invalid client_id".to_string()));
+    }
+    if scope != COMMERCE_SCOPE {
+        return Err(AuthError::BadRequest("Invalid scope".to_string()));
+    }
+    let merchant_pubkey = PublicKey::from_hex(merchant_pubkey)
+        .map_err(|_| AuthError::BadRequest("Invalid merchant_pubkey".to_string()))?;
+
+    Ok(Some(CommerceGrant {
+        client_id: client_id.to_string(),
+        redirect_uri: redirect_uri.to_string(),
+        merchant_pubkey,
+    }))
+}
+
+fn same_origin(a: &str, b: &str) -> bool {
+    match (Url::parse(a), Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
+/// The customer's pubkey, creating the account and its key on the first click.
+///
+/// `local_key` becomes the key of a new account. It is ignored when the account exists:
+/// an existing key is never replaced.
+async fn find_or_create_customer(
+    auth_state: &AuthState,
+    tenant_id: i64,
+    email: &str,
+    local_key: Option<Keys>,
+) -> Result<String, AuthError> {
+    let user_repo = UserRepository::new(auth_state.state.db.clone());
+
+    if let Some(pubkey) = user_repo.find_pubkey_by_email(email, tenant_id).await? {
+        return Ok(pubkey);
+    }
+
+    let keys = local_key.unwrap_or_else(Keys::generate);
+    let encrypted_secret = auth_state
+        .state
+        .key_manager
+        .encrypt(&keys.secret_key().to_secret_bytes())
+        .await
+        .map_err(|e| AuthError::Internal(format!("Failed to encrypt key: {}", e)))?;
+
+    user_repo
+        .find_or_create_passwordless(
+            &keys.public_key().to_hex(),
+            tenant_id,
+            email,
+            &encrypted_secret,
+        )
+        .await
+        .map_err(|e| match e {
+            // The browser's key already belongs to another account
+            RepositoryError::Duplicate => AuthError::BadRequest("Invalid local_key".to_string()),
+            other => other.into(),
+        })
+}
+
+/// POST /api/auth/magic-link/verify - sign in with the token from a link.
+///
+/// POST only, because email scanners open links with GET. The session goes in the response:
+/// the orders app is a different site from this hostname, so a cookie would not reach us, and
+/// the app sends it as a Bearer token. Nothing in the response identifies the customer's key.
+pub async fn verify_magic_link(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    Json(req): Json<VerifyMagicLinkRequest>,
+) -> Result<Response, AuthError> {
+    if !tenant.0.is_customer_tenant() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let tenant_id = tenant.0.id;
+
+    // Everything that can be checked first is, so a bad request does not use up the link
+    let local_key = req
+        .local_key
+        .as_deref()
+        .map(|key| {
+            SecretKey::from_hex(key)
+                .map(Keys::new)
+                .map_err(|_| AuthError::BadRequest("Invalid local_key".to_string()))
+        })
+        .transpose()?;
+    let grant = parse_commerce_grant(&req)?;
+
+    let link = MagicLinkTokenRepository::new(auth_state.state.db.clone())
+        .consume(&req.token, tenant_id)
+        .await?
+        .filter(|link| link.purpose == PURPOSE_SIGN_IN)
+        .ok_or_else(|| AuthError::BadRequest(INVALID_LINK.to_string()))?;
+
+    if let Some(grant) = &grant {
+        if !same_origin(&grant.redirect_uri, &link.app_origin) {
+            return Err(AuthError::BadRequest(
+                "redirect_uri does not match the link".to_string(),
+            ));
+        }
+    }
+
+    let pubkey_hex =
+        find_or_create_customer(&auth_state, tenant_id, &link.email, local_key).await?;
+
+    let (session_token, authorization) = match grant {
+        Some(grant) => {
+            let policy_id = PolicyRepository::new(auth_state.state.db.clone())
+                .find_or_create_commerce_envelope(&grant.merchant_pubkey.to_hex())
+                .await?;
+            let created = create_oauth_authorization(
+                CreateAuthorizationParams {
+                    tenant_id,
+                    user_pubkey: &pubkey_hex,
+                    email: &link.email,
+                    client_id: &grant.client_id,
+                    scope: COMMERCE_SCOPE,
+                    redirect_uri: &grant.redirect_uri,
+                    nsec_from_verifier: None,
+                    previous_auth_id: None,
+                    is_headless: false,
+                    policy_id: Some(policy_id),
+                },
+                auth_state.clone(),
+            )
+            .await
+            .map_err(|e| AuthError::Internal(format!("Failed to authorize app: {:?}", e)))?;
+
+            // This token names the new authorization, so it works on /api/nostr
+            let session_token = created
+                .access_token
+                .ok_or_else(|| AuthError::Internal("Missing access token".to_string()))?;
+            let authorization = VerifiedAuthorization {
+                bunker_url: created.bunker_url,
+            };
+            (session_token, Some(authorization))
+        }
+        None => {
+            let pubkey = PublicKey::from_hex(&pubkey_hex)
+                .map_err(|e| AuthError::Internal(format!("Invalid pubkey: {}", e)))?;
+            let session_token = generate_server_signed_ucan(
+                &pubkey,
+                tenant_id,
+                &link.email,
+                &link.app_origin,
+                None,
+                &auth_state.state.server_keys,
+                false,
+                None,
+            )
+            .await?;
+            (session_token, None)
+        }
+    };
+
+    Ok(Json(VerifyMagicLinkResponse {
+        success: true,
+        session_token,
+        expires_in: token_expiry_seconds(),
+        authorization,
+    })
+    .into_response())
 }
 
 #[cfg(test)]
