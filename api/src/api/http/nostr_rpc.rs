@@ -244,6 +244,7 @@ async fn load_handler_on_demand(
     auth_state: &AuthState,
     pool: &sqlx::PgPool,
     bunker_pubkey_hex: &str,
+    token_user_pubkey: &str,
 ) -> Result<Arc<HttpRpcHandler>, RpcError> {
     let key_manager = auth_state.state.key_manager.as_ref();
 
@@ -257,6 +258,12 @@ async fn load_handler_on_demand(
 
     let (auth_id, user_pubkey, auth_handle_opt, expires_at, revoked_at, policy_id) =
         auth_data.ok_or(RpcError::Auth(AuthError::InvalidToken))?;
+
+    // The token names the authorization; it must belong to the token's user
+    if user_pubkey != token_user_pubkey {
+        tracing::warn!("RPC: Rejected token for an authorization its user does not own");
+        return Err(RpcError::Auth(AuthError::InvalidToken));
+    }
 
     // Load permissions for this authorization's policy (if any)
     let permissions: Vec<Box<dyn CustomPermission>> = if let Some(pid) = policy_id {
@@ -465,7 +472,7 @@ async fn get_handler(
     // Determine which authentication mode to use
     let handler = if let Some(bunker_key_hex) = bunker_pubkey {
         // MODE 1: OAuth token with bunker_pubkey - load from oauth_authorizations
-        let h = load_handler_on_demand(auth_state, pool, &bunker_key_hex).await?;
+        let h = load_handler_on_demand(auth_state, pool, &bunker_key_hex, &user_pubkey).await?;
         tracing::debug!(
             "RPC: Loaded OAuth handler for bunker {}",
             &bunker_key_hex[..8]
@@ -661,5 +668,197 @@ mod tests {
         assert!(response.result.is_none());
         assert!(response.error.is_some());
         assert_eq!(response.error.unwrap(), "test error");
+    }
+}
+
+#[cfg(all(test, feature = "integration-tests"))]
+mod authorization_owner_tests {
+    use super::*;
+    use crate::bcrypt_queue::BcryptQueue;
+    use crate::handlers::http_rpc_handler::new_http_handler_cache;
+    use crate::state::KeycastState;
+    use crate::ucan_auth::{nostr_pubkey_to_did, NostrKeyMaterial};
+    use keycast_core::encryption::{KeyManager, KeyManagerError};
+    use keycast_core::secret_pool::SecretPool;
+    use moka::future::Cache;
+    use ucan::builder::UcanBuilder;
+    use zeroize::Zeroizing;
+
+    struct TestKeyManager;
+
+    #[async_trait::async_trait]
+    impl KeyManager for TestKeyManager {
+        async fn encrypt(&self, plaintext_bytes: &[u8]) -> Result<Vec<u8>, KeyManagerError> {
+            Ok(plaintext_bytes.to_vec())
+        }
+
+        async fn decrypt(
+            &self,
+            ciphertext_bytes: &[u8],
+        ) -> Result<Zeroizing<Vec<u8>>, KeyManagerError> {
+            Ok(Zeroizing::new(ciphertext_bytes.to_vec()))
+        }
+    }
+
+    fn test_auth_state(pool: PgPool, server_keys: Keys) -> AuthState {
+        let bcrypt_queue = BcryptQueue::new();
+        let secret_pool = SecretPool::new(1);
+
+        AuthState {
+            state: Arc::new(KeycastState {
+                db: pool,
+                key_manager: Arc::new(Box::new(TestKeyManager)),
+                signer_handlers: None,
+                http_handler_cache: new_http_handler_cache(),
+                server_keys,
+                tenant_cache: Cache::builder().max_capacity(10).build(),
+                bcrypt_sender: bcrypt_queue.sender(),
+                redis: None,
+                secret_pool: secret_pool.receiver(),
+                secure_cookies: false,
+            }),
+            auth_tx: None,
+        }
+    }
+
+    fn server_keys_from_env() -> Keys {
+        if std::env::var("SERVER_NSEC").is_err() {
+            std::env::set_var("SERVER_NSEC", "0".repeat(63) + "1");
+        }
+        Keys::parse(&std::env::var("SERVER_NSEC").unwrap()).expect("SERVER_NSEC must be valid")
+    }
+
+    /// Create a user with a key and one authorization; returns the bunker pubkey.
+    async fn create_owner(pool: &PgPool, owner: &Keys) -> String {
+        let owner_hex = owner.public_key().to_hex();
+        let bunker_hex = Keys::generate().public_key().to_hex();
+
+        sqlx::query(
+            "INSERT INTO users (pubkey, tenant_id, created_at, updated_at)
+             VALUES ($1, 1, NOW(), NOW())",
+        )
+        .bind(&owner_hex)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO personal_keys (user_pubkey, encrypted_secret_key, tenant_id)
+             VALUES ($1, $2, 1)",
+        )
+        .bind(&owner_hex)
+        .bind(owner.secret_key().secret_bytes().to_vec())
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO oauth_authorizations
+             (user_pubkey, redirect_origin, bunker_public_key, secret_hash, relays, tenant_id,
+              authorization_handle, handle_expires_at, created_at, updated_at)
+             VALUES ($1, 'https://orders.example.com', $2, 'test_hash', '[]', 1, $3,
+                     NOW() + INTERVAL '30 days', NOW(), NOW())",
+        )
+        .bind(&owner_hex)
+        .bind(&bunker_hex)
+        .bind(hex::encode(rand::random::<[u8; 32]>()))
+        .execute(pool)
+        .await
+        .unwrap();
+
+        bunker_hex
+    }
+
+    async fn cleanup_owner(pool: &PgPool, owner: &Keys) {
+        let owner_hex = owner.public_key().to_hex();
+        for query in [
+            "DELETE FROM oauth_authorizations WHERE user_pubkey = $1",
+            "DELETE FROM personal_keys WHERE user_pubkey = $1",
+            "DELETE FROM users WHERE pubkey = $1",
+        ] {
+            let _ = sqlx::query(query).bind(&owner_hex).execute(pool).await;
+        }
+    }
+
+    async fn test_pool() -> PgPool {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:password@localhost/keycast_test".to_string());
+        PgPool::connect(&database_url).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_owner_token_loads_its_authorization() {
+        let pool = test_pool().await;
+        let server_keys = server_keys_from_env();
+        let auth_state = test_auth_state(pool.clone(), server_keys.clone());
+        let owner = Keys::generate();
+        let bunker_hex = create_owner(&pool, &owner).await;
+
+        let token = crate::api::http::auth::generate_server_signed_ucan(
+            &owner.public_key(),
+            1,
+            "owner@example.com",
+            "https://orders.example.com",
+            Some(&bunker_hex),
+            &server_keys,
+            false,
+            None,
+        )
+        .await
+        .map_err(|_| "failed to mint token")
+        .unwrap();
+
+        let handler = get_handler(&auth_state, &pool, &format!("Bearer {token}"), 1).await;
+
+        assert_eq!(
+            handler.ok().map(|h| h.user_pubkey_hex()),
+            Some(owner.public_key().to_hex())
+        );
+
+        cleanup_owner(&pool, &owner).await;
+    }
+
+    #[tokio::test]
+    async fn test_token_for_another_users_authorization_is_refused() {
+        let pool = test_pool().await;
+        let auth_state = test_auth_state(pool.clone(), server_keys_from_env());
+        let owner = Keys::generate();
+        let bunker_hex = create_owner(&pool, &owner).await;
+
+        let other = Keys::generate();
+        let token = UcanBuilder::default()
+            .issued_by(&NostrKeyMaterial::from_keys(other.clone()))
+            .for_audience(&nostr_pubkey_to_did(&other.public_key()))
+            .with_lifetime(600)
+            .with_fact(serde_json::json!({
+                "tenant_id": 1,
+                "redirect_origin": "https://orders.example.com",
+                "bunker_pubkey": bunker_hex,
+            }))
+            .build()
+            .unwrap()
+            .sign()
+            .await
+            .unwrap()
+            .encode()
+            .unwrap();
+        let auth_header = format!("Bearer {token}");
+
+        let handler = get_handler(&auth_state, &pool, &auth_header, 1).await;
+
+        assert!(
+            matches!(handler, Err(RpcError::Auth(AuthError::InvalidToken))),
+            "A token must not load an authorization its user does not own"
+        );
+        let cache_key = compute_token_cache_key(&auth_header).unwrap();
+        assert!(
+            auth_state
+                .state
+                .http_handler_cache
+                .get(&cache_key)
+                .await
+                .is_none(),
+            "A refused token must not be cached"
+        );
+
+        cleanup_owner(&pool, &owner).await;
     }
 }
