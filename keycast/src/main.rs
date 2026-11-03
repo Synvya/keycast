@@ -18,6 +18,7 @@ use keycast_core::authorization_channel;
 use keycast_core::database::Database;
 #[cfg(feature = "aws")]
 use keycast_core::encryption::aws_key_manager::AwsKeyManager;
+use keycast_core::encryption::caching_key_manager::CachingKeyManager;
 use keycast_core::encryption::file_key_manager::FileKeyManager;
 use keycast_core::encryption::gcp_key_manager::GcpKeyManager;
 use keycast_core::encryption::KeyManager;
@@ -495,6 +496,11 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         "aws" => Box::new(AwsKeyManager::new().await?),
         _ => Box::new(FileKeyManager::new()?),
     };
+
+    // Repeat decrypts of a key are served from memory for a bounded time, to reduce KMS calls
+    let signer_key_manager: Box<dyn KeyManager> =
+        Box::new(CachingKeyManager::new(signer_key_manager));
+    let api_key_manager: Box<dyn KeyManager> = Box::new(CachingKeyManager::new(api_key_manager));
 
     // Load server keys for signing UCANs (wrap in Zeroizing for auto-zeroization)
     let server_nsec = Zeroizing::new(env::var("SERVER_NSEC")?); // Validated above
