@@ -9,6 +9,7 @@ use keycast_core::authorization_channel::{AuthorizationCommand, AuthorizationRec
 use keycast_core::encryption::KeyManager;
 use keycast_core::metrics::METRICS;
 use keycast_core::signing_handler::SigningHandler;
+use keycast_core::traits::CustomPermission;
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::oauth_authorization::OAuthAuthorization;
 use moka::future::Cache;
@@ -119,14 +120,11 @@ impl Nip46Handler {
         }
     }
 
-    /// Validate permissions before signing an event.
+    /// Load the policy permissions for this authorization.
     ///
-    /// Loads the policy permissions for this authorization and checks each one.
-    /// Uses AND logic: ALL permissions must allow the operation.
-    async fn validate_permissions_for_sign(
-        &self,
-        unsigned_event: &UnsignedEvent,
-    ) -> SignerResult<()> {
+    /// An empty list means no permissions are configured, which allows everything
+    /// (backward compatibility).
+    async fn load_permissions(&self) -> SignerResult<Vec<Box<dyn CustomPermission>>> {
         // Load permissions based on authorization type
         let permissions = if self.is_oauth {
             let oauth_auth =
@@ -138,21 +136,72 @@ impl Nip46Handler {
             auth.permissions(&self.pool, self.tenant_id).await?
         };
 
-        // If no permissions configured, allow all (backward compatibility)
-        if permissions.is_empty() {
-            return Ok(());
+        permissions
+            .iter()
+            .map(|permission| {
+                permission.to_custom_permission().map_err(|e| {
+                    SignerError::invalid_permission(format!(
+                        "Failed to convert permission '{}': {}",
+                        permission.identifier, e
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    /// Validate permissions before signing an event.
+    ///
+    /// Uses AND logic: ALL permissions must allow the operation.
+    async fn validate_permissions_for_sign(
+        &self,
+        unsigned_event: &UnsignedEvent,
+    ) -> SignerResult<()> {
+        for custom_permission in self.load_permissions().await? {
+            if !custom_permission.can_sign(unsigned_event) {
+                return Err(SignerError::permission_denied(format!(
+                    "Blocked by '{}' policy",
+                    custom_permission.identifier()
+                )));
+            }
         }
 
-        // Convert and validate - ALL permissions must pass (AND logic)
-        for permission in &permissions {
-            let custom_permission = permission.to_custom_permission().map_err(|e| {
-                SignerError::invalid_permission(format!(
-                    "Failed to convert permission '{}': {}",
-                    permission.identifier, e
-                ))
-            })?;
+        Ok(())
+    }
 
-            if !custom_permission.can_sign(unsigned_event) {
+    /// Validate permissions before encrypting to a recipient.
+    ///
+    /// Uses AND logic: ALL permissions must allow the operation.
+    async fn validate_permissions_for_encrypt(
+        &self,
+        plaintext: &str,
+        recipient: &PublicKey,
+    ) -> SignerResult<()> {
+        let sender = self.user_keys.public_key();
+
+        for custom_permission in self.load_permissions().await? {
+            if !custom_permission.can_encrypt(plaintext, &sender, recipient) {
+                return Err(SignerError::permission_denied(format!(
+                    "Blocked by '{}' policy",
+                    custom_permission.identifier()
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate permissions before decrypting from a sender.
+    ///
+    /// Uses AND logic: ALL permissions must allow the operation.
+    async fn validate_permissions_for_decrypt(
+        &self,
+        ciphertext: &str,
+        sender: &PublicKey,
+    ) -> SignerResult<()> {
+        let recipient = self.user_keys.public_key();
+
+        for custom_permission in self.load_permissions().await? {
+            if !custom_permission.can_decrypt(ciphertext, sender, &recipient) {
                 return Err(SignerError::permission_denied(format!(
                     "Blocked by '{}' policy",
                     custom_permission.identifier()
@@ -1354,6 +1403,11 @@ impl UnifiedSigner {
                 let third_party_pubkey = PublicKey::from_hex(third_party_hex)
                     .map_err(|e| SignerError::invalid_key(e.to_string()))?;
 
+                // VALIDATE PERMISSIONS BEFORE ENCRYPTING
+                handler
+                    .validate_permissions_for_encrypt(plaintext, &third_party_pubkey)
+                    .await?;
+
                 // CPU-bound crypto wrapped in spawn_blocking
                 let ciphertext = {
                     let secret = handler.user_keys.secret_key().clone();
@@ -1385,6 +1439,11 @@ impl UnifiedSigner {
 
                 let third_party_pubkey = PublicKey::from_hex(third_party_hex)
                     .map_err(|e| SignerError::invalid_key(e.to_string()))?;
+
+                // VALIDATE PERMISSIONS BEFORE DECRYPTING
+                handler
+                    .validate_permissions_for_decrypt(ciphertext, &third_party_pubkey)
+                    .await?;
 
                 // CPU-bound crypto wrapped in spawn_blocking
                 // Returns SecretString for automatic memory zeroization on drop
@@ -1420,6 +1479,11 @@ impl UnifiedSigner {
                 let third_party_pubkey = PublicKey::from_hex(third_party_hex)
                     .map_err(|e| SignerError::invalid_key(e.to_string()))?;
 
+                // VALIDATE PERMISSIONS BEFORE ENCRYPTING
+                handler
+                    .validate_permissions_for_encrypt(plaintext, &third_party_pubkey)
+                    .await?;
+
                 // CPU-bound crypto wrapped in spawn_blocking
                 let ciphertext = {
                     let secret = handler.user_keys.secret_key().clone();
@@ -1451,6 +1515,11 @@ impl UnifiedSigner {
 
                 let third_party_pubkey = PublicKey::from_hex(third_party_hex)
                     .map_err(|e| SignerError::invalid_key(e.to_string()))?;
+
+                // VALIDATE PERMISSIONS BEFORE DECRYPTING
+                handler
+                    .validate_permissions_for_decrypt(ciphertext, &third_party_pubkey)
+                    .await?;
 
                 // CPU-bound crypto wrapped in spawn_blocking
                 // Returns SecretString for automatic memory zeroization on drop
