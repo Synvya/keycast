@@ -14,13 +14,14 @@ Spec for passwordless customer accounts in Keycast: sign-in by email link, a com
 
 ---
 
-## 0. Branch: all work on `alejandro-dev`
+## 0. Branch and PR: one branch, one PR
 
-Every issue in this spec is done on the `alejandro-dev` branch of `Synvya/keycast`, one issue at a time.
+All of this work is on the `alejandro-dev` branch of `Synvya/keycast`, and it ships as **one PR**: [#100](https://github.com/Synvya/keycast/pull/100), `alejandro-dev` → `synvya-staging`. Keycast takes a long time to roll out, so the issues are not shipped one at a time.
 
-- Start from an `alejandro-dev` that is up to date with `synvya-staging`.
-- When an issue is done and tested, open a PR from `alejandro-dev` to `synvya-staging`. Start the next issue after it merges.
-- Production follows by merging `synvya-staging` into `synvya`, as usual.
+- Bring `alejandro-dev` up to date with `synvya-staging` before starting. Do not create other branches.
+- Work the issues in the order of §12. Make at least one commit per issue, with `Fixes #<n>` in the message, so each issue closes when #100 merges and each change can be reviewed on its own.
+- Push to `alejandro-dev` as you go; every push updates #100. Do not open another PR.
+- #100 merges once, when every issue is done and the local checks in §12 pass. That deploys to staging; the staging checks in §12 run there, and production follows by merging `synvya-staging` into `synvya`, as usual.
 - Nothing goes upstream. [SYNVYA.md](../../SYNVYA.md) rule 2 sends work that could be contributed (the email-link login looks like it) to `main` and `divinevideo/keycast`; Synvya decided not to contribute this work.
 
 **Generic by design.** This is for any merchant that sells through Synvya's orders app, not one customer. No merchant's name, domain or prices belong in code, config defaults or tests; examples use `orders.example.com`.
@@ -270,18 +271,27 @@ Keycast decrypts a key through KMS on every password login (to self-sign the ses
 
 ---
 
-## 12. Order of work
+## 12. Order of work and the one rollout
+
+All of it is in PR #100. The order is the order of commits on `alejandro-dev`:
 
 | Order | Issue | Why here |
 |---|---|---|
 | 1 | #88 cleanup job | Every later test creates a passwordless account |
-| 2 | #89 request a link | |
-| 3 | #90 verify and sign in | Needs the session decision in §3.3 |
-| 4 | #93 tenant isolation, customer tenant | Before any real customer exists |
-| 5 | #91 relay-path checks | Before #92 means anything |
-| 6 | #92 commerce permission | Granted by #90 |
-| 7 | #94, #95, #96, #97 | After the pilot starts |
-| 8 | #98 | Measure first |
+| 2 | #93 tenant isolation, customer tenant | Changes the session checks everything else relies on |
+| 3 | #91 relay-path checks | Before #92 means anything |
+| 4 | #92 commerce permission | Granted by #90 |
+| 5 | #89 request a link | |
+| 6 | #90 verify and sign in | Needs the session decision in §3.3; if it is still open, do the rest first |
+| 7 | #94 revocation, #95 rate limits | Small, independent |
+| 8 | #96 deletion, #97 across merchants | Build on #90 |
+| 9 | #98 fewer KMS calls | Measure first; record the numbers in the PR |
+
+**Before #100 merges**, run `cd api && cargo test` and the flows below on a local stack. **After it merges** (staging deploys from `synvya-staging`), run the same flows on staging before promoting to production:
+- restaurant owners still register, sign in, manage teams and delete their account as today;
+- Synvya Server's takeout and bookings still work end to end (the #91 risk, §5);
+- a customer signs in by email link on a test merchant origin, places an order through the commerce permission, is refused anything else, and deletes their account;
+- a restaurant-owner session is refused on the customer hostname (#93).
 
 ## 13. Edge cases
 

@@ -1,6 +1,6 @@
 # Customer Accounts — Session Prompt
 
-Copy everything below the line and paste it as the opening message of a new coding-agent session whose working directory is a clone of `Synvya/keycast`. Replace `<ISSUE>` with the issue you want worked, for example `#88`.
+Copy everything below the line and paste it as the opening message of a new coding-agent session whose working directory is a clone of `Synvya/keycast`. Replace `<ISSUE>` with the issue to start from, normally `#88`; the agent continues through the list in spec §12.
 
 ---
 
@@ -22,15 +22,15 @@ Then read the code the spec section names before changing it. Line numbers in th
 
 ## Rules
 
-- All work is on the `alejandro-dev` branch. Bring it up to date with `synvya-staging` before you start. When the issue is done, open a PR from `alejandro-dev` to `synvya-staging`. Never use `main`, and never create another branch.
-- One issue per PR. If the issue depends on another that is not merged, stop and say so.
+- All work is on the `alejandro-dev` branch, and it ships as **one PR, #100** (`alejandro-dev` → `synvya-staging`). Bring the branch up to date with `synvya-staging` before you start, push to it as you go, and never create another branch or PR. Never use `main`.
+- Work the issues in the order of spec §12, at least one commit per issue with `Fixes #<n>` in the message. Dependencies are met by earlier commits on the same branch, not by merges.
 - Keep it generic: this serves any merchant on Synvya's orders app. No merchant's name, domain or prices in code, config or tests; use `orders.example.com` in examples.
 - Write the tests the issue's "Done when" lists, and run them (`cd api && cargo test`). Run `cargo fmt` and `cargo clippy` before committing.
 - Do not change behaviour for restaurant owners unless the issue says to. Their tenant, password login and team flows must keep working.
 - Never log or return a customer's pubkey, npub, secret key or a plain sign-in token.
 - If the spec and the code disagree in a way that changes the design, stop and ask rather than choosing. Known open decision: how the orders app holds the session (spec §3.3). Do not start #90 until it is answered.
-- In the PR description: what changed, how it was tested, and anything in the spec that turned out wrong.
+- Keep PR #100's description current: which issues are done, how each was tested, and anything in the spec that turned out wrong.
 
 ## Start
 
-Work on <ISSUE>. Before writing code, reply with: the spec section you are implementing, the files you will change, the tests you will add, and any question that blocks you.
+Start with <ISSUE> and continue through spec §12. Before writing code for each issue, reply with: the spec section, the files you will change, the tests you will add, and any question that blocks you. When every issue is done, run the local checks in spec §12, report the results in PR #100, and say it is ready to merge. The staging checks run after the merge.
