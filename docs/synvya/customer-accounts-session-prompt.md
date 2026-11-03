@@ -8,7 +8,6 @@ Copy everything below the line and paste it as the opening message of a new codi
 
 Keycast is Synvya's Nostr key custody and signing service, a fork of `divinevideo/keycast`. Today it holds keys for restaurant owners, who sign in with a password. We are adding accounts for the **customers** of those restaurants: people who order through Synvya's orders app, served for each merchant at `orders.<merchant-domain>`, sign in with an email link instead of a password, and never see a key or the word Nostr.
 
-The design is written. Your job is to implement one issue from it, test it, and open a pull request.
 
 ## Read these first, in order
 
