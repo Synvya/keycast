@@ -10,7 +10,7 @@ This document covers:
 
 - Keycast deployment on EC2
 - PostgreSQL and Redis for Keycast
-- ALB, WAF, and DNS for `auth.staging.synvya.com` and `auth.synvya.com`
+- ALB, WAF, and DNS for `auth.staging.synvya.com` and `auth.synvya.com`, and for the customer hostnames `b2b-auth.staging.synvya.com` and `b2b-auth.synvya.com`
 - GitHub Actions deployment of Keycast-specific changes
 
 This document does not cover:
@@ -101,6 +101,7 @@ AWS WAF on the Keycast ALB
    |
    v
 auth.staging.synvya.com / auth.synvya.com
+b2b-auth.staging.synvya.com / b2b-auth.synvya.com
    |
    v
 EC2 instance
@@ -134,15 +135,7 @@ It should not include a server or event-processor container.
 
 ### 8.2 Listener Rules
 
-For the `auth.*` hosts, route these paths to Keycast:
-
-- `/api/auth/*`
-- `/api/nostr`
-- `/api/oauth/*`
-- `/api/user/*`
-- `/api/teams/*`
-- `/health`
-- all Keycast UI routes
+In both environments, HTTP 80 redirects to HTTPS, and the HTTPS 443 listener has only its default rule, which forwards every hostname and path to the Keycast target group. Keycast refuses any hostname not in `ALLOWED_TENANT_DOMAINS`, so a new hostname needs a DNS record but no listener rule.
 
 There is no `/api/events/*` routing in the Keycast stack anymore.
 

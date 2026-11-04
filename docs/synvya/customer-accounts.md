@@ -34,7 +34,7 @@ Keycast decides which tenant a request belongs to from its hostname.
 
 The same email can be an owner and a customer: two unrelated accounts, one per tenant. Each merchant's orders app lives at its own `orders.<merchant-domain>` and calls the customer hostname.
 
-**Settings.** `CUSTOMER_TENANT_DOMAIN` names the customer hostname. The deploy reads it from AWS Secrets Manager (`synvya/<env>/keycast/customer-tenant-domain`, value the bare hostname) through `scripts/load-secrets.sh`, which also writes `ALLOWED_TENANT_DOMAINS`. Keycast creates the customer tenant at startup. **While the setting is unset, customer accounts are off** and owners are unaffected. Turning it on is §14.
+**Settings.** `CUSTOMER_TENANT_DOMAIN` names the customer hostname. It is set per environment in `scripts/load-secrets.sh`, next to `DOMAIN`, and is not a secret: the hostname is public. The script also writes `ALLOWED_TENANT_DOMAINS`. Keycast creates the customer tenant at startup. **While the setting is empty, customer accounts are off** and owners are unaffected. It is set on staging and empty on production. Turning it on is §14.
 
 ---
 
@@ -293,10 +293,9 @@ New test files: `bcrypt_cleanup_test`, `tenant_isolation_test`, `magic_link_test
 ## 14. Turning it on
 
 **Once per environment — the customer hostname** (`b2b-auth.staging.synvya.com`, then `b2b-auth.synvya.com`):
-1. Create the secret `synvya/<env>/keycast/customer-tenant-domain` with the hostname as its value.
-2. Point the hostname at Keycast: DNS record, TLS certificate, load-balancer rule. This setup is not in this repository.
-3. Deploy. Keycast creates the customer tenant at startup.
-4. Give the hostname to the orders app; it sends its Keycast calls there.
-5. Set `SYNVYA_SERVER_DELETION_URL` once Synvya Server has the deletion endpoint (§9).
+1. In Route 53, add an `A` alias record for the hostname pointing at that environment's Keycast load balancer, the same as `auth.*`. Nothing else is needed to route it: the wildcard certificate covers the name, and the HTTPS listener forwards every hostname to Keycast, which refuses any not in `ALLOWED_TENANT_DOMAINS`.
+2. Set `CUSTOMER_TENANT_DOMAIN` for that environment in `scripts/load-secrets.sh` and merge it. The merge deploys, and Keycast creates the customer tenant at startup.
+3. Give the hostname to the orders app; it sends its Keycast calls there.
+4. Once Synvya Server has the deletion endpoint (§9), set `SYNVYA_SERVER_DELETION_URL`. The deploy does not write it yet, so it has to be added to `scripts/load-secrets.sh`.
 
 **Once per merchant — the approved list:** `POST /api/admin/customer-origins` on the owner hostname with `{ "origin": "https://orders.example.com", "merchant_name": "Example Coffee", "merchant_pubkey": "<hex or npub>" }`. `merchant_pubkey` is required, and a missing or invalid one gets 400. Check it: customers signing in through that app can only send orders to this key. It works at once, with no deploy, and fails until the customer hostname is set. There is no screen for it yet. A merchant not on the list gets 400 on sign-in requests and no email is sent. Posting the same origin again changes its name and key for new sign-ins; customers already signed in keep the merchant they were granted until revoked.
