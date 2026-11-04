@@ -165,7 +165,9 @@ Each environment has a dedicated AWS WAF Web ACL associated with its dedicated K
 
 ### Rules
 
-**Rate-based rules** (10 requests per 1 minute per IP, action: Block):
+The two environments have different rules. A web ACL covers every hostname on its load balancer, including the customer hostname.
+
+**Production — rate-based rules** (10 requests per 1 minute per IP, action: Block):
 
 | Rule | URI path | Protects |
 |---|---|---|
@@ -173,9 +175,13 @@ Each environment has a dedicated AWS WAF Web ACL associated with its dedicated K
 | `rate-limit-forgot-password` | `/api/auth/forgot-password` | Password reset email |
 | `rate-limit-claim` | `/claim` | Account claim email |
 
-**Managed rule groups** (always on):
+**Staging — managed rule groups:**
 
-- `AWSManagedRulesAmazonIpReputationList` — blocks known bot and scanner IPs
+- `AWSManagedRulesAmazonIpReputationList` — known bot and scanner IPs
+- `AWSManagedRulesCommonRuleSet` — common web attacks, and request bodies over 8 KB
+- `AWSManagedRulesKnownBadInputsRuleSet` — request patterns known to be malicious
+
+Neither environment has a WAF rule for `/api/auth/magic-link`, which also sends email. Keycast's own rate limits apply to it.
 
 ### Notes
 
