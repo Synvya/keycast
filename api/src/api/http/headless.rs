@@ -71,6 +71,7 @@ pub struct HeadlessRegisterResponse {
 pub async fn headless_register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
+    headers: axum::http::HeaderMap,
     Json(mut req): Json<HeadlessRegisterRequest>,
 ) -> Result<impl IntoResponse, HeadlessError> {
     let pool = &auth_state.state.db;
@@ -78,6 +79,19 @@ pub async fn headless_register(
     let tenant_id = tenant.0.id;
 
     req.email = req.email.to_lowercase();
+
+    let redis = auth_state.state.redis.as_ref();
+    if !crate::rate_limit::allow_request(
+        redis,
+        "headless_register",
+        tenant_id,
+        &headers,
+        Some(&req.email),
+    )
+    .await
+    {
+        return Err(HeadlessError::TooManyRequests);
+    }
 
     tracing::info!(
         event = "headless_registration_attempt",
@@ -451,7 +465,7 @@ pub async fn headless_authorize(
     let tenant_id = tenant.0.id;
 
     // Extract user from UCAN Bearer token
-    let user_pubkey = super::auth::extract_user_from_token(&headers)
+    let user_pubkey = super::auth::extract_user_from_token(&headers, tenant_id)
         .await
         .map_err(|_| HeadlessError::Unauthorized)?;
 
@@ -509,6 +523,7 @@ pub async fn headless_authorize(
 
 #[derive(Debug)]
 pub enum HeadlessError {
+    TooManyRequests,
     Unauthorized,
     EmailNotVerified,
     InvalidRequest(String),
@@ -523,6 +538,11 @@ pub enum HeadlessError {
 impl IntoResponse for HeadlessError {
     fn into_response(self) -> Response {
         let (status, message, code) = match self {
+            HeadlessError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.".to_string(),
+                "TOO_MANY_REQUESTS",
+            ),
             HeadlessError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "Invalid email or password".to_string(),

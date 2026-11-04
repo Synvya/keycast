@@ -4,14 +4,17 @@
 // Tests that the signer properly enforces policy permissions before signing/encrypting/decrypting
 
 use chrono::{Duration, Utc};
+use cluster_hashring::ClusterCoordinator;
 use keycast_core::encryption::{file_key_manager::FileKeyManager, KeyManager};
 use keycast_core::signing_handler::SigningHandler;
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::oauth_authorization::OAuthAuthorization;
-use keycast_signer::Nip46Handler;
+use keycast_signer::{Nip46Handler, SignerError, UnifiedSigner};
+use moka::future::Cache;
 use nostr_sdk::prelude::*;
 use serde_json::json;
 use sqlx::PgPool;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Helper to create test database with schema
@@ -894,3 +897,245 @@ async fn test_15_null_expiry_team_authorization_loads() {
 // TODO: Add tests for encrypt/decrypt validation
 // TODO: Add test for invalid policy_id handling
 // TODO: Add test for permission loading failure
+
+// ============================================================================
+// RELAY PATH: encrypt and decrypt go through handle_nip46_request
+// ============================================================================
+
+/// Send one NIP-46 request through the real relay handler.
+///
+/// The client has no relays, so a request that passes every check fails with `Client` when
+/// the response is published. A refused request returns `PermissionDenied` before that.
+async fn send_nip46_request(
+    pool: &PgPool,
+    handler: Nip46Handler,
+    bunker_keys: &Keys,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<(), SignerError> {
+    let redis_url =
+        std::env::var("TEST_REDIS_URL").unwrap_or_else(|_| "redis://localhost:16379".to_string());
+    // Its own ring, so this instance owns every bunker and the request is not skipped
+    let prefix = format!("test-{}", Uuid::new_v4());
+    let coordinator = Arc::new(
+        ClusterCoordinator::start_with_prefix(&redis_url, Some(&prefix))
+            .await
+            .expect("Failed to start coordinator"),
+    );
+    let key_manager: Arc<Box<dyn KeyManager>> = Arc::new(Box::new(
+        FileKeyManager::new().expect("Failed to create key manager"),
+    ));
+
+    let bunker_pubkey = bunker_keys.public_key();
+    let handlers: Cache<String, Nip46Handler> = Cache::builder().max_capacity(10).build();
+    handlers.insert(bunker_pubkey.to_hex(), handler).await;
+
+    // One client throughout: an authorization only accepts the first client that uses it
+    let client_keys = Keys::parse(&format!("{}2", "0".repeat(63))).unwrap();
+    let request = json!({ "id": "test-request", "method": method, "params": params });
+    let content = nip44::encrypt(
+        client_keys.secret_key(),
+        &bunker_pubkey,
+        request.to_string(),
+        nip44::Version::V2,
+    )
+    .expect("Failed to encrypt request");
+    let event = EventBuilder::new(Kind::NostrConnect, content)
+        .tag(Tag::public_key(bunker_pubkey))
+        .sign_with_keys(&client_keys)
+        .expect("Failed to sign request");
+
+    UnifiedSigner::handle_nip46_request(
+        handlers,
+        Client::default(),
+        Box::new(event),
+        pool,
+        &key_manager,
+        &coordinator,
+    )
+    .await
+}
+
+/// OAuth handler for a new user whose authorization has this policy (user key is the bunker key).
+async fn oauth_handler(
+    pool: &PgPool,
+    permission_configs: Vec<(&str, serde_json::Value)>,
+) -> (Nip46Handler, Keys) {
+    let key_manager = FileKeyManager::new().expect("Failed to create key manager");
+    let (policy_id, _team_id) = create_policy_with_permissions(pool, 1, permission_configs).await;
+    let (oauth_auth, user_keys) =
+        create_oauth_authorization(pool, 1, Some(policy_id), &key_manager).await;
+    let handler = Nip46Handler::new_for_test(
+        user_keys.clone(),
+        user_keys.clone(),
+        oauth_auth.secret_hash.clone(),
+        oauth_auth.id,
+        1,
+        true,
+        pool.clone(),
+    );
+    (handler, user_keys)
+}
+
+/// Both encrypt methods for this recipient.
+async fn encrypt_results(
+    pool: &PgPool,
+    handler: &Nip46Handler,
+    bunker_keys: &Keys,
+    recipient: &PublicKey,
+) -> Vec<Result<(), SignerError>> {
+    let mut results = Vec::new();
+    for method in ["nip44_encrypt", "nip04_encrypt"] {
+        results.push(
+            send_nip46_request(
+                pool,
+                handler.clone(),
+                bunker_keys,
+                method,
+                json!([recipient.to_hex(), "hello"]),
+            )
+            .await,
+        );
+    }
+    results
+}
+
+/// Both decrypt methods for a real ciphertext from this sender.
+async fn decrypt_results(
+    pool: &PgPool,
+    handler: &Nip46Handler,
+    user_keys: &Keys,
+    sender: &Keys,
+) -> Vec<Result<(), SignerError>> {
+    let nip44_ciphertext = nip44::encrypt(
+        sender.secret_key(),
+        &user_keys.public_key(),
+        "hello",
+        nip44::Version::V2,
+    )
+    .unwrap();
+    let nip04_ciphertext =
+        nip04::encrypt(sender.secret_key(), &user_keys.public_key(), "hello").unwrap();
+
+    let mut results = Vec::new();
+    for (method, ciphertext) in [
+        ("nip44_decrypt", nip44_ciphertext),
+        ("nip04_decrypt", nip04_ciphertext),
+    ] {
+        results.push(
+            send_nip46_request(
+                pool,
+                handler.clone(),
+                user_keys,
+                method,
+                json!([sender.public_key().to_hex(), ciphertext]),
+            )
+            .await,
+        );
+    }
+    results
+}
+
+fn assert_all_refused(results: Vec<Result<(), SignerError>>) {
+    for result in results {
+        assert!(
+            matches!(result, Err(SignerError::PermissionDenied(_))),
+            "Expected the policy to refuse this request, got {result:?}"
+        );
+    }
+}
+
+/// Passed every check, did the crypto, and got as far as publishing the response.
+fn assert_all_allowed(results: Vec<Result<(), SignerError>>) {
+    for result in results {
+        assert!(
+            matches!(result, Err(SignerError::Client(_))),
+            "Expected the request to reach publishing, got {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_16_relay_encrypt_to_self_refuses_another_recipient() {
+    let pool = setup_test_db().await;
+    let (handler, user_keys) = oauth_handler(&pool, vec![("encrypt_to_self", json!({}))]).await;
+    let other = Keys::generate().public_key();
+
+    assert_all_refused(encrypt_results(&pool, &handler, &user_keys, &other).await);
+    assert_all_allowed(encrypt_results(&pool, &handler, &user_keys, &user_keys.public_key()).await);
+}
+
+#[tokio::test]
+async fn test_17_relay_encrypt_to_self_refuses_another_sender() {
+    let pool = setup_test_db().await;
+    let (handler, user_keys) = oauth_handler(&pool, vec![("encrypt_to_self", json!({}))]).await;
+    let other = Keys::generate();
+
+    assert_all_refused(decrypt_results(&pool, &handler, &user_keys, &other).await);
+    assert_all_allowed(decrypt_results(&pool, &handler, &user_keys, &user_keys).await);
+}
+
+#[tokio::test]
+async fn test_18_relay_decrypt_only_refuses_encrypt() {
+    let pool = setup_test_db().await;
+    let (handler, user_keys) = oauth_handler(&pool, vec![("decrypt_only", json!({}))]).await;
+    let other = Keys::generate();
+
+    assert_all_refused(encrypt_results(&pool, &handler, &user_keys, &other.public_key()).await);
+    assert_all_allowed(decrypt_results(&pool, &handler, &user_keys, &other).await);
+}
+
+#[tokio::test]
+async fn test_19_relay_full_access_allows_encrypt_and_decrypt() {
+    let pool = setup_test_db().await;
+    let (handler, user_keys) = oauth_handler(&pool, vec![("full_access", json!({}))]).await;
+    let other = Keys::generate();
+
+    assert_all_allowed(encrypt_results(&pool, &handler, &user_keys, &other.public_key()).await);
+    assert_all_allowed(decrypt_results(&pool, &handler, &user_keys, &other).await);
+}
+
+#[tokio::test]
+async fn test_20_relay_no_policy_allows_encrypt_and_decrypt() {
+    let pool = setup_test_db().await;
+    let key_manager = FileKeyManager::new().expect("Failed to create key manager");
+    let (oauth_auth, user_keys) = create_oauth_authorization(&pool, 1, None, &key_manager).await;
+    let handler = Nip46Handler::new_for_test(
+        user_keys.clone(),
+        user_keys.clone(),
+        oauth_auth.secret_hash.clone(),
+        oauth_auth.id,
+        1,
+        true,
+        pool.clone(),
+    );
+    let other = Keys::generate();
+
+    assert_all_allowed(encrypt_results(&pool, &handler, &user_keys, &other.public_key()).await);
+    assert_all_allowed(decrypt_results(&pool, &handler, &user_keys, &other).await);
+}
+
+#[tokio::test]
+async fn test_21_relay_team_authorization_is_checked_too() {
+    let pool = setup_test_db().await;
+    let key_manager = FileKeyManager::new().expect("Failed to create key manager");
+    let (policy_id, team_id) =
+        create_policy_with_permissions(&pool, 1, vec![("encrypt_to_self", json!({}))]).await;
+    let (auth, bunker_keys, user_keys) =
+        create_test_authorization(&pool, 1, team_id, policy_id, &key_manager).await;
+    let handler = Nip46Handler::new_for_test(
+        bunker_keys.clone(),
+        user_keys.clone(),
+        auth.secret_hash.clone(),
+        auth.id,
+        1,
+        false,
+        pool.clone(),
+    );
+    let other = Keys::generate().public_key();
+
+    assert_all_refused(encrypt_results(&pool, &handler, &bunker_keys, &other).await);
+    assert_all_allowed(
+        encrypt_results(&pool, &handler, &bunker_keys, &user_keys.public_key()).await,
+    );
+}

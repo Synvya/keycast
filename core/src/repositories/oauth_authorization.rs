@@ -304,6 +304,7 @@ impl OAuthAuthorizationRepository {
              WHERE user_pubkey = $1
              AND redirect_origin = $2
              AND tenant_id = $3
+             AND revoked_at IS NULL
              AND (expires_at IS NULL OR expires_at > NOW())",
         )
         .bind(user_pubkey)
@@ -337,7 +338,54 @@ impl OAuthAuthorizationRepository {
         Ok(exists.is_some())
     }
 
-    /// Find the most recent bunker pubkey for a user.
+    /// The apps that can act for a customer: one row per origin, however many times they
+    /// signed in there, with when access was first granted and the merchant's name.
+    pub async fn list_customer_apps(
+        &self,
+        user_pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<Vec<(String, Option<String>, DateTime<Utc>)>, RepositoryError> {
+        sqlx::query_as(
+            "SELECT oa.redirect_origin, cao.merchant_name, MIN(oa.created_at)
+             FROM oauth_authorizations oa
+             LEFT JOIN customer_app_origins cao
+               ON cao.tenant_id = oa.tenant_id AND cao.origin = oa.redirect_origin
+             WHERE oa.user_pubkey = $1 AND oa.tenant_id = $2
+               AND oa.revoked_at IS NULL
+               AND (oa.expires_at IS NULL OR oa.expires_at > NOW())
+             GROUP BY oa.redirect_origin, cao.merchant_name
+             ORDER BY MIN(oa.created_at)",
+        )
+        .bind(user_pubkey)
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Revoke everything a customer has granted one app. Returns the (id, bunker pubkey) of
+    /// what was revoked.
+    pub async fn revoke_by_origin(
+        &self,
+        user_pubkey: &str,
+        redirect_origin: &str,
+        tenant_id: i64,
+    ) -> Result<Vec<(i32, String)>, RepositoryError> {
+        sqlx::query_as(
+            "UPDATE oauth_authorizations SET revoked_at = NOW(), updated_at = NOW()
+             WHERE user_pubkey = $1 AND redirect_origin = $2 AND tenant_id = $3
+               AND revoked_at IS NULL
+             RETURNING id, bunker_public_key",
+        )
+        .bind(user_pubkey)
+        .bind(redirect_origin)
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Find the most recent bunker pubkey among a user's non-revoked authorizations.
     pub async fn find_latest_bunker_pubkey(
         &self,
         user_pubkey: &str,
@@ -348,6 +396,7 @@ impl OAuthAuthorizationRepository {
              FROM oauth_authorizations oa
              JOIN users u ON oa.user_pubkey = u.pubkey
              WHERE oa.user_pubkey = $1 AND u.tenant_id = $2
+             AND oa.revoked_at IS NULL
              ORDER BY oa.created_at DESC
              LIMIT 1",
         )

@@ -12,6 +12,7 @@ use secrecy::ExposeSecret;
 use super::routes::AuthState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::extractors::UcanAuth;
+use crate::handlers::http_rpc_handler::invalidate_handlers_for_bunker;
 use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::metrics::METRICS;
@@ -19,6 +20,7 @@ use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
     RestaurantKeySummary, StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
 };
+use keycast_core::repositories::{CustomerAppOrigin, CustomerAppOriginRepository};
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::claim_token::generate_claim_token;
 
@@ -1416,6 +1418,9 @@ pub async fn revoke_authorization(
         ));
     };
 
+    // Stop serving it from the HTTP RPC cache
+    invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, &bunker_pubkey);
+
     // Notify the signer daemon to drop the in-memory handler. If the channel
     // send fails, the DB write still stands; a daemon restart will pick up the
     // revoked state on next lazy load.
@@ -1688,6 +1693,8 @@ pub async fn release_team_support_access(
             continue;
         }
         revoked_count += 1;
+
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
 
         if let Some(tx) = &auth_state.auth_tx {
             use keycast_core::authorization_channel::AuthorizationCommand;
@@ -1984,6 +1991,10 @@ pub async fn delete_user(
             other => ApiError::Internal(format!("Failed to delete user: {}", other)),
         })?;
 
+    for bunker_pubkey in &result.bunker_pubkeys {
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
+    }
+
     if let Some(tx) = &auth_state.auth_tx {
         use keycast_core::authorization_channel::AuthorizationCommand;
         for bunker_pubkey in &result.bunker_pubkeys {
@@ -2013,4 +2024,126 @@ pub async fn delete_user(
         "deleted": true,
         "teams_removed": result.teams_removed,
     })))
+}
+
+// ============================================================================
+// /api/admin/customer-origins - the merchants' orders apps on the customer tenant
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct AddCustomerOriginRequest {
+    pub origin: String,
+    pub merchant_name: String,
+    /// Hex or npub. Defaults to empty so a missing key gets the same 400 as an invalid one.
+    #[serde(default)]
+    pub merchant_pubkey: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoveCustomerOriginRequest {
+    pub origin: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RemoveCustomerOriginResponse {
+    pub removed: bool,
+}
+
+/// The customer tenant's id. These routes run on another hostname, since the customer hostname
+/// has no admin routes.
+async fn customer_tenant_id(pool: &sqlx::PgPool) -> ApiResult<i64> {
+    let domain = crate::api::tenant::customer_tenant_domain()
+        .ok_or_else(|| ApiError::bad_request("CUSTOMER_TENANT_DOMAIN is not set"))?;
+    crate::api::tenant::get_tenant_by_domain(pool, &domain)
+        .await
+        .map(|tenant| tenant.id)
+        .map_err(Into::into)
+}
+
+/// Reduce a URL to its origin, refusing anything that is not a plain web origin.
+fn normalize_app_origin(origin: &str) -> ApiResult<String> {
+    let url = nostr_sdk::Url::parse(origin.trim())
+        .map_err(|_| ApiError::bad_request("Invalid origin"))?;
+    let is_local = matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"));
+    let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && is_local);
+    let is_only_an_origin = url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+
+    if allowed_scheme && is_only_an_origin {
+        Ok(url.origin().ascii_serialization())
+    } else {
+        Err(ApiError::bad_request(
+            "Invalid origin: use https://orders.example.com",
+        ))
+    }
+}
+
+/// Read a merchant's key, given as hex or npub, as hex.
+fn normalize_merchant_pubkey(pubkey: &str) -> ApiResult<String> {
+    let pubkey = pubkey.trim();
+    nostr_sdk::PublicKey::from_hex(pubkey)
+        .or_else(|_| nostr_sdk::PublicKey::from_bech32(pubkey))
+        .map(|pubkey| pubkey.to_hex())
+        .map_err(|_| ApiError::bad_request("Invalid merchant_pubkey: use hex or npub"))
+}
+
+/// GET /api/admin/customer-origins
+pub async fn list_customer_origins(
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+) -> ApiResult<Json<Vec<CustomerAppOrigin>>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+    let pool = &auth_state.state.db;
+    let tenant_id = customer_tenant_id(pool).await?;
+    let origins = CustomerAppOriginRepository::new(pool.clone())
+        .list(tenant_id)
+        .await?;
+    Ok(Json(origins))
+}
+
+/// POST /api/admin/customer-origins - add a merchant's orders app. Takes effect at once.
+pub async fn add_customer_origin(
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Json(req): Json<AddCustomerOriginRequest>,
+) -> ApiResult<Json<CustomerAppOrigin>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+    let origin = normalize_app_origin(&req.origin)?;
+    let merchant_name = req.merchant_name.trim();
+    if merchant_name.is_empty() {
+        return Err(ApiError::bad_request("merchant_name is required"));
+    }
+    let merchant_pubkey = normalize_merchant_pubkey(&req.merchant_pubkey)?;
+
+    let pool = &auth_state.state.db;
+    let tenant_id = customer_tenant_id(pool).await?;
+    let added = CustomerAppOriginRepository::new(pool.clone())
+        .add(tenant_id, &origin, merchant_name, &merchant_pubkey)
+        .await?;
+    Ok(Json(added))
+}
+
+/// DELETE /api/admin/customer-origins - stop new sign-ins from a merchant's orders app.
+pub async fn remove_customer_origin(
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Json(req): Json<RemoveCustomerOriginRequest>,
+) -> ApiResult<Json<RemoveCustomerOriginResponse>> {
+    if !is_full_admin(&auth) {
+        return Err(ApiError::forbidden("Admin access required"));
+    }
+    let origin = normalize_app_origin(&req.origin)?;
+    let pool = &auth_state.state.db;
+    let tenant_id = customer_tenant_id(pool).await?;
+    let removed = CustomerAppOriginRepository::new(pool.clone())
+        .remove(tenant_id, &origin)
+        .await?;
+    Ok(Json(RemoveCustomerOriginResponse { removed }))
 }

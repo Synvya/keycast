@@ -1,5 +1,6 @@
 #[cfg(feature = "aws")]
 pub mod aws_key_manager;
+pub mod caching_key_manager;
 pub mod file_key_manager;
 pub mod gcp_key_manager;
 

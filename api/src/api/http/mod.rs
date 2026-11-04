@@ -5,6 +5,7 @@ pub mod atproto_oauth_metadata;
 pub mod auth;
 pub mod claim;
 pub mod headless;
+pub mod magic_link;
 pub mod metrics;
 pub mod nostr_rpc;
 pub mod oauth;

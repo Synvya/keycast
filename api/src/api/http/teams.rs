@@ -653,6 +653,7 @@ pub async fn invite_user(
         ..
     }: UcanAuth,
     Path(team_id): Path<i32>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<InviteRequest>,
 ) -> ApiResult<Json<InviteResponse>> {
     let tenant_id = tenant.0.id;
@@ -660,6 +661,13 @@ pub async fn invite_user(
 
     // Normalize email
     let email = request.email.trim().to_lowercase();
+
+    let redis = crate::rate_limit::shared_redis();
+    if !crate::rate_limit::allow_request(redis, "team_invite", tenant_id, &headers, Some(&email))
+        .await
+    {
+        return Err(ApiError::TooManyRequests);
+    }
 
     // Basic email validation
     if !email.contains('@') || email.len() < 5 {

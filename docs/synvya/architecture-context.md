@@ -16,6 +16,7 @@ It does not own Synvya's business API or discovery cache. Those live in `Synvya/
 | [`docs/synvya/specs/keycast-boundary.md`](specs/keycast-boundary.md) | Keycast-specific ownership boundary inside Synvya |
 | [`docs/synvya/restaurant-team-e2e.md`](restaurant-team-e2e.md) | How to provision a preserved restaurant signer in Keycast for Synvya server E2E |
 | [`docs/synvya/server-e2e-handoff.md`](server-e2e-handoff.md) | Concrete handoff instructions for the `Synvya/server` coding session |
+| [`docs/synvya/customer-accounts.md`](customer-accounts.md) | Passwordless customer accounts for the orders app: email-link sign-in, the commerce permission, tenant isolation and the fixes before launch. Session prompt: [`customer-accounts-session-prompt.md`](customer-accounts-session-prompt.md) |
 | [`Synvya/mcp-server` — Thin Client Migration](https://github.com/Synvya/mcp-server/blob/main/docs/specs/thin-client-migration.md) | MCP migration toward thin Server-backed APIs |
 
 ## What Keycast Owns

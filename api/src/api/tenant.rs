@@ -3,8 +3,10 @@
 
 use axum::{
     async_trait,
-    extract::FromRequestParts,
+    extract::{FromRequestParts, Request},
     http::{request::Parts, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -63,6 +65,11 @@ impl Tenant {
             .unwrap_or_else(get_default_relay)
     }
 
+    /// Whether this is the tenant of passwordless customer accounts (CUSTOMER_TENANT_DOMAIN)
+    pub fn is_customer_tenant(&self) -> bool {
+        customer_tenant_domain().as_deref() == Some(self.domain.as_str())
+    }
+
     /// Get email from address with fallback
     pub fn email_from(&self) -> String {
         self.get_settings()
@@ -70,6 +77,63 @@ impl Tenant {
             .and_then(|s| s.email_from)
             .unwrap_or_else(|| format!("noreply@{}", self.domain))
     }
+}
+
+/// The customer tenant's hostname. Customer accounts are off until CUSTOMER_TENANT_DOMAIN is set.
+pub fn customer_tenant_domain() -> Option<String> {
+    std::env::var("CUSTOMER_TENANT_DOMAIN")
+        .ok()
+        .map(|domain| domain.trim().to_string())
+        .filter(|domain| !domain.is_empty())
+}
+
+/// The hostname a request is for, without its port.
+fn request_domain(parts: &Parts) -> Option<String> {
+    // Extract host from Host header (HTTP/1.1) or URI authority (HTTP/2)
+    // In HTTP/2, the :authority pseudo-header replaces Host, and hyper puts it in the URI
+    let host = parts
+        .headers
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| parts.uri.host().map(|h| h.to_string()))?;
+
+    // Remove port if present (e.g., "localhost:3000" -> "localhost")
+    host.split(':').next().map(|domain| domain.to_string())
+}
+
+/// The API routes that exist on the customer tenant's hostname.
+fn is_customer_route(path: &str) -> bool {
+    matches!(
+        path,
+        "/nostr"
+            | "/auth/magic-link"
+            | "/auth/magic-link/verify"
+            | "/customer/account"
+            | "/customer/authorizations"
+            | "/customer/authorizations/revoke"
+    )
+}
+
+/// Keep the customer tenant to its own routes.
+///
+/// A customer's session is held by the orders app, whose permission is limited to placing
+/// orders. Most other routes would undo that (creating a full-access bunker, signing directly)
+/// or give the customer a password. Other tenants are not affected.
+pub async fn customer_tenant_guard(request: Request, next: Next) -> Response {
+    let (parts, body) = request.into_parts();
+
+    if let (Some(customer_domain), Some(domain)) =
+        (customer_tenant_domain(), request_domain(&parts))
+    {
+        let path = parts.uri.path();
+        let path = path.strip_prefix("/api").unwrap_or(path);
+        if domain == customer_domain && !is_customer_route(path) {
+            return (StatusCode::NOT_FOUND, "Not found").into_response();
+        }
+    }
+
+    next.run(Request::from_parts(parts, body)).await
 }
 
 /// Extractor for tenant context
@@ -84,18 +148,23 @@ where
     type Rejection = (StatusCode, String);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // Extract host from Host header (HTTP/1.1) or URI authority (HTTP/2)
-        // In HTTP/2, the :authority pseudo-header replaces Host, and hyper puts it in the URI
-        let host = parts
-            .headers
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string())
-            .or_else(|| parts.uri.host().map(|h| h.to_string()))
+        let domain = request_domain(parts)
             .ok_or((StatusCode::BAD_REQUEST, "Missing Host header".to_string()))?;
+        let domain = domain.as_str();
 
-        // Remove port if present (e.g., "localhost:3000" -> "localhost")
-        let domain = host.split(':').next().unwrap_or(&host);
+        // Checked before the cache: the cache is preloaded from every tenant in the database,
+        // including any provisioned before the allowlist was set
+        if !domain_is_allowed(domain) {
+            tracing::warn!(
+                target: "tenant_validation",
+                domain = %domain,
+                "Domain not in allowed list"
+            );
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Invalid domain: {}", domain),
+            ));
+        }
 
         // FAST PATH: Check tenant cache first (preloaded at startup)
         let tenant_cache = crate::state::get_tenant_cache().map_err(|_| {
@@ -212,6 +281,14 @@ pub async fn list_tenants(pool: &PgPool) -> Result<Vec<Tenant>, sqlx::Error> {
     .await
 }
 
+/// Whether ALLOWED_TENANT_DOMAINS permits this domain. Everything is permitted when it is unset.
+fn domain_is_allowed(domain: &str) -> bool {
+    match std::env::var("ALLOWED_TENANT_DOMAINS") {
+        Ok(allowed) => allowed.split(',').any(|d| d.trim() == domain),
+        Err(_) => true,
+    }
+}
+
 /// Validate domain format to prevent abuse
 fn validate_domain(domain: &str) -> Result<(), TenantError> {
     // Basic validation rules
@@ -222,9 +299,8 @@ fn validate_domain(domain: &str) -> Result<(), TenantError> {
     }
 
     // If ALLOWED_TENANT_DOMAINS is set, only allow those domains (prevents Host header spoofing)
-    if let Ok(allowed) = std::env::var("ALLOWED_TENANT_DOMAINS") {
-        let is_allowed = allowed.split(',').any(|d| d.trim() == domain);
-        if !is_allowed {
+    if std::env::var("ALLOWED_TENANT_DOMAINS").is_ok() {
+        if !domain_is_allowed(domain) {
             return Err(TenantError::ValidationFailed(format!(
                 "Domain '{}' not in allowed list",
                 domain
@@ -284,6 +360,14 @@ fn validate_domain(domain: &str) -> Result<(), TenantError> {
     }
 
     Ok(())
+}
+
+/// Create the customer tenant if CUSTOMER_TENANT_DOMAIN is set and it does not exist yet
+pub async fn ensure_customer_tenant(pool: &PgPool) -> Result<Option<Tenant>, TenantError> {
+    match customer_tenant_domain() {
+        Some(domain) => get_or_create_tenant(pool, &domain).await.map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Get default relay URL from BUNKER_RELAYS environment variable
@@ -494,6 +578,55 @@ mod tests {
 
         // Clean up
         std::env::remove_var("ALLOWED_TENANT_DOMAINS");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_unknown_host_gets_no_tenant() {
+        std::env::set_var("ALLOWED_TENANT_DOMAINS", "example.com");
+
+        // Refused before the cache and the database, so a tenant row for it would not help
+        let (mut parts, _) = axum::http::Request::builder()
+            .header("host", "spoofed.example.org")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let result = TenantExtractor::from_request_parts(&mut parts, &()).await;
+
+        std::env::remove_var("ALLOWED_TENANT_DOMAINS");
+
+        assert_eq!(
+            result.err().map(|(status, _)| status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_customer_tenant_is_set_by_domain() {
+        use chrono::Utc;
+        let tenant = Tenant {
+            id: 1,
+            domain: "customers.example.com".to_string(),
+            name: "Customers".to_string(),
+            settings: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        std::env::remove_var("CUSTOMER_TENANT_DOMAIN");
+        assert!(!tenant.is_customer_tenant());
+
+        std::env::set_var("CUSTOMER_TENANT_DOMAIN", "");
+        assert!(!tenant.is_customer_tenant());
+
+        std::env::set_var("CUSTOMER_TENANT_DOMAIN", "customers.example.com");
+        assert!(tenant.is_customer_tenant());
+
+        std::env::set_var("CUSTOMER_TENANT_DOMAIN", "other.example.com");
+        assert!(!tenant.is_customer_tenant());
+
+        std::env::remove_var("CUSTOMER_TENANT_DOMAIN");
     }
 
     #[test]

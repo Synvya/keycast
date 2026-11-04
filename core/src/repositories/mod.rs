@@ -4,7 +4,10 @@
 mod atproto_oauth_session;
 mod authorization;
 mod claim_token;
+mod customer_app_origin;
+mod deletion_notice;
 mod error;
+mod magic_link_token;
 mod oauth_authorization;
 mod oauth_code;
 mod personal_keys;
@@ -22,7 +25,13 @@ pub use atproto_oauth_session::{
 };
 pub use authorization::AuthorizationRepository;
 pub use claim_token::ClaimTokenRepository;
+pub use customer_app_origin::{CustomerAppOrigin, CustomerAppOriginRepository};
+pub use deletion_notice::{DeletionNotice, DeletionNoticeRepository};
 pub use error::RepositoryError;
+pub use magic_link_token::{
+    hash_magic_link_token, ConsumedMagicLink, MagicLinkTokenRepository, PURPOSE_DELETE_ACCOUNT,
+    PURPOSE_SIGN_IN,
+};
 pub use oauth_authorization::{CreateOAuthAuthorizationParams, OAuthAuthorizationRepository};
 pub use oauth_code::{
     OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams,

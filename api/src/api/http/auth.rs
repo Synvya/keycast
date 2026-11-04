@@ -14,7 +14,11 @@ use secrecy::{ExposeSecret, SecretString};
 use super::admin::{is_full_admin, is_support_admin};
 use crate::api::extractors::UcanAuth;
 use crate::bcrypt_queue::{BcryptJob, BcryptQueueError};
+use crate::handlers::http_rpc_handler::{
+    invalidate_handlers_for_bunker, invalidate_handlers_for_user,
+};
 use crate::nip98;
+use crate::rate_limit;
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
     CreateOAuthAuthorizationParams, OAuthAuthorizationRepository, OAuthCodeRepository,
@@ -119,6 +123,33 @@ pub async fn generate_server_signed_ucan(
     is_first_party: bool,
     admin_role: Option<&str>,
 ) -> Result<String, AuthError> {
+    generate_server_signed_ucan_with_lifetime(
+        user_pubkey,
+        tenant_id,
+        email,
+        redirect_origin,
+        bunker_pubkey,
+        server_keys,
+        is_first_party,
+        admin_role,
+        token_expiry_seconds() as u64,
+    )
+    .await
+}
+
+/// Same as [`generate_server_signed_ucan`], for a session shorter than the usual one.
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_server_signed_ucan_with_lifetime(
+    user_pubkey: &nostr_sdk::PublicKey,
+    tenant_id: i64,
+    email: &str,
+    redirect_origin: &str,
+    bunker_pubkey: Option<&str>,
+    server_keys: &Keys,
+    is_first_party: bool,
+    admin_role: Option<&str>,
+    lifetime_seconds: u64,
+) -> Result<String, AuthError> {
     use crate::ucan_auth::{nostr_pubkey_to_did, NostrKeyMaterial};
     use serde_json::json;
     use ucan::builder::UcanBuilder;
@@ -144,7 +175,7 @@ pub async fn generate_server_signed_ucan(
     let ucan = UcanBuilder::default()
         .issued_by(&server_key_material) // Server issues
         .for_audience(&user_did) // For this user
-        .with_lifetime(token_expiry_seconds() as u64)
+        .with_lifetime(lifetime_seconds)
         .with_fact(facts)
         .build()
         .map_err(|e| AuthError::Internal(format!("Failed to build UCAN: {}", e)))?
@@ -272,6 +303,7 @@ pub struct ProfileData {
 
 #[derive(Debug)]
 pub enum AuthError {
+    TooManyRequests,
     Database(sqlx::Error),
     PasswordHash(bcrypt::BcryptError),
     InvalidCredentials,
@@ -298,6 +330,10 @@ pub enum AuthError {
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            AuthError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.".to_string(),
+            ),
             AuthError::Database(e) => {
                 // Log the real error but return generic message to user
                 tracing::error!("Database error: {}", e);
@@ -427,9 +463,13 @@ impl From<bcrypt::BcryptError> for AuthError {
 }
 
 /// Extract user public key from UCAN token in Authorization header or cookie
-pub(crate) async fn extract_user_from_token(headers: &HeaderMap) -> Result<String, AuthError> {
+/// tenant_id is the tenant of the request; a session from another tenant is refused
+pub(crate) async fn extract_user_from_token(
+    headers: &HeaderMap,
+    tenant_id: i64,
+) -> Result<String, AuthError> {
     let (pubkey, _redirect_origin, _bunker_pubkey) =
-        extract_user_and_origin_from_token(headers).await?;
+        extract_user_and_origin_from_token(headers, tenant_id).await?;
     Ok(pubkey)
 }
 
@@ -438,6 +478,7 @@ pub(crate) async fn extract_user_from_token(headers: &HeaderMap) -> Result<Strin
 /// bunker_pubkey uniquely identifies the authorization for direct cache lookup (optional)
 pub(crate) async fn extract_user_and_origin_from_token(
     headers: &HeaderMap,
+    tenant_id: i64,
 ) -> Result<(String, String, Option<String>), AuthError> {
     // Try Bearer token first
     if let Some(auth_header) = headers.get("Authorization") {
@@ -445,7 +486,7 @@ pub(crate) async fn extract_user_and_origin_from_token(
 
         if auth_str.starts_with("Bearer ") {
             // Validate UCAN token and extract user pubkey, redirect_origin, and bunker_pubkey
-            return crate::ucan_auth::extract_user_from_ucan(headers, 0)
+            return crate::ucan_auth::extract_user_from_ucan(headers, tenant_id)
                 .await
                 .map_err(|_| AuthError::InvalidToken);
         }
@@ -453,9 +494,9 @@ pub(crate) async fn extract_user_and_origin_from_token(
 
     // Fall back to cookie-based UCAN
     if let Some(token) = extract_ucan_from_cookie(headers) {
-        // Parse UCAN from string using ucan_auth helper (tenant validation done by caller)
+        // Parse UCAN from string using ucan_auth helper
         let (pubkey, redirect_origin, bunker_pubkey, _ucan) =
-            crate::ucan_auth::validate_ucan_token(&format!("Bearer {}", token), 0)
+            crate::ucan_auth::validate_ucan_token(&format!("Bearer {}", token), tenant_id)
                 .await
                 .map_err(|e| {
                     tracing::warn!("UCAN parse error from cookie: {}", e);
@@ -628,7 +669,7 @@ async fn nostr_auth_login(
 pub async fn register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(mut req): Json<RegisterRequest>,
 ) -> Result<impl axum::response::IntoResponse, AuthError> {
     let pool = &auth_state.state.db;
@@ -636,6 +677,11 @@ pub async fn register(
     let tenant_id = tenant.0.id;
 
     req.email = req.email.to_lowercase();
+
+    let redis = auth_state.state.redis.as_ref();
+    if !rate_limit::allow_request(redis, "register", tenant_id, &headers, Some(&req.email)).await {
+        return Err(AuthError::TooManyRequests);
+    }
 
     let instance_id = keycast_core::instance::instance_id();
 
@@ -880,7 +926,7 @@ pub async fn login(
     // Get user's Nostr keys from personal_keys
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret: Vec<u8> = personal_keys_repo
-        .find_encrypted_key(&public_key)
+        .find_encrypted_key_for_tenant(&public_key, tenant_id)
         .await?
         .ok_or_else(|| AuthError::Internal("Personal keys not found".to_string()))?;
 
@@ -991,7 +1037,7 @@ pub async fn create_bunker(
     headers: HeaderMap,
     Json(req): Json<CreateBunkerRequest>,
 ) -> Result<Json<CreateBunkerResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let pool = &auth_state.state.db;
     let tenant_id = tenant.0.id;
 
@@ -1015,7 +1061,7 @@ pub async fn create_bunker(
     // Get user's encrypted secret key
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret: Vec<u8> = personal_keys_repo
-        .find_encrypted_key(&user_pubkey)
+        .find_encrypted_key_for_tenant(&user_pubkey, tenant_id)
         .await?
         .ok_or(AuthError::Internal("Personal keys not found".to_string()))?;
 
@@ -1140,7 +1186,7 @@ pub async fn get_bunker_url(
 ) -> Result<Json<BunkerUrlResponse>, AuthError> {
     // Extract user pubkey AND redirect_origin from UCAN token
     let (user_pubkey, redirect_origin, _bunker_pubkey) =
-        extract_user_and_origin_from_token(&headers).await?;
+        extract_user_and_origin_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
         "get_bunker_url called for user: {} origin: {} in tenant: {}",
@@ -1535,7 +1581,7 @@ pub async fn verify_email(
     // Get user's keys to generate UCAN
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret = personal_keys_repo
-        .find_encrypted_key(&public_key)
+        .find_encrypted_key_for_tenant(&public_key, tenant_id)
         .await?
         .ok_or_else(|| AuthError::Internal("Personal keys not found".to_string()))?;
 
@@ -1616,7 +1662,23 @@ pub async fn resend_verification(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
     headers: HeaderMap,
-    Json(mut req): Json<ResendVerificationRequest>,
+    Json(req): Json<ResendVerificationRequest>,
+) -> Result<Json<ResendVerificationResponse>, AuthError> {
+    let email = req.email.as_deref();
+    let tenant_id = tenant.0.id;
+    let redis = rate_limit::shared_redis();
+    if !rate_limit::allow_request(redis, "resend_verification", tenant_id, &headers, email).await {
+        return Err(AuthError::TooManyRequests);
+    }
+
+    Ok(send_verification_again(tenant, pool, headers, req).await)
+}
+
+async fn send_verification_again(
+    tenant: crate::api::tenant::TenantExtractor,
+    pool: PgPool,
+    headers: HeaderMap,
+    mut req: ResendVerificationRequest,
 ) -> Json<ResendVerificationResponse> {
     let tenant_id = tenant.0.id;
     if let Some(ref mut email) = req.email {
@@ -1625,7 +1687,7 @@ pub async fn resend_verification(
 
     // Try to get user identity from token first, then fall back to email
     let lookup_result: Option<(String, String, bool, Option<chrono::DateTime<chrono::Utc>>)> =
-        if let Ok(user_pubkey) = extract_user_from_token(&headers).await {
+        if let Ok(user_pubkey) = extract_user_from_token(&headers, tenant.0.id).await {
             // Authenticated: look up by pubkey
             let user_repo = UserRepository::new(pool.clone());
             match user_repo
@@ -1736,10 +1798,25 @@ pub async fn resend_verification(
 pub async fn forgot_password(
     tenant: crate::api::tenant::TenantExtractor,
     State(pool): State<PgPool>,
+    headers: HeaderMap,
     Json(mut req): Json<ForgotPasswordRequest>,
 ) -> Result<Json<ForgotPasswordResponse>, AuthError> {
     let tenant_id = tenant.0.id;
     req.email = req.email.to_lowercase();
+
+    let redis = rate_limit::shared_redis();
+    if !rate_limit::allow_request(
+        redis,
+        "forgot_password",
+        tenant_id,
+        &headers,
+        Some(&req.email),
+    )
+    .await
+    {
+        return Err(AuthError::TooManyRequests);
+    }
+
     tracing::info!(
         "Password reset requested for email: {} in tenant: {}",
         req.email,
@@ -1911,7 +1988,7 @@ pub async fn get_profile(
     State(pool): State<PgPool>,
     headers: HeaderMap,
 ) -> Result<Json<ProfileData>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
         "Fetching username for user: {} in tenant: {}",
@@ -1946,7 +2023,7 @@ pub async fn get_account_status(
     State(pool): State<PgPool>,
     headers: HeaderMap,
 ) -> Result<Json<AccountStatusResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::debug!(
         "Fetching account status for user: {} in tenant: {}",
@@ -1978,7 +2055,7 @@ pub async fn update_profile(
     headers: HeaderMap,
     Json(profile): Json<ProfileData>,
 ) -> Result<Json<serde_json::Value>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
@@ -2145,7 +2222,7 @@ pub async fn list_sessions(
     headers: HeaderMap,
 ) -> Result<Json<BunkerSessionsResponse>, AuthError> {
     // Extract user from UCAN (supports both cookie and Bearer token)
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
         "Listing bunker sessions for user: {} in tenant: {}",
@@ -2207,7 +2284,7 @@ pub async fn revoke_session(
 ) -> Result<Json<RevokeSessionResponse>, AuthError> {
     let pool = &auth_state.state.db;
     // Extract user from UCAN (supports both cookie and Bearer token)
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
         "Revoking bunker session for user: {} in tenant: {}",
@@ -2229,6 +2306,9 @@ pub async fn revoke_session(
     oauth_auth_repo
         .revoke_by_bunker_pubkey(&req.bunker_pubkey, &user_pubkey, tenant_id)
         .await?;
+
+    // Stop serving it from the HTTP RPC cache
+    invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, &req.bunker_pubkey);
 
     // Track OAuth authorization revoked
     METRICS.inc_oauth_revoked();
@@ -2279,7 +2359,7 @@ pub async fn disconnect_client(
     headers: HeaderMap,
     Json(req): Json<DisconnectClientRequest>,
 ) -> Result<Json<DisconnectClientResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
         "Disconnecting NIP-46 client for user: {} in tenant: {}",
@@ -2342,7 +2422,7 @@ pub async fn list_permissions(
     State(pool): State<PgPool>,
     headers: HeaderMap,
 ) -> Result<Json<PermissionsResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
     tracing::info!(
         "Listing permissions for user: {} in tenant: {}",
@@ -2738,7 +2818,7 @@ pub async fn sign_event(
     Json(req): Json<SignEventRequest>,
 ) -> Result<Json<SignEventResponse>, AuthError> {
     let (user_pubkey, redirect_origin, _bunker_pubkey) =
-        extract_user_and_origin_from_token(&headers).await?;
+        extract_user_and_origin_from_token(&headers, tenant.0.id).await?;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
     let tenant_id = tenant.0.id;
@@ -2848,7 +2928,7 @@ pub async fn get_pubkey(
     State(pool): State<PgPool>,
     headers: HeaderMap,
 ) -> Result<Json<PubkeyResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
 
     tracing::info!(
@@ -2901,7 +2981,7 @@ pub async fn verify_password_for_export(
     headers: HeaderMap,
     Json(req): Json<VerifyPasswordRequest>,
 ) -> Result<Json<VerifyPasswordResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
 
     // Get user's email and password hash
@@ -2941,7 +3021,7 @@ pub async fn change_password(
     headers: HeaderMap,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<serde_json::Value>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let tenant_id = tenant.0.id;
 
     // Validate new password length
@@ -3010,7 +3090,7 @@ pub async fn export_key(
     headers: HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> Result<Json<ExportKeyResponse>, AuthError> {
-    let user_pubkey = extract_user_from_token(&headers).await?;
+    let user_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
     let tenant_id = tenant.0.id;
@@ -3084,7 +3164,7 @@ pub async fn change_key(
     headers: HeaderMap,
     Json(req): Json<ChangeKeyRequest>,
 ) -> Result<Response, AuthError> {
-    let old_pubkey = extract_user_from_token(&headers).await?;
+    let old_pubkey = extract_user_from_token(&headers, tenant.0.id).await?;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
     let tenant_id = tenant.0.id;
@@ -3139,6 +3219,9 @@ pub async fn change_key(
             &encrypted_secret,
         )
         .await?;
+
+    // Stop serving the old key from the HTTP RPC cache
+    invalidate_handlers_for_user(&auth_state.state.http_handler_cache, &old_pubkey);
 
     // Signal signer daemon to remove old authorizations
     if let Some(tx) = &auth_state.auth_tx {
@@ -3260,7 +3343,6 @@ pub async fn delete_account(
         tracing::warn!(
             event = "account_deletion_denied",
             tenant_id = tenant_id,
-            user = &user_pubkey[..8],
             redirect_origin = %redirect_origin,
             "Denied: not user-signed and not first-party"
         );
@@ -3273,7 +3355,6 @@ pub async fn delete_account(
     tracing::info!(
         event = "account_deletion_started",
         tenant_id = tenant_id,
-        user = &user_pubkey[..8],
         is_user_signed = is_user_signed,
         is_first_party = is_first_party,
         redirect_origin = %redirect_origin,
@@ -3282,19 +3363,27 @@ pub async fn delete_account(
 
     // Execute account deletion
     let user_repo = UserRepository::new(pool.clone());
-    let result = user_repo
-        .delete_account(&user_pubkey, tenant_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                event = "account_deletion_failed",
-                tenant_id = tenant_id,
-                user = &user_pubkey[..8],
-                error = %e,
-                "Database error during deletion"
-            );
-            AuthError::Database(sqlx::Error::Protocol(e.to_string()))
-        })?;
+    let deletion = if tenant.0.is_customer_tenant() {
+        user_repo
+            .delete_customer_account(&user_pubkey, tenant_id)
+            .await
+    } else {
+        user_repo.delete_account(&user_pubkey, tenant_id).await
+    };
+    let result = deletion.map_err(|e| {
+        tracing::error!(
+            event = "account_deletion_failed",
+            tenant_id = tenant_id,
+            error = %e,
+            "Database error during deletion"
+        );
+        AuthError::Database(sqlx::Error::Protocol(e.to_string()))
+    })?;
+
+    // Stop serving them from the HTTP RPC cache
+    for bunker_pubkey in &result.bunker_pubkeys {
+        invalidate_handlers_for_bunker(&auth_state.state.http_handler_cache, bunker_pubkey);
+    }
 
     // Signal signer daemon to remove bunker connections
     if let Some(tx) = &auth_state.auth_tx {
@@ -3317,7 +3406,6 @@ pub async fn delete_account(
     tracing::info!(
         event = "account_deletion_completed",
         tenant_id = tenant_id,
-        user = &user_pubkey[..8],
         teams_removed = result.teams_removed,
         oauth_auths_deleted = result.oauth_authorizations_deleted,
         bunkers_notified = result.bunker_pubkeys.len(),

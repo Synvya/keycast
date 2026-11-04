@@ -82,23 +82,14 @@ pub async fn validate_ucan_token(
 
     // Validate tenant_id from facts (if expected_tenant_id != 0)
     if expected_tenant_id != 0 {
-        // Look for tenant_id in facts array
-        let mut found_tenant = false;
-        for fact in facts {
-            if let Some(tenant_value) = fact.get("tenant_id") {
-                if let Some(tenant_int) = tenant_value.as_i64() {
-                    if tenant_int != expected_tenant_id {
-                        return Err(anyhow!("Tenant mismatch"));
-                    }
-                    found_tenant = true;
-                    break;
-                }
-            }
-        }
+        let session_tenant = facts
+            .iter()
+            .find_map(|fact| fact.get("tenant_id").and_then(|v| v.as_i64()));
 
-        if !found_tenant && expected_tenant_id != 0 {
-            tracing::warn!("UCAN missing tenant_id fact, but tenant validation required");
-            // Allow for now - tenant validation will happen at DB query level
+        match session_tenant {
+            Some(tenant_id) if tenant_id == expected_tenant_id => {}
+            Some(_) => return Err(anyhow!("Tenant mismatch")),
+            None => return Err(anyhow!("UCAN missing tenant_id fact")),
         }
     }
 
@@ -277,6 +268,34 @@ mod tests {
         let result = validate_ucan_token(&auth_header, 2).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_ucan_missing_tenant_fact_refused() {
+        let keys = Keys::generate();
+        let user_did = nostr_pubkey_to_did(&keys.public_key());
+        let key_material = NostrKeyMaterial::from_keys(keys);
+
+        let facts = serde_json::json!({
+            "redirect_origin": "https://test.example.com"
+        });
+
+        let ucan = UcanBuilder::default()
+            .issued_by(&key_material)
+            .for_audience(&user_did)
+            .with_lifetime(3600)
+            .with_fact(facts)
+            .build()
+            .unwrap()
+            .sign()
+            .await
+            .unwrap();
+
+        let auth_header = format!("Bearer {}", ucan.encode().unwrap());
+
+        let result = validate_ucan_token(&auth_header, 1).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("tenant_id"));
     }
 
     #[tokio::test]

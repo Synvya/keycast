@@ -9,8 +9,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::api::http::{
-    admin, atproto, atproto_oauth, auth, claim, headless, metrics, nostr_rpc, oauth, policies,
-    teams,
+    admin, atproto, atproto_oauth, auth, claim, headless, magic_link, metrics, nostr_rpc, oauth,
+    policies, teams,
 };
 use crate::state::KeycastState;
 use axum::response::Json as AxumJson;
@@ -64,6 +64,28 @@ pub fn api_routes(
         .route("/auth/reset-password", post(auth::reset_password))
         .route("/auth/resend-verification", post(auth::resend_verification))
         .with_state(pool.clone());
+
+    // Email-link sign-in: called from each merchant's orders app, so public CORS
+    let magic_link_routes = Router::new()
+        .route("/auth/magic-link", post(magic_link::request_magic_link))
+        .route(
+            "/auth/magic-link/verify",
+            post(magic_link::verify_magic_link),
+        )
+        .route(
+            "/customer/account",
+            delete(magic_link::delete_customer_account),
+        )
+        .route(
+            "/customer/authorizations",
+            get(magic_link::list_customer_apps),
+        )
+        .route(
+            "/customer/authorizations/revoke",
+            post(magic_link::revoke_customer_app),
+        )
+        .layer(public_cors.clone())
+        .with_state(auth_state.clone());
 
     // OAuth routes (no authentication required for initial authorize request)
     // Public CORS - third parties use authorization_code grant (never see passwords)
@@ -227,6 +249,12 @@ pub fn api_routes(
         // Operator-side account deletion (sign-up approval). Refuses while the
         // person still belongs to a team.
         .route("/admin/users/:pubkey", delete(admin::delete_user))
+        .route(
+            "/admin/customer-origins",
+            get(admin::list_customer_origins)
+                .post(admin::add_customer_origin)
+                .delete(admin::remove_customer_origin),
+        )
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
@@ -300,6 +328,7 @@ pub fn api_routes(
         .merge(account_delete_route.layer(auth_cors.clone())) // Auth CORS - session cookie from the Synvya web apps; Bearer still accepted
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer
         .merge(email_routes.layer(public_cors.clone()))
+        .merge(magic_link_routes) // Has public_cors (called from each merchant's orders app)
         .merge(oauth_routes) // Has public_cors (third-party safe)
         .merge(atproto_oauth_routes)
         .merge(connect_routes.layer(public_cors.clone()))
@@ -316,6 +345,9 @@ pub fn api_routes(
         .merge(metrics_route.layer(public_cors.clone())) // Public - Prometheus metrics
         .merge(docs_route.layer(public_cors))
         .fallback(api_not_found) // Return 404 for unmatched API routes
+        .layer(axum::middleware::from_fn(
+            crate::api::tenant::customer_tenant_guard,
+        ))
 }
 
 /// Serve OpenAPI specification as JSON

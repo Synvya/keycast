@@ -145,6 +145,7 @@ Existing permissions:
 - `allowed_kinds`: Restrict signing/encryption by Nostr event kind
 - `content_filter`: Filter events by content regex patterns
 - `encrypt_to_self`: Restrict encryption/decryption to user's own pubkey
+- `commerce_envelope`: Let an orders app encrypt kind 1327 orders to one merchant and sign kind 13 seals, nothing else
 
 ### Signer Daemon Architecture
 
@@ -165,6 +166,16 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - `/api/auth/login`: Login with email/password, sets UCAN session cookie
 - `/api/auth/logout`: Clears session cookie
 - CORS: Restrictive (ALLOWED_ORIGINS env var)
+
+**Customer accounts (customer tenant only)**:
+- `/api/auth/magic-link`: Email a sign-in link. Same answer for any email; creates nothing
+- `/api/auth/magic-link/verify`: Sign in with the link's token. Creates the account and key on the first click and returns the session as a Bearer token (no cookie)
+- `/api/nostr`: Signing under the `commerce_envelope` permission
+- All other `/api` routes return 404 on the customer hostname (`customer_tenant_guard`). A new customer route must be added to `is_customer_route`
+- `/api/customer/account`: Delete the account. Only the session from a `delete_account` link (requested with `purpose` on `/api/auth/magic-link`) can do it
+- `/api/customer/authorizations` and `/api/customer/authorizations/revoke`: The account page's list of apps, and revoking one
+- CORS: Permissive (each merchant's orders app is its own origin)
+- Allowed app origins are rows in `customer_app_origins`, managed with `/api/admin/customer-origins` on another hostname. Adding a merchant needs no deploy
 
 **OAuth (Third-Party)**:
 - `/api/oauth/authorize`: OAuth authorization flow (GET shows approval page, POST processes approval)
@@ -203,6 +214,11 @@ Optional:
 - `ENABLE_EXAMPLES`: Enable `/examples` directory serving (default: `false`, set to `true` for development)
 - `DISABLE_WEB_UI`: Disable the SvelteKit web frontend (default: `false`). When `true`, non-API requests return 404 or redirect to `WEB_UI_REDIRECT_URL`. Use for deployments (e.g. Synvya) where end users should not access a keycast personal UI. `/api/*`, `/.well-known/*`, `/health*`, `/verify-email` (plus the `/_app/*` static assets it needs), and the server-rendered `/api/oauth/authorize` approval page remain available.
 - `WEB_UI_REDIRECT_URL`: When `DISABLE_WEB_UI=true`, redirect non-API requests to this URL (e.g. `https://synvya.com`). If unset, non-API requests return 404.
+- `ALLOWED_TENANT_DOMAINS`: Comma-separated hostnames that may serve a tenant. Any other `Host` is refused with 400, including tenants already in the database. Required in `docker-compose.synvya.yml`. When unset, tenants are auto-provisioned from any well-formed `Host`.
+- `CUSTOMER_TENANT_DOMAIN`: Hostname of the customer tenant (passwordless accounts). Created at startup. Customer accounts are off while it is unset.
+- `RATE_LIMIT_IP_PER_HOUR`: Requests per IP per hour on endpoints that send email or call KMS (default: `60`). Applies only where a load balancer sets `X-Forwarded-For`.
+- `SYNVYA_SERVER_DELETION_URL`: Synvya Server's endpoint for customer account deletions. Keycast POSTs the deleted pubkey, signed with NIP-98 using `SERVER_NSEC`, and retries until acknowledged. Notices wait in `customer_deletion_notices` while it is unset.
+- `ALLOW_LOCALHOST_ORIGINS`: Trust any `http://localhost` origin for CORS (default: `false`). Development and staging only; never production.
 - `PASSWORD_RESET_BASE_URL`: Base URL used when constructing password reset links in emails (default: `BASE_URL`). Set when the reset page is hosted on a different domain than `BASE_URL` — e.g. Synvya sets this to `https://account.synvya.com` in production and `https://account.staging.synvya.com` in staging, so the link points at the Synvya-hosted reset form that POSTs to keycast's `/api/auth/reset-password`.
 
 Development (`.env` in `/web`):

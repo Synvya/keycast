@@ -314,6 +314,7 @@ pub struct TokenResponse {
 
 #[derive(Debug)]
 pub enum OAuthError {
+    TooManyRequests,
     Unauthorized,
     InvalidRequest(String),
     InvalidGrant(String), // RFC 6749 - for invalid/expired refresh tokens or auth codes
@@ -325,6 +326,10 @@ pub enum OAuthError {
 impl IntoResponse for OAuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            OAuthError::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests. Please try again later.".to_string(),
+            ),
             OAuthError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "Invalid email or password. Please check your credentials and try again."
@@ -2326,7 +2331,7 @@ async fn handle_refresh_token_grant(
     // Get user's encrypted keys for bunker key derivation
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_user_key = personal_keys_repo
-        .find_encrypted_key(&oauth_auth.user_pubkey)
+        .find_encrypted_key_for_tenant(&oauth_auth.user_pubkey, tenant_id)
         .await?
         .ok_or_else(|| OAuthError::InvalidGrant("User keys not found".into()))?;
 
@@ -2632,6 +2637,7 @@ async fn handle_authorization_code_grant(
             nsec_from_verifier,
             previous_auth_id,
             is_headless,
+            policy_id: None,
         },
         auth_state,
     )
@@ -2641,17 +2647,19 @@ async fn handle_authorization_code_grant(
 // handle_password_grant() removed - ROPC grant type deprecated and removed
 
 /// Parameters for creating OAuth authorization and generating token
-struct CreateAuthorizationParams<'a> {
-    tenant_id: i64,
-    user_pubkey: &'a str,
-    email: &'a str,
-    client_id: &'a str,
-    scope: &'a str,
-    redirect_uri: &'a str,
-    nsec_from_verifier: Option<String>,
-    previous_auth_id: Option<i32>,
+pub(crate) struct CreateAuthorizationParams<'a> {
+    pub(crate) tenant_id: i64,
+    pub(crate) user_pubkey: &'a str,
+    pub(crate) email: &'a str,
+    pub(crate) client_id: &'a str,
+    pub(crate) scope: &'a str,
+    pub(crate) redirect_uri: &'a str,
+    pub(crate) nsec_from_verifier: Option<String>,
+    pub(crate) previous_auth_id: Option<i32>,
     /// Whether this code was issued via headless flow (for first_party UCAN fact)
-    is_headless: bool,
+    pub(crate) is_headless: bool,
+    /// The policy to grant, when it does not come from the scope
+    pub(crate) policy_id: Option<i32>,
 }
 
 /// Common function to create OAuth authorization and generate TokenResponse
@@ -2661,6 +2669,14 @@ async fn create_oauth_authorization_and_token(
     params: CreateAuthorizationParams<'_>,
     auth_state: super::routes::AuthState,
 ) -> Result<Response, OAuthError> {
+    Ok(Json(create_oauth_authorization(params, auth_state).await?).into_response())
+}
+
+/// Create the OAuth authorization and return what the app needs to use it.
+pub(crate) async fn create_oauth_authorization(
+    params: CreateAuthorizationParams<'_>,
+    auth_state: super::routes::AuthState,
+) -> Result<TokenResponse, OAuthError> {
     let CreateAuthorizationParams {
         tenant_id,
         user_pubkey,
@@ -2671,30 +2687,26 @@ async fn create_oauth_authorization_and_token(
         nsec_from_verifier,
         previous_auth_id,
         is_headless,
+        policy_id,
     } = params;
     let pool = &auth_state.state.db;
     let key_manager = auth_state.state.key_manager.as_ref();
 
     // Check if personal_keys exist
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
-    let encrypted_user_key: Option<Vec<u8>> =
-        personal_keys_repo.find_encrypted_key(user_pubkey).await?;
+    let encrypted_user_key: Option<Vec<u8>> = personal_keys_repo
+        .find_encrypted_key_for_tenant(user_pubkey, tenant_id)
+        .await?;
 
     let (encrypted_user_key, _keys_just_created) = if let Some(existing_key) = encrypted_user_key {
         // Keys already exist
         if nsec_from_verifier.is_some() {
-            tracing::warn!(
-                "User {} already has personal_keys, ignoring nsec from code_verifier",
-                user_pubkey
-            );
+            tracing::warn!("User already has personal_keys, ignoring nsec from code_verifier");
         }
         (existing_key, false)
     } else {
         // Create personal_keys from code_verifier nsec or auto-generate
-        tracing::info!(
-            "Creating personal_keys for user {} during token exchange",
-            user_pubkey
-        );
+        tracing::info!("Creating personal_keys during token exchange");
 
         let keys = if let Some(nsec_str) = nsec_from_verifier {
             tracing::info!("Using nsec from code_verifier (BYOK)");
@@ -2788,8 +2800,11 @@ async fn create_oauth_authorization_and_token(
     let relays_json = serde_json::to_string(&vec![relay_url])
         .map_err(|e| OAuthError::InvalidRequest(format!("Failed to serialize relays: {}", e)))?;
 
-    // Resolve policy from scope (policy:slug format)
-    let policy_id = resolve_policy_from_scope(pool, scope).await?;
+    // Resolve policy from scope (policy:slug format) unless the caller already chose one
+    let policy_id = match policy_id {
+        Some(policy_id) => policy_id,
+        None => resolve_policy_from_scope(pool, scope).await?,
+    };
 
     // Generate authorization handle for silent re-authentication
     let authorization_handle = generate_authorization_handle();
@@ -2818,9 +2833,8 @@ async fn create_oauth_authorization_and_token(
         .await?;
 
     tracing::info!(
-        "Created OAuth authorization {} for user {} app {}",
+        "Created OAuth authorization {} for app {}",
         auth_id,
-        user_pubkey,
         redirect_origin
     );
 
@@ -2853,6 +2867,10 @@ async fn create_oauth_authorization_and_token(
 
         oauth_auth_repo.revoke(old_auth_id).await?;
         METRICS.inc_oauth_revoked();
+        crate::handlers::http_rpc_handler::invalidate_handlers_for_authorization(
+            &auth_state.state.http_handler_cache,
+            i64::from(old_auth_id),
+        );
         tracing::info!(
             "Revoked old authorization {} after re-auth (signer will detect on next poll)",
             old_auth_id
@@ -2918,7 +2936,7 @@ async fn create_oauth_authorization_and_token(
     };
 
     // Return bunker URL with access_token for REST RPC API
-    Ok(Json(TokenResponse {
+    Ok(TokenResponse {
         bunker_url,
         access_token: Some(access_token),
         token_type: "Bearer".to_string(),
@@ -2928,7 +2946,6 @@ async fn create_oauth_authorization_and_token(
         authorization_handle: Some(authorization_handle),
         refresh_token: Some(refresh_token),
     })
-    .into_response())
 }
 
 // ============================================================================
@@ -2997,7 +3014,7 @@ pub async fn oauth_login(
     // Get user's keys for UCAN generation
     let personal_keys_repo = PersonalKeysRepository::new(pool.clone());
     let encrypted_secret = personal_keys_repo
-        .find_encrypted_key(&public_key)
+        .find_encrypted_key_for_tenant(&public_key, tenant_id)
         .await?
         .ok_or_else(|| {
             tracing::warn!("User {} has no personal_keys - they registered via OAuth but haven't completed token exchange yet", public_key);
@@ -3060,12 +3077,26 @@ pub struct OAuthRegisterRequest {
 pub async fn oauth_register(
     tenant: crate::api::tenant::TenantExtractor,
     State(auth_state): State<super::routes::AuthState>,
+    headers: axum::http::HeaderMap,
     Json(mut req): Json<OAuthRegisterRequest>,
 ) -> Result<impl IntoResponse, OAuthError> {
     let pool = &auth_state.state.db;
     let tenant_id = tenant.0.id;
 
     req.email = req.email.to_lowercase();
+
+    let redis = auth_state.state.redis.as_ref();
+    if !crate::rate_limit::allow_request(
+        redis,
+        "oauth_register",
+        tenant_id,
+        &headers,
+        Some(&req.email),
+    )
+    .await
+    {
+        return Err(OAuthError::TooManyRequests);
+    }
 
     tracing::info!(
         "OAuth popup registration for email: {} in tenant: {}, nsec: {}, pubkey: {}, client_id: {}",
@@ -3778,7 +3809,7 @@ pub async fn connect_post(
     }
 
     // Extract user public key from JWT token in Authorization header
-    let user_pubkey = super::auth::extract_user_from_token(&headers)
+    let user_pubkey = super::auth::extract_user_from_token(&headers, tenant_id)
         .await
         .map_err(|_| OAuthError::Unauthorized)?;
 

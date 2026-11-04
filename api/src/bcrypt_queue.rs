@@ -3,6 +3,7 @@
 
 use bcrypt::{hash, DEFAULT_COST};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use keycast_core::repositories::MagicLinkTokenRepository;
 use secrecy::{ExposeSecret, SecretString};
 use sqlx::PgPool;
 
@@ -205,27 +206,31 @@ async fn bcrypt_worker_loop(worker_id: usize, rx: Receiver<BcryptJob>, pool: PgP
     tracing::debug!("Bcrypt worker {} exited", worker_id);
 }
 
-/// Spawn a cleanup task that periodically removes stale email signup rows
-/// where the bcrypt hash was never computed (password_hash still NULL).
+/// Which rows the cleanup task deletes: password signups whose bcrypt hash was
+/// queued and never written. Register always stores email_verification_token
+/// when it leaves password_hash NULL, so the token marks a pending hash.
 ///
-/// Only targets rows with email IS NOT NULL (email signups), excluding:
+/// Excludes:
 /// - Preloaded users (vine_id IS NOT NULL) awaiting account claim
 /// - Pubkey-only users added to teams via find_or_create (no email)
+/// - Passwordless accounts (email, no password, no verification token)
+pub const STALE_SIGNUP_CONDITION: &str = "password_hash IS NULL
+                 AND vine_id IS NULL
+                 AND email IS NOT NULL
+                 AND email_verification_token IS NOT NULL
+                 AND created_at < NOW() - INTERVAL '10 minutes'";
+
+/// Spawn a cleanup task that periodically removes stale email signup rows
+/// where the bcrypt hash was never computed. See [`STALE_SIGNUP_CONDITION`].
 pub fn spawn_cleanup_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // 5 minutes
+        let delete_stale_signups = format!("DELETE FROM users WHERE {STALE_SIGNUP_CONDITION}");
 
         loop {
             interval.tick().await;
 
-            let result = sqlx::query(
-                "DELETE FROM users WHERE password_hash IS NULL
-                 AND vine_id IS NULL
-                 AND email IS NOT NULL
-                 AND created_at < NOW() - INTERVAL '10 minutes'",
-            )
-            .execute(&pool)
-            .await;
+            let result = sqlx::query(&delete_stale_signups).execute(&pool).await;
 
             match result {
                 Ok(result) => {
@@ -237,6 +242,11 @@ pub fn spawn_cleanup_task(pool: PgPool) -> tokio::task::JoinHandle<()> {
                 Err(e) => {
                     tracing::error!("Cleanup task: failed to delete stale rows: {}", e);
                 }
+            }
+
+            let magic_link_tokens = MagicLinkTokenRepository::new(pool.clone());
+            if let Err(e) = magic_link_tokens.purge_expired().await {
+                tracing::error!("Cleanup task: failed to purge sign-in links: {}", e);
             }
         }
     })

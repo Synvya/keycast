@@ -18,6 +18,7 @@ use keycast_core::authorization_channel;
 use keycast_core::database::Database;
 #[cfg(feature = "aws")]
 use keycast_core::encryption::aws_key_manager::AwsKeyManager;
+use keycast_core::encryption::caching_key_manager::CachingKeyManager;
 use keycast_core::encryption::file_key_manager::FileKeyManager;
 use keycast_core::encryption::gcp_key_manager::GcpKeyManager;
 use keycast_core::encryption::KeyManager;
@@ -127,8 +128,9 @@ fn inject_runtime_env(html: &str) -> String {
     }
 }
 
-fn origin_is_allowed(origin: &str, allowed_origins: &str) -> bool {
-    if origin.starts_with("http://localhost:") || origin == "http://localhost" {
+fn origin_is_allowed(origin: &str, allowed_origins: &str, allow_localhost: bool) -> bool {
+    if allow_localhost && (origin.starts_with("http://localhost:") || origin == "http://localhost")
+    {
         return true;
     }
 
@@ -495,6 +497,11 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         _ => Box::new(FileKeyManager::new()?),
     };
 
+    // Repeat decrypts of a key are served from memory for a bounded time, to reduce KMS calls
+    let signer_key_manager: Box<dyn KeyManager> =
+        Box::new(CachingKeyManager::new(signer_key_manager));
+    let api_key_manager: Box<dyn KeyManager> = Box::new(CachingKeyManager::new(api_key_manager));
+
     // Load server keys for signing UCANs (wrap in Zeroizing for auto-zeroization)
     let server_nsec = Zeroizing::new(env::var("SERVER_NSEC")?); // Validated above
     let server_keys = Keys::parse(&server_nsec).map_err(|e| {
@@ -561,11 +568,22 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
         .build();
     tracing::info!("✔︎ Tenant cache initialized (preload deferred)");
 
+    // Customer accounts live in their own tenant, created here rather than by a request
+    match keycast_api::api::tenant::ensure_customer_tenant(&database.pool).await {
+        Ok(Some(tenant)) => tracing::info!("✔︎ Customer tenant ready (id {})", tenant.id),
+        Ok(None) => tracing::info!("CUSTOMER_TENANT_DOMAIN not set; customer accounts are off"),
+        Err(e) => tracing::error!("Failed to create the customer tenant: {}", e),
+    }
+
     // Create bcrypt queue for async password hashing during registration
     // Uses email verification latency as natural buffer for CPU-intensive work
     let bcrypt_queue = keycast_api::bcrypt_queue::BcryptQueue::new();
     let bcrypt_sender = bcrypt_queue.sender();
     let _bcrypt_worker_handles = bcrypt_queue.spawn_workers(database.pool.clone());
+    let _deletion_notice_handle = keycast_api::customer_deletion::spawn_delivery_task(
+        database.pool.clone(),
+        server_keys.clone(),
+    );
     let _bcrypt_cleanup_handle =
         keycast_api::bcrypt_queue::spawn_cleanup_task(database.pool.clone());
     tracing::info!(
@@ -626,11 +644,13 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
 
     let allowed_origins_str = env::var("ALLOWED_ORIGINS")?; // Validated above
     let allowed_origins_for_closure = allowed_origins_str.clone();
+    // Only for development: production never trusts a localhost origin
+    let allow_localhost = env::var("ALLOW_LOCALHOST_ORIGINS").is_ok_and(|value| value == "true");
 
     let auth_cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin, _| {
             let origin_str = origin.to_str().unwrap_or("");
-            origin_is_allowed(origin_str, &allowed_origins_for_closure)
+            origin_is_allowed(origin_str, &allowed_origins_for_closure, allow_localhost)
         }))
         .allow_methods([
             axum::http::Method::POST,
@@ -1148,10 +1168,33 @@ mod tests {
     }
 
     #[test]
+    fn test_localhost_is_refused_unless_explicitly_allowed() {
+        let allowed = "https://login.divine.video";
+
+        for origin in ["http://localhost", "http://localhost:5173"] {
+            assert!(!origin_is_allowed(origin, allowed, false), "{origin}");
+            assert!(origin_is_allowed(origin, allowed, true), "{origin}");
+        }
+
+        // The flag covers localhost and nothing else
+        assert!(!origin_is_allowed(
+            "http://localhost.evil.example.org",
+            allowed,
+            true
+        ));
+        assert!(!origin_is_allowed(
+            "https://evil.example.org",
+            allowed,
+            true
+        ));
+    }
+
+    #[test]
     fn test_origin_is_allowed_for_exact_match() {
         assert!(origin_is_allowed(
             "https://login.divine.video",
-            "https://login.divine.video,https://divine.video"
+            "https://login.divine.video,https://divine.video",
+            false
         ));
     }
 
@@ -1159,7 +1202,8 @@ mod tests {
     fn test_origin_is_allowed_for_pages_preview_wildcard() {
         assert!(origin_is_allowed(
             "https://f582401d.openvine-app.pages.dev",
-            "https://login.divine.video,https://*.openvine-app.pages.dev"
+            "https://login.divine.video,https://*.openvine-app.pages.dev",
+            false
         ));
     }
 
@@ -1167,11 +1211,13 @@ mod tests {
     fn test_origin_is_not_allowed_for_non_matching_wildcard_host() {
         assert!(!origin_is_allowed(
             "https://openvine-app.pages.dev",
-            "https://login.divine.video,https://*.openvine-app.pages.dev"
+            "https://login.divine.video,https://*.openvine-app.pages.dev",
+            false
         ));
         assert!(!origin_is_allowed(
             "https://evil.pages.dev",
-            "https://login.divine.video,https://*.openvine-app.pages.dev"
+            "https://login.divine.video,https://*.openvine-app.pages.dev",
+            false
         ));
     }
 }
