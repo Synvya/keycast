@@ -10,7 +10,7 @@ This document covers:
 
 - Keycast deployment on EC2
 - PostgreSQL and Redis for Keycast
-- ALB, WAF, and DNS for `auth.staging.synvya.com` and `auth.synvya.com`
+- ALB, WAF, and DNS for `auth.staging.synvya.com` and `auth.synvya.com`, and for the customer hostnames `b2b-auth.staging.synvya.com` and `b2b-auth.synvya.com`
 - GitHub Actions deployment of Keycast-specific changes
 
 This document does not cover:
@@ -53,11 +53,11 @@ EC2 + Docker Compose remains the chosen Keycast deployment target for now.
 | Runtime | EC2 + Docker Compose | EC2 + Docker Compose |
 | PostgreSQL | containerized | containerized |
 | Redis | containerized | containerized |
-| ALB | `synvya-staging-keycast` | `synvya-production-keycast` |
-| Target group | `synvya-staging-keycast` | `synvya-production-keycast` |
+| ALB | `synvya-staging-keycast` | `synvya-production-keycast-alb` |
+| Target group | `synvya-staging-keycast` | `synvya-production-keycast-alb` |
 | Secrets path | `synvya/staging/keycast/*` | `synvya/production/keycast/*` |
 | KMS key alias | `alias/keycast-master-key` | `alias/synvya-production-keycast-masterkey` |
-| WAF Web ACL | `synvya-staging-keycast-waf` | `synvya-production-keycast-waf` |
+| WAF Web ACL | `CreatedByALB-synvya-staging-keycast` | `synvya-production-keycast-waf` |
 
 ## 5. Service Boundary
 
@@ -91,16 +91,17 @@ Route 53
    v
 Dedicated Keycast ALB per environment
   - `synvya-staging-keycast`
-  - `synvya-production-keycast`
+  - `synvya-production-keycast-alb`
   - HTTPS 443 with wildcard certificate
    |
    v
 AWS WAF on the Keycast ALB
-  - `synvya-staging-keycast-waf`
+  - `CreatedByALB-synvya-staging-keycast`
   - `synvya-production-keycast-waf`
    |
    v
 auth.staging.synvya.com / auth.synvya.com
+b2b-auth.staging.synvya.com / b2b-auth.synvya.com
    |
    v
 EC2 instance
@@ -130,19 +131,11 @@ It should not include a server or event-processor container.
 | Environment | ALB | Target Group | Port | Health Check |
 |---|---|---|---|---|
 | Staging | `synvya-staging-keycast` | `synvya-staging-keycast` | `3000` | `GET /health` |
-| Production | `synvya-production-keycast` | `synvya-production-keycast` | `3000` | `GET /health` |
+| Production | `synvya-production-keycast-alb` | `synvya-production-keycast-alb` | `3000` | `GET /health` |
 
 ### 8.2 Listener Rules
 
-For the `auth.*` hosts, route these paths to Keycast:
-
-- `/api/auth/*`
-- `/api/nostr`
-- `/api/oauth/*`
-- `/api/user/*`
-- `/api/teams/*`
-- `/health`
-- all Keycast UI routes
+In both environments, HTTP 80 redirects to HTTPS, and the HTTPS 443 listener has only its default rule, which forwards every hostname and path to the Keycast target group. Keycast refuses any hostname not in `ALLOWED_TENANT_DOMAINS`, so a new hostname needs a DNS record but no listener rule.
 
 There is no `/api/events/*` routing in the Keycast stack anymore.
 
@@ -167,12 +160,14 @@ Each environment has a dedicated AWS WAF Web ACL associated with its dedicated K
 
 | Web ACL | Associated ALB |
 |---|---|
-| `synvya-staging-keycast-waf` | `synvya-staging-keycast` |
-| `synvya-production-keycast-waf` | `synvya-production-keycast` |
+| `CreatedByALB-synvya-staging-keycast` | `synvya-staging-keycast` |
+| `synvya-production-keycast-waf` | `synvya-production-keycast-alb` |
 
 ### Rules
 
-**Rate-based rules** (10 requests per 1 minute per IP, action: Block):
+The two environments have different rules. A web ACL covers every hostname on its load balancer, including the customer hostname.
+
+**Production — rate-based rules** (10 requests per 1 minute per IP, action: Block):
 
 | Rule | URI path | Protects |
 |---|---|---|
@@ -180,9 +175,13 @@ Each environment has a dedicated AWS WAF Web ACL associated with its dedicated K
 | `rate-limit-forgot-password` | `/api/auth/forgot-password` | Password reset email |
 | `rate-limit-claim` | `/claim` | Account claim email |
 
-**Managed rule groups** (always on):
+**Staging — managed rule groups:**
 
-- `AWSManagedRulesAmazonIpReputationList` — blocks known bot and scanner IPs
+- `AWSManagedRulesAmazonIpReputationList` — known bot and scanner IPs
+- `AWSManagedRulesCommonRuleSet` — common web attacks, and request bodies over 8 KB
+- `AWSManagedRulesKnownBadInputsRuleSet` — request patterns known to be malicious
+
+Neither environment has a WAF rule for `/api/auth/magic-link`, which also sends email. Keycast's own rate limits apply to it.
 
 ### Notes
 
