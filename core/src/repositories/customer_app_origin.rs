@@ -10,6 +10,7 @@ use sqlx::{FromRow, PgPool};
 pub struct CustomerAppOrigin {
     pub origin: String,
     pub merchant_name: String,
+    pub merchant_pubkey: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -23,22 +24,27 @@ impl CustomerAppOriginRepository {
         Self { pool }
     }
 
-    /// Allow an origin, or rename its merchant if it is already allowed.
+    /// Allow an origin, or change its merchant if it is already allowed. Authorizations already
+    /// granted keep the merchant they were granted for.
     pub async fn add(
         &self,
         tenant_id: i64,
         origin: &str,
         merchant_name: &str,
+        merchant_pubkey: &str,
     ) -> Result<CustomerAppOrigin, RepositoryError> {
         sqlx::query_as(
-            "INSERT INTO customer_app_origins (tenant_id, origin, merchant_name)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (tenant_id, origin) DO UPDATE SET merchant_name = EXCLUDED.merchant_name
-             RETURNING origin, merchant_name, created_at",
+            "INSERT INTO customer_app_origins (tenant_id, origin, merchant_name, merchant_pubkey)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (tenant_id, origin) DO UPDATE
+             SET merchant_name = EXCLUDED.merchant_name,
+                 merchant_pubkey = EXCLUDED.merchant_pubkey
+             RETURNING origin, merchant_name, merchant_pubkey, created_at",
         )
         .bind(tenant_id)
         .bind(origin)
         .bind(merchant_name)
+        .bind(merchant_pubkey)
         .fetch_one(&self.pool)
         .await
         .map_err(Into::into)
@@ -71,9 +77,25 @@ impl CustomerAppOriginRepository {
         .map_err(Into::into)
     }
 
+    /// The merchant's key in hex, if this origin is allowed.
+    pub async fn find_merchant_pubkey(
+        &self,
+        tenant_id: i64,
+        origin: &str,
+    ) -> Result<Option<String>, RepositoryError> {
+        sqlx::query_scalar(
+            "SELECT merchant_pubkey FROM customer_app_origins WHERE tenant_id = $1 AND origin = $2",
+        )
+        .bind(tenant_id)
+        .bind(origin)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
     pub async fn list(&self, tenant_id: i64) -> Result<Vec<CustomerAppOrigin>, RepositoryError> {
         sqlx::query_as(
-            "SELECT origin, merchant_name, created_at FROM customer_app_origins
+            "SELECT origin, merchant_name, merchant_pubkey, created_at FROM customer_app_origins
              WHERE tenant_id = $1 ORDER BY origin",
         )
         .bind(tenant_id)

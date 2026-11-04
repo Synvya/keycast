@@ -447,7 +447,12 @@ fn clear_customer_env() {
 async fn allow_test_origin(pool: &PgPool) {
     let tenant_id = upsert_tenant(pool, CUSTOMER_HOST).await.id;
     CustomerAppOriginRepository::new(pool.clone())
-        .add(tenant_id, "https://orders.example.com", "Example Shop")
+        .add(
+            tenant_id,
+            "https://orders.example.com",
+            "Example Shop",
+            &"a".repeat(64),
+        )
         .await
         .unwrap();
 }
@@ -553,7 +558,12 @@ async fn test_allowed_app_url_keeps_the_page_and_finds_the_merchant() {
     let pool = common::setup_test_db().await;
     let tenant_id = 1_000_000 + rand::random::<u16>() as i64;
     CustomerAppOriginRepository::new(pool.clone())
-        .add(tenant_id, "https://orders.example.com", "Example Shop")
+        .add(
+            tenant_id,
+            "https://orders.example.com",
+            "Example Shop",
+            &"a".repeat(64),
+        )
         .await
         .unwrap();
 

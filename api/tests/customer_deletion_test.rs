@@ -112,6 +112,7 @@ async fn setup() -> TestApp {
             customer_tenant,
             "https://orders.example.com",
             "Example Shop",
+            &Keys::generate().public_key().to_hex(),
         )
         .await
         .unwrap();

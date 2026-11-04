@@ -320,25 +320,24 @@ pub struct VerifyMagicLinkResponse {
 struct CommerceGrant {
     client_id: String,
     redirect_uri: String,
-    merchant_pubkey: PublicKey,
+    /// Who the app says the merchant is. The approved list decides; this can only disagree.
+    merchant_pubkey: Option<PublicKey>,
 }
 
-/// Read the grant from the request. The four fields come together or not at all.
+/// Read the grant from the request. client_id, redirect_uri and scope come together or not at
+/// all, and merchant_pubkey, which is optional, only with them.
 fn parse_commerce_grant(req: &VerifyMagicLinkRequest) -> Result<Option<CommerceGrant>, AuthError> {
-    let (client_id, redirect_uri, scope, merchant_pubkey) = match (
+    let (client_id, redirect_uri, scope) = match (
         req.client_id.as_deref(),
         req.redirect_uri.as_deref(),
         req.scope.as_deref(),
         req.merchant_pubkey.as_deref(),
     ) {
         (None, None, None, None) => return Ok(None),
-        (Some(client_id), Some(redirect_uri), Some(scope), Some(merchant_pubkey)) => {
-            (client_id, redirect_uri, scope, merchant_pubkey)
-        }
+        (Some(client_id), Some(redirect_uri), Some(scope), _) => (client_id, redirect_uri, scope),
         _ => {
             return Err(AuthError::BadRequest(
-                "client_id, redirect_uri, scope and merchant_pubkey must be sent together"
-                    .to_string(),
+                "client_id, redirect_uri and scope must be sent together".to_string(),
             ))
         }
     };
@@ -349,8 +348,14 @@ fn parse_commerce_grant(req: &VerifyMagicLinkRequest) -> Result<Option<CommerceG
     if scope != COMMERCE_SCOPE {
         return Err(AuthError::BadRequest("Invalid scope".to_string()));
     }
-    let merchant_pubkey = PublicKey::from_hex(merchant_pubkey)
-        .map_err(|_| AuthError::BadRequest("Invalid merchant_pubkey".to_string()))?;
+    let merchant_pubkey = req
+        .merchant_pubkey
+        .as_deref()
+        .map(|merchant_pubkey| {
+            PublicKey::from_hex(merchant_pubkey)
+                .map_err(|_| AuthError::BadRequest("Invalid merchant_pubkey".to_string()))
+        })
+        .transpose()?;
 
     Ok(Some(CommerceGrant {
         client_id: client_id.to_string(),
@@ -364,6 +369,40 @@ fn same_origin(a: &str, b: &str) -> bool {
         (Ok(a), Ok(b)) => a.origin() == b.origin(),
         _ => false,
     }
+}
+
+/// The merchant a grant is for, in hex: the approved list's merchant for the link's app. Keycast
+/// recorded the link's page when it was requested, so the app cannot change which row this is.
+async fn merchant_for_grant(
+    pool: &PgPool,
+    tenant_id: i64,
+    link_app_url: &str,
+    grant: &CommerceGrant,
+) -> Result<String, AuthError> {
+    if !same_origin(&grant.redirect_uri, link_app_url) {
+        return Err(AuthError::BadRequest(
+            "redirect_uri does not match the link".to_string(),
+        ));
+    }
+
+    let origin = Url::parse(link_app_url)
+        .map_err(|_| AuthError::BadRequest(INVALID_LINK.to_string()))?
+        .origin()
+        .ascii_serialization();
+    let merchant = CustomerAppOriginRepository::new(pool.clone())
+        .find_merchant_pubkey(tenant_id, &origin)
+        .await?
+        .ok_or_else(|| AuthError::BadRequest("This app is not allowed".to_string()))?;
+
+    if let Some(requested) = &grant.merchant_pubkey {
+        if requested.to_hex() != merchant {
+            return Err(AuthError::BadRequest(
+                "merchant_pubkey does not match this app".to_string(),
+            ));
+        }
+    }
+
+    Ok(merchant)
 }
 
 /// The customer's pubkey, creating the account and its key on the first click.
@@ -495,21 +534,24 @@ pub async fn verify_magic_link(
         return delete_session(&auth_state, tenant_id, &link.email, &link.app_origin).await;
     }
 
-    if let Some(grant) = &grant {
-        if !same_origin(&grant.redirect_uri, &link.app_origin) {
-            return Err(AuthError::BadRequest(
-                "redirect_uri does not match the link".to_string(),
-            ));
+    // Before the account is created, so a refused grant leaves nothing behind
+    let grant = match grant {
+        Some(grant) => {
+            let merchant =
+                merchant_for_grant(&auth_state.state.db, tenant_id, &link.app_origin, &grant)
+                    .await?;
+            Some((grant, merchant))
         }
-    }
+        None => None,
+    };
 
     let pubkey_hex =
         find_or_create_customer(&auth_state, tenant_id, &link.email, local_key).await?;
 
     let (session_token, authorization) = match grant {
-        Some(grant) => {
+        Some((grant, merchant)) => {
             let policy_id = PolicyRepository::new(auth_state.state.db.clone())
-                .find_or_create_commerce_envelope(&grant.merchant_pubkey.to_hex())
+                .find_or_create_commerce_envelope(&merchant)
                 .await?;
             let created = create_oauth_authorization(
                 CreateAuthorizationParams {

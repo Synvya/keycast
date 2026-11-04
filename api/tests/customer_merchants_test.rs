@@ -20,7 +20,7 @@ use keycast_core::encryption::{KeyManager, KeyManagerError};
 use keycast_core::repositories::{MagicLinkTokenRepository, PURPOSE_SIGN_IN};
 use keycast_core::secret_pool::SecretPool;
 use moka::future::Cache;
-use nostr_sdk::Keys;
+use nostr_sdk::{Keys, ToBech32};
 use serde_json::{json, Value};
 use serial_test::serial;
 use sqlx::PgPool;
@@ -186,7 +186,9 @@ fn unique_origin() -> String {
     format!("https://orders.merchant-{}.example.com", Uuid::new_v4())
 }
 
-async fn add_merchant(app: &TestApp, origin: &str, merchant_name: &str) {
+/// Put an app on the approved list. Returns its merchant's key in hex.
+async fn add_merchant(app: &TestApp, origin: &str, merchant_name: &str) -> String {
+    let merchant = Keys::generate().public_key().to_hex();
     let admin = admin_session(app, Some("full")).await;
     let answer = request(
         app,
@@ -194,10 +196,11 @@ async fn add_merchant(app: &TestApp, origin: &str, merchant_name: &str) {
         OWNER_HOST,
         "/api/admin/customer-origins",
         Some(&admin),
-        json!({ "origin": origin, "merchant_name": merchant_name }),
+        json!({ "origin": origin, "merchant_name": merchant_name, "merchant_pubkey": merchant }),
     )
     .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+    merchant
 }
 
 /// Sign in at a merchant's origin, granting the app the commerce permission.
@@ -261,21 +264,11 @@ async fn test_same_email_on_two_merchants_is_one_key_and_two_authorizations() {
     let email = unique_email();
     let first = unique_origin();
     let second = unique_origin();
+    let first_merchant = add_merchant(&app, &first, "First Shop").await;
+    let second_merchant = add_merchant(&app, &second, "Second Shop").await;
 
-    let at_first = sign_in_at(
-        &app,
-        &email,
-        &first,
-        &Keys::generate().public_key().to_hex(),
-    )
-    .await;
-    let at_second = sign_in_at(
-        &app,
-        &email,
-        &second,
-        &Keys::generate().public_key().to_hex(),
-    )
-    .await;
+    let at_first = sign_in_at(&app, &email, &first, &first_merchant).await;
+    let at_second = sign_in_at(&app, &email, &second, &second_merchant).await;
     assert_eq!(at_first.status, StatusCode::OK, "{}", at_first.raw);
     assert_eq!(at_second.status, StatusCode::OK, "{}", at_second.raw);
 
@@ -303,22 +296,11 @@ async fn test_account_page_lists_apps_and_revoking_one_leaves_the_other_working(
     let email = unique_email();
     let first = unique_origin();
     let second = unique_origin();
-    add_merchant(&app, &first, "First Shop").await;
+    let first_merchant = add_merchant(&app, &first, "First Shop").await;
+    let second_merchant = add_merchant(&app, &second, "Second Shop").await;
 
-    let at_first = sign_in_at(
-        &app,
-        &email,
-        &first,
-        &Keys::generate().public_key().to_hex(),
-    )
-    .await;
-    let at_second = sign_in_at(
-        &app,
-        &email,
-        &second,
-        &Keys::generate().public_key().to_hex(),
-    )
-    .await;
+    let at_first = sign_in_at(&app, &email, &first, &first_merchant).await;
+    let at_second = sign_in_at(&app, &email, &second, &second_merchant).await;
     let first_session = session_of(&at_first);
     let second_session = session_of(&at_second);
     assert_eq!(rpc_status(&app, &first_session).await, StatusCode::OK);
@@ -374,7 +356,7 @@ async fn test_signing_in_twice_at_one_merchant_lists_one_app_and_revoke_stops_bo
     let app = setup().await;
     let email = unique_email();
     let origin = unique_origin();
-    let merchant = Keys::generate().public_key().to_hex();
+    let merchant = add_merchant(&app, &origin, "Shop").await;
 
     let first = session_of(&sign_in_at(&app, &email, &origin, &merchant).await);
     let second = session_of(&sign_in_at(&app, &email, &origin, &merchant).await);
@@ -411,23 +393,17 @@ async fn test_cannot_revoke_an_app_the_customer_has_not_granted() {
     let app = setup().await;
     let email = unique_email();
     let origin = unique_origin();
-    let session = session_of(
-        &sign_in_at(
-            &app,
-            &email,
-            &origin,
-            &Keys::generate().public_key().to_hex(),
-        )
-        .await,
-    );
+    let merchant = add_merchant(&app, &origin, "Shop").await;
+    let session = session_of(&sign_in_at(&app, &email, &origin, &merchant).await);
 
     let other_customer_origin = unique_origin();
+    let other_merchant = add_merchant(&app, &other_customer_origin, "Other Shop").await;
     let other_customer = session_of(
         &sign_in_at(
             &app,
             &unique_email(),
             &other_customer_origin,
-            &Keys::generate().public_key().to_hex(),
+            &other_merchant,
         )
         .await,
     );
@@ -482,7 +458,7 @@ async fn test_new_merchant_works_at_once_and_stops_when_removed() {
     .await;
     assert_eq!(before.status, StatusCode::BAD_REQUEST, "Not added yet");
 
-    add_merchant(&app, &origin, "New Shop").await;
+    let merchant = add_merchant(&app, &origin, "New Shop").await;
 
     let added = request(
         &app,
@@ -506,12 +482,11 @@ async fn test_new_merchant_works_at_once_and_stops_when_removed() {
     )
     .await;
     assert!(
-        listed
-            .body
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| { row["origin"] == origin.as_str() && row["merchant_name"] == "New Shop" }),
+        listed.body.as_array().unwrap().iter().any(|row| {
+            row["origin"] == origin.as_str()
+                && row["merchant_name"] == "New Shop"
+                && row["merchant_pubkey"] == merchant.as_str()
+        }),
         "{}",
         listed.raw
     );
@@ -544,7 +519,11 @@ async fn test_new_merchant_works_at_once_and_stops_when_removed() {
 #[serial]
 async fn test_only_a_full_admin_manages_merchants() {
     let app = setup().await;
-    let body = json!({ "origin": unique_origin(), "merchant_name": "Shop" });
+    let body = json!({
+        "origin": unique_origin(),
+        "merchant_name": "Shop",
+        "merchant_pubkey": Keys::generate().public_key().to_hex(),
+    });
 
     for session in [
         admin_session(&app, None).await,
@@ -568,6 +547,7 @@ async fn test_only_a_full_admin_manages_merchants() {
 async fn test_merchant_origin_must_be_a_plain_web_origin() {
     let app = setup().await;
     let admin = admin_session(&app, Some("full")).await;
+    let merchant = Keys::generate().public_key().to_hex();
 
     for origin in [
         "http://orders.example.com",
@@ -582,9 +562,91 @@ async fn test_merchant_origin_must_be_a_plain_web_origin() {
             OWNER_HOST,
             "/api/admin/customer-origins",
             Some(&admin),
-            json!({ "origin": origin, "merchant_name": "Shop" }),
+            json!({ "origin": origin, "merchant_name": "Shop", "merchant_pubkey": merchant }),
         )
         .await;
         assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{origin}");
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_adding_a_merchant_needs_a_valid_key() {
+    let app = setup().await;
+    let admin = admin_session(&app, Some("full")).await;
+    let origin = unique_origin();
+    let secret_key = Keys::generate().secret_key().to_bech32().unwrap();
+
+    for body in [
+        json!({ "origin": origin, "merchant_name": "Shop" }),
+        json!({ "origin": origin, "merchant_name": "Shop", "merchant_pubkey": "" }),
+        json!({ "origin": origin, "merchant_name": "Shop", "merchant_pubkey": "not-a-key" }),
+        json!({ "origin": origin, "merchant_name": "Shop", "merchant_pubkey": "abcd" }),
+        json!({ "origin": origin, "merchant_name": "Shop", "merchant_pubkey": secret_key }),
+    ] {
+        let refused = request(
+            &app,
+            Method::POST,
+            OWNER_HOST,
+            "/api/admin/customer-origins",
+            Some(&admin),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customer_app_origins WHERE origin = $1")
+            .bind(&origin)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0, "Nothing was added");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_merchant_key_given_as_npub_is_stored_as_hex() {
+    let app = setup().await;
+    let admin = admin_session(&app, Some("full")).await;
+    let origin = unique_origin();
+    let merchant = Keys::generate().public_key();
+
+    let added = request(
+        &app,
+        Method::POST,
+        OWNER_HOST,
+        "/api/admin/customer-origins",
+        Some(&admin),
+        json!({
+            "origin": origin,
+            "merchant_name": "Shop",
+            "merchant_pubkey": merchant.to_bech32().unwrap(),
+        }),
+    )
+    .await;
+
+    assert_eq!(added.status, StatusCode::OK, "{}", added.raw);
+    assert_eq!(added.body["merchant_pubkey"], merchant.to_hex());
+    let answer = sign_in_at(&app, &unique_email(), &origin, &merchant.to_hex()).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+}
+
+/// Adding an origin again changes its merchant for new sign-ins; existing grants stay as they are.
+#[tokio::test]
+#[serial]
+async fn test_adding_an_origin_again_changes_its_merchant_for_new_sign_ins() {
+    let app = setup().await;
+    let origin = unique_origin();
+    let old_merchant = add_merchant(&app, &origin, "Shop").await;
+    let session = session_of(&sign_in_at(&app, &unique_email(), &origin, &old_merchant).await);
+
+    let new_merchant = add_merchant(&app, &origin, "Shop").await;
+
+    let refused = sign_in_at(&app, &unique_email(), &origin, &old_merchant).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    let granted = sign_in_at(&app, &unique_email(), &origin, &new_merchant).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.raw);
+    assert_eq!(rpc_status(&app, &session).await, StatusCode::OK);
 }

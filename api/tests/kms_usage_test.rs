@@ -17,7 +17,9 @@ use keycast_api::handlers::http_rpc_handler::new_http_handler_cache;
 use keycast_api::state::{get_tenant_cache, KeycastState, KEYCAST_STATE};
 use keycast_core::encryption::caching_key_manager::CachingKeyManager;
 use keycast_core::encryption::{KeyManager, KeyManagerError};
-use keycast_core::repositories::{MagicLinkTokenRepository, PURPOSE_SIGN_IN};
+use keycast_core::repositories::{
+    CustomerAppOriginRepository, MagicLinkTokenRepository, PURPOSE_SIGN_IN,
+};
 use keycast_core::secret_pool::SecretPool;
 use moka::future::Cache;
 use nostr_sdk::{EventBuilder, Keys, Kind, PublicKey};
@@ -174,6 +176,21 @@ async fn post(app: &TestApp, path: &str, bearer: Option<&str>, body: Value) -> (
     )
 }
 
+/// Put the app on the approved list. Returns its merchant's key in hex.
+async fn approve_merchant(app: &TestApp) -> String {
+    let merchant = Keys::generate().public_key().to_hex();
+    CustomerAppOriginRepository::new(app.pool.clone())
+        .add(
+            app.tenant_id,
+            "https://orders.example.com",
+            "Example Shop",
+            &merchant,
+        )
+        .await
+        .unwrap();
+    merchant
+}
+
 /// One sign-in that grants the app the permission. Returns the session.
 async fn sign_in(app: &TestApp, email: &str, merchant: &str) -> String {
     let token = Uuid::new_v4().to_string();
@@ -232,7 +249,7 @@ fn email() -> String {
 /// 100 new customers each sign in once and sign once. Returns (encrypts, decrypts).
 async fn new_customers(cached: bool) -> (usize, usize) {
     let app = setup(cached).await;
-    let merchant = Keys::generate().public_key().to_hex();
+    let merchant = approve_merchant(&app).await;
 
     let mut customers = Vec::new();
     for _ in 0..COUNT {
@@ -253,7 +270,7 @@ async fn new_customers(cached: bool) -> (usize, usize) {
 /// One customer signs in 100 times and signs with each session. Returns (encrypts, decrypts).
 async fn returning_customer(cached: bool) -> (usize, usize) {
     let app = setup(cached).await;
-    let merchant = Keys::generate().public_key().to_hex();
+    let merchant = approve_merchant(&app).await;
     let email = email();
 
     let mut sessions = Vec::new();

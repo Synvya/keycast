@@ -2034,6 +2034,9 @@ pub async fn delete_user(
 pub struct AddCustomerOriginRequest {
     pub origin: String,
     pub merchant_name: String,
+    /// Hex or npub. Defaults to empty so a missing key gets the same 400 as an invalid one.
+    #[serde(default)]
+    pub merchant_pubkey: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2078,6 +2081,15 @@ fn normalize_app_origin(origin: &str) -> ApiResult<String> {
     }
 }
 
+/// Read a merchant's key, given as hex or npub, as hex.
+fn normalize_merchant_pubkey(pubkey: &str) -> ApiResult<String> {
+    let pubkey = pubkey.trim();
+    nostr_sdk::PublicKey::from_hex(pubkey)
+        .or_else(|_| nostr_sdk::PublicKey::from_bech32(pubkey))
+        .map(|pubkey| pubkey.to_hex())
+        .map_err(|_| ApiError::bad_request("Invalid merchant_pubkey: use hex or npub"))
+}
+
 /// GET /api/admin/customer-origins
 pub async fn list_customer_origins(
     State(auth_state): State<AuthState>,
@@ -2108,11 +2120,12 @@ pub async fn add_customer_origin(
     if merchant_name.is_empty() {
         return Err(ApiError::bad_request("merchant_name is required"));
     }
+    let merchant_pubkey = normalize_merchant_pubkey(&req.merchant_pubkey)?;
 
     let pool = &auth_state.state.db;
     let tenant_id = customer_tenant_id(pool).await?;
     let added = CustomerAppOriginRepository::new(pool.clone())
-        .add(tenant_id, &origin, merchant_name)
+        .add(tenant_id, &origin, merchant_name, &merchant_pubkey)
         .await?;
     Ok(Json(added))
 }

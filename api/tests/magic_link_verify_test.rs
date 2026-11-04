@@ -17,7 +17,7 @@ use keycast_api::handlers::http_rpc_handler::new_http_handler_cache;
 use keycast_api::state::{get_tenant_cache, KeycastState, KEYCAST_STATE};
 use keycast_core::encryption::{KeyManager, KeyManagerError};
 use keycast_core::repositories::{
-    MagicLinkTokenRepository, PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
+    CustomerAppOriginRepository, MagicLinkTokenRepository, PURPOSE_DELETE_ACCOUNT, PURPOSE_SIGN_IN,
 };
 use keycast_core::secret_pool::SecretPool;
 use moka::future::Cache;
@@ -34,6 +34,7 @@ use zeroize::Zeroizing;
 const CUSTOMER_HOST: &str = "customers.magic-link-verify.example.com";
 const OWNER_HOST: &str = "owners.magic-link-verify.example.com";
 const APP_URL: &str = "https://orders.example.com/signin";
+const APP_ORIGIN: &str = "https://orders.example.com";
 
 struct TestKeyManager;
 
@@ -215,6 +216,53 @@ fn commerce_grant(token: &str, merchant: &str) -> Value {
         "scope": "policy:commerce_envelope",
         "merchant_pubkey": merchant,
     })
+}
+
+/// Put the app on the approved list, selling for this merchant.
+async fn approve_merchant(app: &TestApp, merchant: &str) {
+    CustomerAppOriginRepository::new(app.pool.clone())
+        .add(app.customer_tenant, APP_ORIGIN, "Example Shop", merchant)
+        .await
+        .unwrap();
+}
+
+async fn authorization_count(app: &TestApp, pubkey: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM oauth_authorizations WHERE user_pubkey = $1")
+        .bind(pubkey)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap()
+}
+
+async fn commerce_policy_count(app: &TestApp, merchant: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM policies WHERE name = $1")
+        .bind(format!("commerce_envelope:{merchant}"))
+        .fetch_one(&app.pool)
+        .await
+        .unwrap()
+}
+
+/// Ask Keycast to encrypt an order for this merchant, to this merchant.
+async fn encrypt_order_to(
+    app: &TestApp,
+    session: &str,
+    customer: nostr_sdk::PublicKey,
+    merchant: nostr_sdk::PublicKey,
+) -> StatusCode {
+    let order = serde_json::to_string(
+        &EventBuilder::new(Kind::from(1327), "order")
+            .tag(Tag::public_key(merchant))
+            .build(customer),
+    )
+    .unwrap();
+    rpc(
+        app,
+        session,
+        "nip44_encrypt",
+        json!([merchant.to_hex(), order]),
+    )
+    .await
+    .status
 }
 
 async fn account_pubkey(app: &TestApp, email: &str) -> Option<String> {
@@ -489,13 +537,20 @@ async fn test_grant_fields_come_together_and_are_checked() {
     let email = unique_email();
     let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
     let merchant = Keys::generate().public_key().to_hex();
+    approve_merchant(&app, &merchant).await;
 
     let mut partial = commerce_grant(&token, &merchant);
-    partial.as_object_mut().unwrap().remove("merchant_pubkey");
+    partial.as_object_mut().unwrap().remove("scope");
+    let only_merchant = json!({ "token": token, "merchant_pubkey": merchant });
     let mut wrong_scope = commerce_grant(&token, &merchant);
     wrong_scope["scope"] = json!("policy:full");
 
-    for body in [partial, wrong_scope, commerce_grant(&token, "not-a-pubkey")] {
+    for body in [
+        partial,
+        only_merchant,
+        wrong_scope,
+        commerce_grant(&token, "not-a-pubkey"),
+    ] {
         assert_eq!(verify(&app, body).await.status, StatusCode::BAD_REQUEST);
     }
     assert_eq!(account_pubkey(&app, &email).await, None);
@@ -514,11 +569,13 @@ async fn test_redirect_uri_must_match_the_links_origin() {
     let email = unique_email();
     let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
     let merchant = Keys::generate().public_key().to_hex();
+    approve_merchant(&app, &merchant).await;
 
     let mut body = commerce_grant(&token, &merchant);
     body["redirect_uri"] = json!("https://evil.example.org/signin");
 
     assert_eq!(verify(&app, body).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(account_pubkey(&app, &email).await, None);
     let authorizations: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM oauth_authorizations WHERE redirect_origin = 'https://evil.example.org'",
     )
@@ -526,6 +583,106 @@ async fn test_redirect_uri_must_match_the_links_origin() {
     .await
     .unwrap();
     assert_eq!(authorizations, 0);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_sign_in_naming_the_apps_merchant_gets_a_working_grant() {
+    let app = setup().await;
+    let email = unique_email();
+    let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
+    let merchant = Keys::generate().public_key();
+    approve_merchant(&app, &merchant.to_hex()).await;
+
+    let answer = verify(&app, commerce_grant(&token, &merchant.to_hex())).await;
+
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+    let pubkey_hex = account_pubkey(&app, &email).await.unwrap();
+    assert_eq!(authorization_count(&app, &pubkey_hex).await, 1);
+    let customer = nostr_sdk::PublicKey::from_hex(&pubkey_hex).unwrap();
+    let session = answer.body["session_token"].as_str().unwrap();
+    assert_eq!(
+        encrypt_order_to(&app, session, customer, merchant).await,
+        StatusCode::OK
+    );
+}
+
+/// A compromised app asks for a different merchant: nothing is granted, to anyone.
+#[tokio::test]
+#[serial]
+async fn test_sign_in_naming_another_merchant_is_refused_and_grants_nothing() {
+    let app = setup().await;
+    let merchant = Keys::generate().public_key().to_hex();
+    let other_merchant = Keys::generate().public_key().to_hex();
+    approve_merchant(&app, &merchant).await;
+
+    // A new customer: no account, no authorization
+    let email = unique_email();
+    let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
+    let refused = verify(&app, commerce_grant(&token, &other_merchant)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    assert_eq!(account_pubkey(&app, &email).await, None);
+
+    // An existing customer: keeps the one authorization they had
+    let email = unique_email();
+    let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
+    let granted = verify(&app, commerce_grant(&token, &merchant)).await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.raw);
+    let pubkey_hex = account_pubkey(&app, &email).await.unwrap();
+
+    let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
+    let refused = verify(&app, commerce_grant(&token, &other_merchant)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    assert!(refused.body.get("session_token").is_none());
+    assert_eq!(authorization_count(&app, &pubkey_hex).await, 1);
+    assert_eq!(commerce_policy_count(&app, &other_merchant).await, 0);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_sign_in_omitting_the_merchant_gets_the_apps_merchant() {
+    let app = setup().await;
+    let email = unique_email();
+    let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
+    let merchant = Keys::generate().public_key();
+    approve_merchant(&app, &merchant.to_hex()).await;
+
+    let mut body = commerce_grant(&token, &merchant.to_hex());
+    body.as_object_mut().unwrap().remove("merchant_pubkey");
+    let answer = verify(&app, body).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+
+    let customer =
+        nostr_sdk::PublicKey::from_hex(&account_pubkey(&app, &email).await.unwrap()).unwrap();
+    let session = answer.body["session_token"].as_str().unwrap();
+    assert_eq!(
+        encrypt_order_to(&app, session, customer, merchant).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        encrypt_order_to(&app, session, customer, Keys::generate().public_key()).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// A link sent before the merchant was removed has no merchant to bind a grant to.
+#[tokio::test]
+#[serial]
+async fn test_grant_is_refused_once_the_merchant_is_removed() {
+    let app = setup().await;
+    let email = unique_email();
+    let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
+    let merchant = Keys::generate().public_key().to_hex();
+    approve_merchant(&app, &merchant).await;
+    CustomerAppOriginRepository::new(app.pool.clone())
+        .remove(app.customer_tenant, APP_ORIGIN)
+        .await
+        .unwrap();
+
+    let refused = verify(&app, commerce_grant(&token, &merchant)).await;
+
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    assert_eq!(account_pubkey(&app, &email).await, None);
 }
 
 /// A sign-in that grants the permission: the session can place an order, and nothing else.
@@ -537,6 +694,7 @@ async fn test_session_places_orders_with_one_merchant_and_nothing_else() {
     let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
     let merchant = Keys::generate().public_key();
     let other_merchant = Keys::generate().public_key();
+    approve_merchant(&app, &merchant.to_hex()).await;
 
     let answer = verify(&app, commerce_grant(&token, &merchant.to_hex())).await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
@@ -642,11 +800,9 @@ async fn test_customer_hostname_has_only_customer_routes() {
     let app = setup().await;
     let email = unique_email();
     let token = new_link_for(&app, &email, PURPOSE_SIGN_IN, 15).await;
-    let answer = verify(
-        &app,
-        commerce_grant(&token, &Keys::generate().public_key().to_hex()),
-    )
-    .await;
+    let merchant = Keys::generate().public_key().to_hex();
+    approve_merchant(&app, &merchant).await;
+    let answer = verify(&app, commerce_grant(&token, &merchant)).await;
     let session = answer.body["session_token"].as_str().unwrap();
 
     for (method, path) in [
