@@ -53,8 +53,8 @@ EC2 + Docker Compose remains the chosen Keycast deployment target for now.
 | Runtime | EC2 + Docker Compose | EC2 + Docker Compose |
 | PostgreSQL | containerized | containerized |
 | Redis | containerized | containerized |
-| ALB | `synvya-staging-keycast` | `synvya-production-keycast` |
-| Target group | `synvya-staging-keycast` | `synvya-production-keycast` |
+| ALB | `synvya-staging-keycast` | `synvya-production-keycast-alb` |
+| Target group | `synvya-staging-keycast` | `synvya-production-keycast-alb` |
 | Secrets path | `synvya/staging/keycast/*` | `synvya/production/keycast/*` |
 | KMS key alias | `alias/keycast-master-key` | `alias/synvya-production-keycast-masterkey` |
 | WAF Web ACL | `synvya-staging-keycast-waf` | `synvya-production-keycast-waf` |
@@ -91,7 +91,7 @@ Route 53
    v
 Dedicated Keycast ALB per environment
   - `synvya-staging-keycast`
-  - `synvya-production-keycast`
+  - `synvya-production-keycast-alb`
   - HTTPS 443 with wildcard certificate
    |
    v
@@ -131,7 +131,7 @@ It should not include a server or event-processor container.
 | Environment | ALB | Target Group | Port | Health Check |
 |---|---|---|---|---|
 | Staging | `synvya-staging-keycast` | `synvya-staging-keycast` | `3000` | `GET /health` |
-| Production | `synvya-production-keycast` | `synvya-production-keycast` | `3000` | `GET /health` |
+| Production | `synvya-production-keycast-alb` | `synvya-production-keycast-alb` | `3000` | `GET /health` |
 
 ### 8.2 Listener Rules
 
@@ -161,7 +161,7 @@ Each environment has a dedicated AWS WAF Web ACL associated with its dedicated K
 | Web ACL | Associated ALB |
 |---|---|
 | `synvya-staging-keycast-waf` | `synvya-staging-keycast` |
-| `synvya-production-keycast-waf` | `synvya-production-keycast` |
+| `synvya-production-keycast-waf` | `synvya-production-keycast-alb` |
 
 ### Rules
 
