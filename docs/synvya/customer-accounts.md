@@ -2,7 +2,7 @@
 
 Passwordless customer accounts in Keycast: sign-in by email link, a commerce permission that lets an orders app place orders for a customer with one merchant and nothing else, and the fixes Keycast needed before holding customer keys.
 
-**Reality:** **Built** in PR [#100](https://github.com/Synvya/keycast/pull/100) (not merged), except §10's merchant binding, which is [#102](https://github.com/Synvya/keycast/issues/102). This document describes what was built; where the build differed from the first version of this spec, the built version is what is written here.
+**Reality:** **Built** in PR [#100](https://github.com/Synvya/keycast/pull/100) (not merged), including §10's merchant binding ([#102](https://github.com/Synvya/keycast/issues/102)). This document describes what was built; where the build differed from the first version of this spec, the built version is what is written here.
 
 **Issues:** milestone [Orders: customer accounts](https://github.com/Synvya/keycast/milestone/3) — #88 to #98, #101, #102. Each section names its issue.
 
@@ -11,7 +11,7 @@ Passwordless customer accounts in Keycast: sign-in by email link, a commerce per
 - [Orders PRD](https://github.com/Synvya/docs/blob/main/06-domains-and-services/specs/prd-orders.md) §8 and §13 (`[OR-8]`, `[OR-19]` – `[OR-22]`).
 - [Order of work](https://github.com/Synvya/docs/blob/main/02-auth-and-identity/internal/todo-keycast-customer-accounts.md).
 
-**Verified against:** `alejandro-dev` at `a4c5890` (2026-11-03).
+**Verified against:** `alejandro-dev` at `e145dac` (2026-11-03). The running-server checks (`tests/qa`, the scripted flows) were last run at `a4c5890`, before #102; the staging checks in §12 are #102's first run on a server.
 
 ---
 
@@ -93,12 +93,12 @@ The orders app's landing page reads `token` from its URL and posts it. POST only
   "client_id": "orders.example.com",
   "redirect_uri": "https://orders.example.com/signin",
   "scope": "policy:commerce_envelope",
-  "merchant_pubkey": "<hex, optional once #102 lands>",
+  "merchant_pubkey": "<hex, optional>",
   "local_key": "<hex secret key, optional>"
 }
 ```
 
-`client_id`, `redirect_uri` and `scope` (and `merchant_pubkey`) come together or not at all. Together they are the **grant**: permission for this app to place orders for the customer.
+`client_id`, `redirect_uri` and `scope` come together or not at all. `merchant_pubkey` is optional: Keycast takes the merchant from the approved list (§10), and a different one is refused. Together they are the **grant**: permission for this app to place orders for the customer.
 
 1. Consume the token for this tenant. Unknown, used, expired and other-tenant tokens all get the same 400.
 2. **New email:** create the user (verified, no password) and a key. If `local_key` is a valid secret key, store it as the key instead (the Synvya Diners claim case). **Existing email:** use the existing key and ignore `local_key`. A key is never replaced.
@@ -216,10 +216,13 @@ CREATE TABLE customer_app_origins (
 | `GET /api/customer/authorizations` | The apps that can act for the customer: origin, merchant name, when granted |
 | `POST /api/customer/authorizations/revoke` | Revoke one; it stops at its next call (§7) |
 
-**Binding each app to its merchant — #102, not built yet.** The list gains `merchant_pubkey`, required when an origin is added. At verify (§3.3), Keycast takes the merchant from the row for the link's `app_origin`, which it recorded when the link was requested, so the app cannot change it:
-- a `merchant_pubkey` in the request that differs from the row's is refused with 400 and nothing is granted;
+**Binding each app to its merchant — #102.** `merchant_pubkey` is required when an origin is added (hex or npub, stored as hex). At verify (§3.3), Keycast takes the merchant from the row for the link's `app_origin`, which it recorded when the link was requested, so the app cannot change it:
+- a `merchant_pubkey` in the request that differs from the row's is refused with 400 and nothing is granted; for a new customer, no account is created either;
 - an omitted `merchant_pubkey` uses the row's;
-- a `redirect_uri` on another origin than the link's is refused.
+- a `redirect_uri` on another origin than the link's is refused;
+- **a refused grant uses up the link.** Keycast learns the link's origin only by consuming it, so a misconfigured app makes the customer ask for a new link;
+- a merchant removed from the list after the link was sent: the grant is refused, because there is no merchant left to bind it to;
+- **posting an origin again** changes its name and key for new sign-ins only. Customers already signed in keep the merchant they were granted until they are revoked, so correcting a wrong key does not fix existing grants: revoke them as well.
 
 Without this, a compromised orders app could ask for a different merchant and the customer's key would be allowed to send orders there.
 
@@ -279,6 +282,10 @@ New test files: `bcrypt_cleanup_test`, `tenant_isolation_test`, `magic_link_test
 | Email scanner opens the link | GET on the app page; nothing consumed |
 | Sign-in from an app not on the list | 400; no email |
 | Merchant removed from the list | New sign-ins refused; existing customers keep working until revoked |
+| Merchant removed after the link was sent | Grant refused; the link is used up |
+| App names a different merchant than its row | 400; nothing granted, no account created; the link is used up |
+| App omits `merchant_pubkey` | The row's merchant is used |
+| Origin posted again with a corrected key | New sign-ins use the new key; existing grants keep the old one until revoked |
 | Deletion while Synvya Server's URL is unset | Account deleted; notice waits; subscriptions not cancelled until delivered |
 
 ---
