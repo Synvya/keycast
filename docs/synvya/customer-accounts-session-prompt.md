@@ -1,5 +1,7 @@
 # Customer Accounts — Session Prompt
 
+**The milestone is built (PR #100).** Use this prompt for follow-up work on customer accounts.
+
 Copy everything below the line and paste it as the opening message of a new coding-agent session whose working directory is a clone of `Synvya/keycast`. Replace `<ISSUE>` with the issue to start from, normally `#88`; the agent continues through the list in spec §12.
 
 ---
@@ -24,7 +26,7 @@ Then read the code the spec section names before changing it. Line numbers in th
 - All work is on the `alejandro-dev` branch, and it ships as **one PR, #100** (`alejandro-dev` → `synvya-staging`). Bring the branch up to date with `synvya-staging` before you start, push to it as you go, and never create another branch or PR. Never use `main`.
 - Work the issues in the order of spec §12, at least one commit per issue with `Fixes #<n>` in the message. Dependencies are met by earlier commits on the same branch, not by merges.
 - Keep it generic: this serves any merchant on Synvya's orders app. No merchant's name, domain or prices in code, config or tests; use `orders.example.com` in examples.
-- Write the tests the issue's "Done when" lists, and run them (`cd api && cargo test`). Run `cargo fmt` and `cargo clippy` before committing.
+- Write the tests the issue's "Done when" lists, and run CI's commands from spec §12. `cd api && cargo test` alone skips the database tests. Run `cargo fmt` and `cargo clippy` before committing.
 - Do not change behaviour for restaurant owners unless the issue says to. Their tenant, password login and team flows must keep working.
 - Never log or return a customer's pubkey, npub, secret key or a plain sign-in token.
 - If the spec and the code disagree in a way that changes the design, stop and ask rather than choosing.
