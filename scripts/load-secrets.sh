@@ -16,6 +16,7 @@ get_secret() {
 
 if [ "$ENV" = "staging" ]; then
     DOMAIN=auth.staging.synvya.com
+    CUSTOMER_TENANT_DOMAIN=b2b-auth.staging.synvya.com
     # Local client development runs against staging
     ALLOW_LOCALHOST_ORIGINS=true
     KMS_KEY_ID=alias/keycast-master-key
@@ -27,6 +28,8 @@ if [ "$ENV" = "staging" ]; then
     VITE_NDK_BUNKER_RELAYS=wss://relay.staging.synvya.com
 elif [ "$ENV" = "production" ]; then
     DOMAIN=auth.synvya.com
+    # Customer accounts are off while this is empty. Set to b2b-auth.synvya.com to turn them on.
+    CUSTOMER_TENANT_DOMAIN=
     ALLOW_LOCALHOST_ORIGINS=false
     KMS_KEY_ID=alias/synvya-production-keycast-masterkey
     INVITE_BASE_URL=https://account.synvya.com
@@ -42,7 +45,6 @@ fi
 
 EXTRA_ALLOWED_ORIGINS="https://account.synvya.com,https://account.staging.synvya.com,https://server.synvya.com,https://server.staging.synvya.com,https://admin.synvya.com,https://admin.staging.synvya.com"
 ALLOWED_PUBKEYS=$(get_secret synvya/$ENV/keycast/allowed-pubkeys 2>/dev/null || echo "")
-CUSTOMER_TENANT_DOMAIN=$(get_secret synvya/$ENV/keycast/customer-tenant-domain 2>/dev/null || echo "")
 # localhost: the post-deploy QA tests run on the host against http://localhost:3000
 ALLOWED_TENANT_DOMAINS=$DOMAIN,localhost${CUSTOMER_TENANT_DOMAIN:+,$CUSTOMER_TENANT_DOMAIN}
 
