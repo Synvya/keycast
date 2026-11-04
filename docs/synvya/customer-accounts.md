@@ -298,4 +298,9 @@ New test files: `bcrypt_cleanup_test`, `tenant_isolation_test`, `magic_link_test
 3. Give the hostname to the orders app; it sends its Keycast calls there.
 4. Once Synvya Server has the deletion endpoint (§9), set `SYNVYA_SERVER_DELETION_URL`. The deploy does not write it yet, so it has to be added to `scripts/load-secrets.sh`.
 
+**Before turning it on in production — the WAF.** Staging and production have different rules (`ec2-deployment.md` §10), and these are made by hand in the AWS console, on `synvya-production-keycast-waf`:
+1. Add a rate-based rule for `/api/auth/magic-link`, which sends email like the routes that already have one. Check that their 10 requests per minute per IP suits it: customers behind one shared network count as one IP.
+2. Add `AWSManagedRulesAmazonIpReputationList`.
+3. Decide on `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet`, which staging has. Check real order sizes first: the common rules block request bodies over 8 KB, and orders are encrypted through `/api/nostr`.
+
 **Once per merchant — the approved list:** `POST /api/admin/customer-origins` on the owner hostname with `{ "origin": "https://orders.example.com", "merchant_name": "Example Coffee", "merchant_pubkey": "<hex or npub>" }`. `merchant_pubkey` is required, and a missing or invalid one gets 400. Check it: customers signing in through that app can only send orders to this key. It works at once, with no deploy, and fails until the customer hostname is set. There is no screen for it yet. A merchant not on the list gets 400 on sign-in requests and no email is sent. Posting the same origin again changes its name and key for new sign-ins; customers already signed in keep the merchant they were granted until revoked.
