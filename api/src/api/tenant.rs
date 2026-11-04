@@ -339,24 +339,25 @@ fn validate_domain(domain: &str) -> Result<(), TenantError> {
         ));
     }
 
-    // Reject internal IPs and special domains (but not localhost)
-    let blocked_patterns = [
-        "127.",
-        "192.168.",
-        "10.",
-        "172.",
-        ".local",
-        ".internal",
-        ".test",
-    ];
+    // Reject internal IPs and special domains (but not localhost). IPs are matched from the start
+    // and special domains from the end, so tenant-a10.example.com is not mistaken for an IP.
+    let blocked_prefixes = ["127.", "192.168.", "10.", "172."];
+    let blocked_suffixes = [".local", ".internal", ".test"];
+    let name = domain.trim_end_matches('.');
 
-    for pattern in &blocked_patterns {
-        if domain.contains(pattern) {
-            return Err(TenantError::ValidationFailed(format!(
-                "Domain matches blocked pattern: {}",
-                pattern
-            )));
-        }
+    let blocked = blocked_prefixes
+        .iter()
+        .find(|pattern| domain.starts_with(**pattern))
+        .or_else(|| {
+            blocked_suffixes
+                .iter()
+                .find(|pattern| name.ends_with(**pattern))
+        });
+    if let Some(pattern) = blocked {
+        return Err(TenantError::ValidationFailed(format!(
+            "Domain matches blocked pattern: {}",
+            pattern
+        )));
     }
 
     Ok(())
@@ -656,5 +657,28 @@ mod tests {
         assert!(validate_domain("").is_err());
         assert!(validate_domain("no-dot").is_err());
         assert!(validate_domain("192.168.1.1").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_validate_domain_blocks_whole_patterns_only() {
+        std::env::remove_var("ALLOWED_TENANT_DOMAINS");
+
+        // Containing a pattern is not enough to be blocked
+        assert!(validate_domain("tenant-a10.example.com").is_ok());
+        assert!(validate_domain("tenant-a127.example.com").is_ok());
+        assert!(validate_domain("tenant-a172.example.com").is_ok());
+        assert!(validate_domain("shop.testing.example.com").is_ok());
+
+        // Internal addresses and special domains stay blocked
+        assert!(validate_domain("10.0.0.1").is_err());
+        assert!(validate_domain("10.").is_err());
+        assert!(validate_domain("127.0.0.1").is_err());
+        assert!(validate_domain("172.16.0.1").is_err());
+        assert!(validate_domain("192.168.1.1").is_err());
+        assert!(validate_domain("printer.local").is_err());
+        assert!(validate_domain("db.internal").is_err());
+        assert!(validate_domain("app.test").is_err());
+        assert!(validate_domain("printer.local.").is_err());
     }
 }
