@@ -57,7 +57,7 @@ EC2 + Docker Compose remains the chosen Keycast deployment target for now.
 | Target group | `synvya-staging-keycast` | `synvya-production-keycast-alb` |
 | Secrets path | `synvya/staging/keycast/*` | `synvya/production/keycast/*` |
 | KMS key alias | `alias/keycast-master-key` | `alias/synvya-production-keycast-masterkey` |
-| WAF Web ACL | `synvya-staging-keycast-waf` | `synvya-production-keycast-waf` |
+| WAF Web ACL | `CreatedByALB-synvya-staging-keycast` | `synvya-production-keycast-waf` |
 
 ## 5. Service Boundary
 
@@ -96,7 +96,7 @@ Dedicated Keycast ALB per environment
    |
    v
 AWS WAF on the Keycast ALB
-  - `synvya-staging-keycast-waf`
+  - `CreatedByALB-synvya-staging-keycast`
   - `synvya-production-keycast-waf`
    |
    v
@@ -160,7 +160,7 @@ Each environment has a dedicated AWS WAF Web ACL associated with its dedicated K
 
 | Web ACL | Associated ALB |
 |---|---|
-| `synvya-staging-keycast-waf` | `synvya-staging-keycast` |
+| `CreatedByALB-synvya-staging-keycast` | `synvya-staging-keycast` |
 | `synvya-production-keycast-waf` | `synvya-production-keycast-alb` |
 
 ### Rules
