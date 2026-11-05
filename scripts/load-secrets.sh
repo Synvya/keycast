@@ -19,6 +19,7 @@ if [ "$ENV" = "staging" ]; then
     CUSTOMER_TENANT_DOMAIN=b2b-auth.staging.synvya.com
     # Local client development runs against staging
     ALLOW_LOCALHOST_ORIGINS=true
+    LOCAL_DEV_ORIGINS=http://account.local.synvya.com:5173
     KMS_KEY_ID=alias/keycast-master-key
     INVITE_BASE_URL=https://account.staging.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.staging.synvya.com
@@ -31,6 +32,7 @@ elif [ "$ENV" = "production" ]; then
     # Customer accounts are off while this is empty. Set to b2b-auth.synvya.com to turn them on.
     CUSTOMER_TENANT_DOMAIN=
     ALLOW_LOCALHOST_ORIGINS=false
+    LOCAL_DEV_ORIGINS=
     KMS_KEY_ID=alias/synvya-production-keycast-masterkey
     INVITE_BASE_URL=https://account.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.synvya.com
@@ -59,7 +61,7 @@ AWS_REGION=$REGION
 BUNKER_RELAYS=$BUNKER_RELAYS
 VITE_NDK_EXPLICIT_RELAYS=$VITE_NDK_EXPLICIT_RELAYS
 VITE_NDK_BUNKER_RELAYS=$VITE_NDK_BUNKER_RELAYS
-ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS
+ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS${LOCAL_DEV_ORIGINS:+,$LOCAL_DEV_ORIGINS}
 ALLOW_LOCALHOST_ORIGINS=$ALLOW_LOCALHOST_ORIGINS
 ALLOWED_TENANT_DOMAINS=$ALLOWED_TENANT_DOMAINS
 CUSTOMER_TENANT_DOMAIN=$CUSTOMER_TENANT_DOMAIN
