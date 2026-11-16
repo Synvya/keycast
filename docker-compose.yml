@@ -111,6 +111,10 @@ services:
       #     that hardcodes localhost.
       # Empty in prod (real DNS, blocklist applies).
       ALLOWED_TENANT_DOMAINS: ${ALLOWED_TENANT_DOMAINS:-keycast.local.synvya.com,host.docker.internal,localhost}
+      # The customer tenant (passwordless buyer accounts). Local dev sets it to
+      # b2b-auth.local.synvya.com in .env.local, and that name must also be in
+      # ALLOWED_TENANT_DOMAINS. Empty turns customer accounts off.
+      CUSTOMER_TENANT_DOMAIN: ${CUSTOMER_TENANT_DOMAIN:-}
       WEB_BUILD_DIR: /app/web
       SERVER_NSEC: ${SERVER_NSEC:?error}
       REDIS_URL: redis://redis:6379
