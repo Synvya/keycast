@@ -864,10 +864,11 @@ async fn test_admin_adds_and_removes_one_merchant_on_an_origin() {
     assert_eq!(bad_key.status, StatusCode::BAD_REQUEST, "{}", bad_key.raw);
 }
 
-/// The migration that added merchant lists copies each origin's merchant into its list.
+/// The migration that added merchant lists runs on an empty origin table, and refuses to run over
+/// an approved origin rather than drop its merchant.
 #[tokio::test]
 #[serial]
-async fn test_merchant_list_migration_copies_existing_origins() {
+async fn test_merchant_list_migration_refuses_existing_origins() {
     const LIST_MIGRATION: i64 = 20261116000100;
     let app = setup().await;
 
@@ -908,15 +909,18 @@ async fn test_merchant_list_migration_copies_existing_origins() {
     .await
     .unwrap();
 
-    all.run(&pool).await.unwrap();
+    let refused = all.run(&pool).await;
 
-    let copied: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT m.tenant_id, m.merchant_pubkey, m.merchant_name
-         FROM customer_app_origin_merchants m
-         JOIN customer_app_origins o ON o.id = m.origin_id
-         WHERE o.origin = 'https://orders.example.com'",
+    sqlx::query("DELETE FROM customer_app_origins")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let on_empty = all.run(&pool).await;
+    let has_column: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'customer_app_origins' AND column_name = 'merchant_pubkey')",
     )
-    .fetch_all(&pool)
+    .fetch_one(&pool)
     .await
     .unwrap();
     pool.close().await;
@@ -925,5 +929,13 @@ async fn test_merchant_list_migration_copies_existing_origins() {
         .await
         .unwrap();
 
-    assert_eq!(copied, vec![(1, merchant, "Shop".to_string())]);
+    let error = refused.expect_err("the migration ran over an approved origin");
+    assert!(
+        error
+            .to_string()
+            .contains("customer_app_origins is not empty"),
+        "{error}"
+    );
+    on_empty.expect("the migration failed on an empty origin table");
+    assert!(!has_column, "merchant_pubkey was not dropped");
 }

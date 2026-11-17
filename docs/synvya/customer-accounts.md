@@ -212,7 +212,7 @@ CREATE TABLE customer_app_origin_merchants (
 );
 ```
 
-Migration `20261116000100_add_customer_app_origin_merchants.sql` made the second table, copied each origin's `merchant_pubkey` and name into it, and dropped `customer_app_origins.merchant_pubkey`. An origin approved before then sells for its one merchant, with no admin action.
+Migration `20261116000100_add_customer_app_origin_merchants.sql` made the second table and dropped `customer_app_origins.merchant_pubkey`. It carries no data: no origin had been approved in any environment, and the migration refuses to run if `customer_app_origins` holds a row, rather than drop a merchant binding.
 
 **Admin routes**, on the owner hostname with a full admin session (the customer hostname has no admin routes):
 

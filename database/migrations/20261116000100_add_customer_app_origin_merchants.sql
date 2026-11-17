@@ -18,9 +18,15 @@ CREATE TABLE customer_app_origin_merchants (
         REFERENCES customer_app_origins (id, tenant_id) ON DELETE CASCADE
 );
 
--- Every origin approved so far sells for one merchant: it keeps that merchant, with no admin action
-INSERT INTO customer_app_origin_merchants (origin_id, tenant_id, merchant_pubkey, merchant_name, created_at)
-SELECT id, tenant_id, merchant_pubkey, merchant_name, created_at FROM customer_app_origins;
+-- No origin has been approved anywhere yet, so there is no merchant to carry over. Refuse to run
+-- rather than drop a binding: an approved origin here means this assumption is wrong.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM customer_app_origins) THEN
+        RAISE EXCEPTION 'customer_app_origins is not empty: add its merchants to customer_app_origin_merchants before dropping merchant_pubkey';
+    END IF;
+END
+$$;
 
 -- The list is the only record of an origin's merchants
 ALTER TABLE customer_app_origins DROP COLUMN merchant_pubkey;
