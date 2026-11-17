@@ -68,6 +68,10 @@ pub struct TeamUser {
 pub enum TeamUserRole {
     Admin,
     Member,
+    /// Buyer team (customer tenant): places orders as the team.
+    Orderer,
+    /// Buyer team (customer tenant): reads orders and invoices, places none.
+    Viewer,
 }
 
 impl TeamUserRole {
@@ -76,9 +80,19 @@ impl TeamUserRole {
         match self {
             TeamUserRole::Admin => "admin",
             TeamUserRole::Member => "member",
+            TeamUserRole::Orderer => "orderer",
+            TeamUserRole::Viewer => "viewer",
         }
     }
+
+    /// Whether an owner-tenant team may use this role. Orderer and viewer are buyer roles.
+    pub fn is_owner_team_role(&self) -> bool {
+        matches!(self, TeamUserRole::Admin | TeamUserRole::Member)
+    }
 }
+
+/// The roles of a buyer team, as stored. Spelled as the shared `BUYER_MEMBER_ROLES` set.
+pub const BUYER_TEAM_ROLES: [&str; 3] = ["admin", "orderer", "viewer"];
 
 impl User {
     pub async fn find_by_pubkey(

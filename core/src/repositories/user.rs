@@ -1425,12 +1425,17 @@ impl UserRepository {
                 .await?;
 
         // Get bunker pubkeys for signer daemon notification (before deletion)
-        let bunker_pubkeys: Vec<String> = sqlx::query_scalar(
+        let mut bunker_pubkeys: Vec<String> = sqlx::query_scalar(
             "SELECT bunker_public_key FROM oauth_authorizations WHERE user_pubkey = $1",
         )
         .bind(pubkey)
         .fetch_all(&mut *tx)
         .await?;
+
+        // Their grants on buyer team keys name them but are not theirs to cascade from. Deletion
+        // is never refused for being a team's last admin: the team is left with no admin.
+        bunker_pubkeys
+            .extend(super::buyer_team::revoke_grants_of_deleted_member(&mut tx, pubkey).await?);
 
         // 1. Remove from all teams (no CASCADE, would block user delete)
         sqlx::query("DELETE FROM team_users WHERE user_pubkey = $1")

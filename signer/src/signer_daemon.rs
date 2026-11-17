@@ -1095,7 +1095,7 @@ impl UnifiedSigner {
                         )> = sqlx::query_as(
                             r#"SELECT id, secret_hash, stored_key_id, tenant_id, expires_at
                                FROM authorizations
-                               WHERE bunker_public_key = $1"#,
+                               WHERE bunker_public_key = $1 AND revoked_at IS NULL"#,
                         )
                         .bind(bunker_pubkey)
                         .fetch_optional(pool)
@@ -1103,7 +1103,7 @@ impl UnifiedSigner {
 
                         match auth_data {
                             Some((auth_id, secret_hash, stored_key_id, tenant_id, expires_at)) => {
-                                // Compute status from expires_at (team auths don't have revoked_at)
+                                // Compute status from expires_at (revoked rows are not loaded)
                                 let (status, tombstone_at) = if let Some(exp) = expires_at {
                                     if exp <= Utc::now() {
                                         (HandlerStatus::Expired, Some(exp))
@@ -1422,6 +1422,10 @@ impl UnifiedSigner {
 
                 // Log activity in background (non-blocking)
                 handler.spawn_update_activity();
+                handler.spawn_record_team_signing(
+                    "nip44_encrypt",
+                    keycast_core::repositories::plaintext_event_kind(plaintext),
+                );
 
                 serde_json::json!({
                     "id": request_id,
@@ -1498,6 +1502,10 @@ impl UnifiedSigner {
 
                 // Log activity in background (non-blocking)
                 handler.spawn_update_activity();
+                handler.spawn_record_team_signing(
+                    "nip04_encrypt",
+                    keycast_core::repositories::plaintext_event_kind(plaintext),
+                );
 
                 serde_json::json!({
                     "id": request_id,
@@ -1643,6 +1651,7 @@ impl SigningHandler for Nip46Handler {
         tracing::debug!("Successfully signed event: {}", signed_event.id);
 
         self.spawn_update_activity();
+        self.spawn_record_team_signing("sign_event", Some(kind as i32));
 
         Ok(signed_event)
     }
@@ -1747,6 +1756,7 @@ impl Nip46Handler {
         tracing::debug!("Successfully signed event: {}", signed_event.id);
 
         self.spawn_update_activity();
+        self.spawn_record_team_signing("sign_event", Some(kind as i32));
 
         // Extract request ID to include in response
         let request_id = request["id"].clone();
@@ -1755,6 +1765,28 @@ impl Nip46Handler {
             "id": request_id,
             "result": serde_json::to_string(&signed_event)?
         }))
+    }
+
+    /// Record a signature or encryption made under a team-key grant that names a member
+    /// (background, non-blocking). Other team grants write nothing; OAuth grants are skipped.
+    fn spawn_record_team_signing(&self, method: &'static str, event_kind: Option<i32>) {
+        if self.is_oauth {
+            return;
+        }
+        let pool = self.pool.clone();
+        let authorization_id = self.authorization_id as i64;
+        tokio::spawn(async move {
+            if let Err(e) = keycast_core::repositories::record_team_signing(
+                &pool,
+                authorization_id,
+                method,
+                event_kind,
+            )
+            .await
+            {
+                tracing::error!("Failed to record team signing activity: {}", e);
+            }
+        });
     }
 
     /// Spawn activity stats update in background (non-blocking)

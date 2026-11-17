@@ -12,18 +12,27 @@ const COMMERCE_ENVELOPE_KIND: u16 = 1327;
 /// The seal around each envelope.
 const SEAL_KIND: u16 = 13;
 
+/// The envelope extension that names the person who sent a message for an organization.
+const SENT_BY_EXTENSION: &str = "openmarkets:sent_by";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CommerceEnvelopeConfig {
     pub merchant_pubkey: String,
+    /// Set on a grant on a team key: the personal key of the member the grant belongs to. Every
+    /// envelope must then name that member in its `openmarkets:sent_by` extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_by: Option<String>,
 }
 
 /// Lets an orders app place orders for a customer with one merchant, and nothing else.
 pub struct CommerceEnvelope {
     merchant_pubkey: PublicKey,
+    sent_by: Option<PublicKey>,
 }
 
 impl CommerceEnvelope {
-    /// Whether the plaintext is an unsigned commerce envelope addressed to the merchant.
+    /// Whether the plaintext is an unsigned commerce envelope addressed to the merchant, and,
+    /// on a team key, sent by the grant's member.
     fn is_envelope_for_merchant(&self, plaintext: &str) -> bool {
         match serde_json::from_str::<UnsignedEvent>(plaintext) {
             Ok(event) => {
@@ -32,9 +41,29 @@ impl CommerceEnvelope {
                         .tags
                         .public_keys()
                         .any(|pubkey| *pubkey == self.merchant_pubkey)
+                    && self.is_sent_by_member(&event.content)
             }
             Err(_) => false,
         }
+    }
+
+    /// The envelope's content is its payload as JSON. On a team key its
+    /// `extensions["openmarkets:sent_by"].pubkey` must be the member's key, in lowercase hex.
+    fn is_sent_by_member(&self, content: &str) -> bool {
+        let Some(member) = &self.sent_by else {
+            return true;
+        };
+        serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("extensions")?
+                    .get(SENT_BY_EXTENSION)?
+                    .get("pubkey")?
+                    .as_str()
+                    .map(|pubkey| pubkey == member.to_hex())
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -48,7 +77,16 @@ impl CustomPermission for CommerceEnvelope {
         let merchant_pubkey = PublicKey::from_hex(&config.merchant_pubkey).map_err(|e| {
             PermissionError::InvalidConfig(format!("Invalid merchant_pubkey: {}", e))
         })?;
-        Ok(Box::new(Self { merchant_pubkey }))
+        let sent_by = config
+            .sent_by
+            .as_deref()
+            .map(PublicKey::from_hex)
+            .transpose()
+            .map_err(|e| PermissionError::InvalidConfig(format!("Invalid sent_by: {}", e)))?;
+        Ok(Box::new(Self {
+            merchant_pubkey,
+            sent_by,
+        }))
     }
 
     fn identifier(&self) -> &'static str {
@@ -253,6 +291,98 @@ mod tests {
                 "{config}"
             );
         }
+    }
+
+    fn team_permission(merchant: PublicKey, member: PublicKey) -> Box<dyn CustomPermission> {
+        permission(json!({ "merchant_pubkey": merchant.to_hex(), "sent_by": member.to_hex() }))
+            .to_custom_permission()
+            .expect("Valid team config should load")
+    }
+
+    fn envelope_with_content(author: PublicKey, merchant: PublicKey, content: String) -> String {
+        let event = EventBuilder::new(Kind::from(1327), content)
+            .tags([Tag::public_key(merchant)])
+            .build(author);
+        serde_json::to_string(&event).unwrap()
+    }
+
+    fn sent_by(pubkey: &str) -> String {
+        json!({
+            "items": [],
+            "extensions": { "openmarkets:sent_by": { "pubkey": pubkey } }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn test_team_key_encrypts_an_envelope_sent_by_the_member() {
+        let team = Keys::generate().public_key();
+        let merchant = Keys::generate().public_key();
+        let member = Keys::generate().public_key();
+        let permission = team_permission(merchant, member);
+
+        let plaintext = envelope_with_content(team, merchant, sent_by(&member.to_hex()));
+        assert!(permission.can_encrypt(&plaintext, &team, &merchant));
+        assert!(
+            permission.can_encrypt(&plaintext, &team, &team),
+            "The team's own copy"
+        );
+    }
+
+    #[test]
+    fn test_team_key_refuses_an_envelope_sent_by_another_member() {
+        let team = Keys::generate().public_key();
+        let merchant = Keys::generate().public_key();
+        let member = Keys::generate().public_key();
+        let other = Keys::generate().public_key();
+        let permission = team_permission(merchant, member);
+
+        let plaintext = envelope_with_content(team, merchant, sent_by(&other.to_hex()));
+        assert!(!permission.can_encrypt(&plaintext, &team, &merchant));
+        assert!(!permission.can_encrypt(&plaintext, &team, &team));
+    }
+
+    #[test]
+    fn test_team_key_refuses_an_envelope_without_sent_by() {
+        let team = Keys::generate().public_key();
+        let merchant = Keys::generate().public_key();
+        let member = Keys::generate().public_key();
+        let permission = team_permission(merchant, member);
+
+        for content in [
+            "order".to_string(),
+            json!({ "items": [] }).to_string(),
+            json!({ "extensions": {} }).to_string(),
+            json!({ "extensions": { "openmarkets:sent_by": {} } }).to_string(),
+            json!({ "extensions": { "openmarkets:sent_by": { "pubkey": 7 } } }).to_string(),
+            // At the top level, not in extensions
+            json!({ "openmarkets:sent_by": { "pubkey": member.to_hex() } }).to_string(),
+            // Upper case is not the member's key as the shape requires it
+            sent_by(&member.to_hex().to_uppercase()),
+        ] {
+            let plaintext = envelope_with_content(team, merchant, content.clone());
+            assert!(
+                !permission.can_encrypt(&plaintext, &team, &merchant),
+                "{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_personal_grant_ignores_sent_by() {
+        let f = fixture();
+        let other = Keys::generate().public_key();
+        let plaintext = envelope_with_content(f.customer, f.merchant, sent_by(&other.to_hex()));
+        assert!(f
+            .permission
+            .can_encrypt(&plaintext, &f.customer, &f.merchant));
+    }
+
+    #[test]
+    fn test_config_with_an_invalid_sent_by_is_an_error() {
+        let merchant = Keys::generate().public_key().to_hex();
+        let config = json!({ "merchant_pubkey": merchant, "sent_by": "not-a-pubkey" });
+        assert!(permission(config).to_custom_permission().is_err());
     }
 
     #[test]
