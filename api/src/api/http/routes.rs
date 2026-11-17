@@ -9,8 +9,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::api::http::{
-    admin, atproto, atproto_oauth, auth, claim, headless, magic_link, metrics, nostr_rpc, oauth,
-    policies, teams,
+    admin, atproto, atproto_oauth, auth, buyer_teams, claim, headless, magic_link, metrics,
+    nostr_rpc, oauth, policies, teams,
 };
 use crate::state::KeycastState;
 use axum::response::Json as AxumJson;
@@ -83,6 +83,30 @@ pub fn api_routes(
         .route(
             "/customer/authorizations/revoke",
             post(magic_link::revoke_customer_app),
+        )
+        // Buyer teams. Each path is also in `is_customer_route`; the generic /teams routes
+        // stay closed on the customer hostname.
+        .route(
+            "/customer/teams",
+            get(buyer_teams::list_my_teams).post(buyer_teams::create_my_team),
+        )
+        .route(
+            "/customer/teams/members",
+            get(buyer_teams::list_my_team_members),
+        )
+        .route("/customer/teams/invite", post(buyer_teams::invite_member))
+        .route(
+            "/customer/teams/accept",
+            post(buyer_teams::accept_team_invitation),
+        )
+        .route(
+            "/customer/teams/role",
+            post(buyer_teams::change_member_role),
+        )
+        .route("/customer/teams/remove", post(buyer_teams::remove_member))
+        .route(
+            "/customer/teams/grant",
+            post(buyer_teams::grant_on_team_key),
         )
         .layer(public_cors.clone())
         .with_state(auth_state.clone());
@@ -254,6 +278,23 @@ pub fn api_routes(
             get(admin::list_customer_origins)
                 .post(admin::add_customer_origin)
                 .delete(admin::remove_customer_origin),
+        )
+        // Buyer teams in the customer tenant, for Synvya Server
+        .route(
+            "/admin/customer-teams",
+            get(buyer_teams::admin_list_customer_teams).post(buyer_teams::admin_create_team),
+        )
+        .route(
+            "/admin/customer-teams/:team_pubkey",
+            delete(buyer_teams::admin_delete_team),
+        )
+        .route(
+            "/admin/customer-teams/:team_pubkey/members",
+            get(buyer_teams::admin_list_team_members),
+        )
+        .route(
+            "/admin/customer-teams/:team_pubkey/admins",
+            post(buyer_teams::admin_add_team_admin),
         )
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());

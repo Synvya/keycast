@@ -10,7 +10,8 @@ use axum::{
 };
 use keycast_core::metrics::METRICS;
 use keycast_core::repositories::{
-    OAuthAuthorizationRepository, PersonalKeysRepository, PolicyRepository, UserRepository,
+    plaintext_event_kind, record_team_signing, BuyerTeamRepository, OAuthAuthorizationRepository,
+    PersonalKeysRepository, PolicyRepository, UserRepository,
 };
 use keycast_core::signing_session::{parse_cache_key, CacheKey, SigningSession};
 use keycast_core::traits::CustomPermission;
@@ -167,6 +168,12 @@ pub async fn nostr_rpc(
 
             // Log activity in background (non-blocking)
             spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
+            spawn_record_team_signing(
+                pool.clone(),
+                &handler,
+                "sign_event",
+                Some(signed.kind.as_u16() as i32),
+            );
 
             serde_json::to_value(&signed)
                 .map_err(|e| RpcError::Internal(format!("JSON serialization failed: {}", e)))?
@@ -181,6 +188,12 @@ pub async fn nostr_rpc(
 
             // Log activity in background (non-blocking)
             spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
+            spawn_record_team_signing(
+                pool.clone(),
+                &handler,
+                "nip44_encrypt",
+                plaintext_event_kind(&plaintext),
+            );
 
             JsonValue::String(ciphertext)
         }
@@ -208,6 +221,12 @@ pub async fn nostr_rpc(
 
             // Log activity in background (non-blocking)
             spawn_log_activity(pool.clone(), handler.is_oauth(), handler.authorization_id());
+            spawn_record_team_signing(
+                pool.clone(),
+                &handler,
+                "nip04_encrypt",
+                plaintext_event_kind(&plaintext),
+            );
 
             JsonValue::String(ciphertext)
         }
@@ -257,8 +276,19 @@ async fn load_handler_on_demand(
         .await
         .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?;
 
-    let (auth_id, user_pubkey, auth_handle_opt, expires_at, revoked_at, policy_id) =
-        auth_data.ok_or(RpcError::Auth(AuthError::InvalidToken))?;
+    let Some((auth_id, user_pubkey, auth_handle_opt, expires_at, revoked_at, policy_id)) =
+        auth_data
+    else {
+        // Not a personal grant: a buyer team member's grant on the team key, or nothing
+        return load_member_grant_handler(
+            auth_state,
+            pool,
+            bunker_pubkey_hex,
+            token_user_pubkey,
+            tenant_id,
+        )
+        .await;
+    };
 
     // The token names the authorization; it must belong to the token's user
     if user_pubkey != token_user_pubkey {
@@ -332,6 +362,70 @@ async fn load_handler_on_demand(
     // This allows skipping UCAN verification entirely on cache hits
 
     Ok(handler)
+}
+
+/// Load the handler of a buyer team member's grant on the team key. It signs with the team key,
+/// under the grant's policy, and only for the member the grant names.
+async fn load_member_grant_handler(
+    auth_state: &AuthState,
+    pool: &sqlx::PgPool,
+    bunker_pubkey_hex: &str,
+    token_user_pubkey: &str,
+    tenant_id: i64,
+) -> Result<Arc<HttpRpcHandler>, RpcError> {
+    let teams = BuyerTeamRepository::new(pool.clone());
+    let grant = teams
+        .find_member_grant(bunker_pubkey_hex)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?
+        .ok_or(RpcError::Auth(AuthError::InvalidToken))?;
+
+    if grant.tenant_id != tenant_id || grant.member_pubkey != token_user_pubkey {
+        tracing::warn!("RPC: Rejected token for a team grant naming another member");
+        return Err(RpcError::Auth(AuthError::InvalidToken));
+    }
+
+    let permissions: Vec<Box<dyn CustomPermission>> = PolicyRepository::new(pool.clone())
+        .get_permissions(grant.policy_id)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Database error loading permissions: {}", e)))?
+        .iter()
+        .filter_map(|p| p.to_custom_permission().ok())
+        .collect();
+    // No permission would mean full access to the team key
+    if permissions.is_empty() {
+        return Err(RpcError::Internal(
+            "Team grant has no usable permission".to_string(),
+        ));
+    }
+
+    let encrypted_secret = teams
+        .encrypted_team_key(grant.stored_key_id)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Database error: {}", e)))?;
+    let decrypted_secret = auth_state
+        .state
+        .key_manager
+        .decrypt(&encrypted_secret)
+        .await
+        .map_err(|e| RpcError::Internal(format!("Decryption failed: {}", e)))?;
+    let secret_key = nostr_sdk::secp256k1::SecretKey::from_slice(&decrypted_secret)
+        .map_err(|e| RpcError::Internal(format!("Invalid secret key bytes: {}", e)))?;
+    let team_keys = Keys::new(secret_key.into());
+
+    let bunker_key = parse_cache_key(bunker_pubkey_hex)
+        .map_err(|e| RpcError::Internal(format!("Invalid bunker_pubkey: {}", e)))?;
+
+    Ok(Arc::new(HttpRpcHandler::new(
+        Arc::new(SigningSession::new(team_keys)),
+        grant.id as i64,
+        grant.expires_at,
+        grant.revoked_at,
+        permissions,
+        false, // A team authorization, not OAuth
+        bunker_key,
+        bunker_key,
+    )))
 }
 
 /// Compute BLAKE3 hash of token for cache lookup
@@ -571,6 +665,25 @@ fn parse_decrypt_params(params: &[JsonValue]) -> Result<(PublicKey, String), Rpc
 
 /// Spawn activity logging in background (non-blocking)
 /// Updates oauth_authorizations stats without blocking the response
+/// Record a signature or encryption made under a team grant that names a member. Grants that
+/// name no member write nothing; OAuth and preloaded-user handlers are skipped.
+fn spawn_record_team_signing(
+    pool: PgPool,
+    handler: &HttpRpcHandler,
+    method: &'static str,
+    event_kind: Option<i32>,
+) {
+    if handler.is_oauth() || handler.authorization_id() <= 0 {
+        return;
+    }
+    let authorization_id = handler.authorization_id();
+    tokio::spawn(async move {
+        if let Err(e) = record_team_signing(&pool, authorization_id, method, event_kind).await {
+            tracing::error!("Failed to record team signing activity: {}", e);
+        }
+    });
+}
+
 fn spawn_log_activity(pool: PgPool, is_oauth: bool, authorization_id: i64) {
     if !is_oauth {
         return;

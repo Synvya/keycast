@@ -6,6 +6,7 @@ use super::auth::{
     generate_server_signed_ucan_with_lifetime, token_expiry_seconds, AuthError,
     DeleteAccountResponse,
 };
+use super::buyer_teams::{create_team_grant, TeamGrantError, TeamGrantRequest};
 use super::oauth::{create_oauth_authorization, CreateAuthorizationParams};
 use super::routes::AuthState;
 use crate::api::tenant::TenantExtractor;
@@ -300,6 +301,9 @@ pub struct VerifyMagicLinkRequest {
     pub merchant_pubkey: Option<String>,
     /// A secret key from the browser, stored as the key of a new account.
     pub local_key: Option<String>,
+    /// Take the grant on this buyer team's key instead of the customer's own key. Needs the
+    /// grant fields, and an account that is already a member of the team.
+    pub team_pubkey: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -317,11 +321,11 @@ pub struct VerifyMagicLinkResponse {
 }
 
 /// What the app asked to be allowed to do for the customer.
-struct CommerceGrant {
-    client_id: String,
-    redirect_uri: String,
+pub(super) struct CommerceGrant {
+    pub(super) client_id: String,
+    pub(super) redirect_uri: String,
     /// Who the app says the merchant is. The approved list decides; this can only disagree.
-    merchant_pubkey: Option<PublicKey>,
+    pub(super) merchant_pubkey: Option<PublicKey>,
 }
 
 /// Read the grant from the request. client_id, redirect_uri and scope come together or not at
@@ -373,7 +377,7 @@ fn same_origin(a: &str, b: &str) -> bool {
 
 /// The merchant a grant is for, in hex: the approved list's merchant for the link's app. Keycast
 /// recorded the link's page when it was requested, so the app cannot change which row this is.
-async fn merchant_for_grant(
+pub(super) async fn merchant_for_grant(
     pool: &PgPool,
     tenant_id: i64,
     link_app_url: &str,
@@ -524,6 +528,19 @@ pub async fn verify_magic_link(
         })
         .transpose()?;
     let grant = parse_commerce_grant(&req)?;
+    let team_pubkey = match (req.team_pubkey.as_deref(), &grant) {
+        (None, _) => None,
+        (Some(_), None) => {
+            return Err(AuthError::BadRequest(
+                "team_pubkey needs client_id, redirect_uri and scope".to_string(),
+            ))
+        }
+        (Some(team_pubkey), Some(_)) => Some(
+            PublicKey::from_hex(team_pubkey)
+                .map_err(|_| AuthError::BadRequest("Invalid team_pubkey".to_string()))?
+                .to_hex(),
+        ),
+    };
 
     let link = MagicLinkTokenRepository::new(auth_state.state.db.clone())
         .consume(&req.token, tenant_id)
@@ -544,6 +561,18 @@ pub async fn verify_magic_link(
         }
         None => None,
     };
+
+    if let (Some(team_pubkey), Some((grant, merchant))) = (team_pubkey, &grant) {
+        return verify_with_team_grant(
+            &auth_state,
+            tenant_id,
+            &link.email,
+            &team_pubkey,
+            grant,
+            merchant,
+        )
+        .await;
+    }
 
     let pubkey_hex =
         find_or_create_customer(&auth_state, tenant_id, &link.email, local_key).await?;
@@ -603,6 +632,52 @@ pub async fn verify_magic_link(
         session_token,
         expires_in: token_expiry_seconds(),
         authorization,
+    })
+    .into_response())
+}
+
+/// Sign in and take a grant on a buyer team's key. Only a member can, so the account must
+/// already exist: nothing is created for a refused request. An admin or orderer gets
+/// `commerce_envelope` for the merchant; a viewer gets `decrypt_only`.
+async fn verify_with_team_grant(
+    auth_state: &AuthState,
+    tenant_id: i64,
+    email: &str,
+    team_pubkey: &str,
+    grant: &CommerceGrant,
+    merchant: &str,
+) -> Result<Response, AuthError> {
+    let not_member = || AuthError::Forbidden("Not a member of this team".to_string());
+    let pubkey_hex = UserRepository::new(auth_state.state.db.clone())
+        .find_pubkey_by_email(email, tenant_id)
+        .await?
+        .ok_or_else(not_member)?;
+
+    let created = create_team_grant(
+        auth_state,
+        TeamGrantRequest {
+            tenant_id,
+            team_pubkey,
+            member_pubkey: &pubkey_hex,
+            member_email: email,
+            merchant_pubkey: merchant,
+            client_id: &grant.client_id,
+            redirect_uri: &grant.redirect_uri,
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        TeamGrantError::NotMember => not_member(),
+        TeamGrantError::Internal(msg) => AuthError::Internal(msg),
+    })?;
+
+    Ok(Json(VerifyMagicLinkResponse {
+        success: true,
+        session_token: created.session_token,
+        expires_in: token_expiry_seconds(),
+        authorization: Some(VerifiedAuthorization {
+            bunker_url: created.bunker_url,
+        }),
     })
     .into_response())
 }

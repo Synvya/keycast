@@ -112,6 +112,15 @@ fn is_customer_route(path: &str) -> bool {
             | "/customer/account"
             | "/customer/authorizations"
             | "/customer/authorizations/revoke"
+            // Buyer teams: only what buyer-team-keys.md needs. Never the generic /teams routes,
+            // which can make a full-access bunker on a team key.
+            | "/customer/teams"
+            | "/customer/teams/members"
+            | "/customer/teams/invite"
+            | "/customer/teams/accept"
+            | "/customer/teams/role"
+            | "/customer/teams/remove"
+            | "/customer/teams/grant"
     )
 }
 

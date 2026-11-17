@@ -2051,7 +2051,7 @@ pub struct RemoveCustomerOriginResponse {
 
 /// The customer tenant's id. These routes run on another hostname, since the customer hostname
 /// has no admin routes.
-async fn customer_tenant_id(pool: &sqlx::PgPool) -> ApiResult<i64> {
+pub(super) async fn customer_tenant_id(pool: &sqlx::PgPool) -> ApiResult<i64> {
     let domain = crate::api::tenant::customer_tenant_domain()
         .ok_or_else(|| ApiError::bad_request("CUSTOMER_TENANT_DOMAIN is not set"))?;
     crate::api::tenant::get_tenant_by_domain(pool, &domain)

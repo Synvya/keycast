@@ -218,6 +218,9 @@ pub async fn add_user(
 ) -> ApiResult<Json<TeamUser>> {
     let tenant_id = tenant.0.id;
     verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
+    if !request.role.is_owner_team_role() {
+        return Err(ApiError::bad_request("role must be admin or member"));
+    }
 
     let new_user_pubkey = PublicKey::from_hex(&request.user_pubkey)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -658,6 +661,9 @@ pub async fn invite_user(
 ) -> ApiResult<Json<InviteResponse>> {
     let tenant_id = tenant.0.id;
     verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
+    if !request.role.is_owner_team_role() {
+        return Err(ApiError::bad_request("role must be admin or member"));
+    }
 
     // Normalize email
     let email = request.email.trim().to_lowercase();
