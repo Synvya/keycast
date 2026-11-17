@@ -58,6 +58,29 @@ components:
       required:
         - error
 
+    BuyerTeamMembership:
+      type: object
+      properties:
+        team_pubkey: { type: string, description: The team key, 64 lowercase hex }
+        name: { type: string }
+        role: { type: string, enum: [admin, orderer, viewer] }
+        joined_at: { type: string, format: date-time }
+
+    BuyerTeamMembers:
+      type: object
+      properties:
+        team_pubkey: { type: string }
+        name: { type: string }
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              pubkey: { type: string, description: The member's personal key }
+              email: { type: string, nullable: true }
+              role: { type: string, enum: [admin, orderer, viewer] }
+              joined_at: { type: string, format: date-time }
+
     RegisterRequest:
       type: object
       properties:
@@ -975,7 +998,312 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  # Buyer teams. Customer routes exist only on the customer hostname and take the Bearer
+  # session from /auth/magic-link/verify. Admin routes run on another hostname, full admin
+  # (NIP-98 service auth or an admin UCAN), and act on the customer tenant.
+  /customer/teams:
+    get:
+      tags: [Buyer teams]
+      summary: List the buyer teams the signed-in buyer belongs to
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: The teams
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teams:
+                    type: array
+                    items: { $ref: '#/components/schemas/BuyerTeamMembership' }
+        '401': { description: No valid session }
+    post:
+      tags: [Buyer teams]
+      summary: Make a buyer team and its key. The caller becomes its first admin
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 200, description: 'Defaults to "Buyer account"' }
+      responses:
+        '200':
+          description: The team. `team_pubkey` is the buyer account's id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_pubkey: { type: string, description: 64 lowercase hex }
+                  name: { type: string }
+                  role: { type: string, enum: [admin] }
+        '401': { description: No valid session }
+  /customer/teams/members:
+    get:
+      tags: [Buyer teams]
+      summary: List the members of a team the caller belongs to
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: team_pubkey, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The members, admins first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuyerTeamMembers' }
+        '404': { description: No such team, or the caller is not a member }
+  /customer/teams/invite:
+    post:
+      tags: [Buyer teams]
+      summary: Invite a person by email (team admin only)
+      description: Emails a link to `app_url` with `team_invite=<token>` added. The person signs in with that email and calls /customer/teams/accept.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [team_pubkey, email, role, app_url]
+              properties:
+                team_pubkey: { type: string }
+                email: { type: string }
+                role: { type: string, enum: [admin, orderer, viewer] }
+                app_url: { type: string, description: A page on an allowed app origin }
+      responses:
+        '200':
+          description: Invited
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation:
+                    type: object
+                    properties:
+                      email: { type: string }
+                      role: { type: string }
+                      expires_at: { type: string, format: date-time }
+        '403': { description: The caller is not a team admin }
+        '409': { description: Already a member, or an invitation is pending }
+  /customer/teams/accept:
+    post:
+      tags: [Buyer teams]
+      summary: Accept an invitation sent to the caller's email
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Joined
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_pubkey: { type: string }
+                  name: { type: string }
+                  role: { type: string, enum: [admin, orderer, viewer] }
+        '403': { description: The invitation was sent to another email }
+        '404': { description: Unknown, used, revoked or expired invitation }
+  /customer/teams/role:
+    post:
+      tags: [Buyer teams]
+      summary: Change a member's role (team admin only)
+      description: Refuses to demote the last admin. A member made a viewer loses their grants on the team key.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [team_pubkey, member_pubkey, role]
+              properties:
+                team_pubkey: { type: string }
+                member_pubkey: { type: string }
+                role: { type: string, enum: [admin, orderer, viewer] }
+      responses:
+        '200': { description: 'Changed: echoes team_pubkey, member_pubkey and role' }
+        '403': { description: The caller is not a team admin }
+        '409': { description: '`last_admin`: the team would have no admin' }
+  /customer/teams/remove:
+    post:
+      tags: [Buyer teams]
+      summary: Remove a member (team admin), or leave (the member)
+      description: The member's grants on the team key are revoked at once. The last admin cannot leave or be removed.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [team_pubkey, member_pubkey]
+              properties:
+                team_pubkey: { type: string }
+                member_pubkey: { type: string }
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: boolean }
+                  revoked_grants: { type: integer }
+        '403': { description: The caller is not a team admin }
+        '409': { description: '`last_admin`' }
+  /customer/teams/grant:
+    post:
+      tags: [Buyer teams]
+      summary: Take a grant on the team key for the merchant of the app the caller signed in at
+      description: |
+        An admin or orderer gets `commerce_envelope` for the merchant, bound to their personal key:
+        every envelope must carry `extensions["openmarkets:sent_by"].pubkey` equal to it. A viewer
+        gets `decrypt_only`. The merchant comes from the approved app list, by the session's origin.
+        `/auth/magic-link/verify` takes the same grant when it is sent `team_pubkey` with the grant fields.
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [team_pubkey, client_id, redirect_uri, scope]
+              properties:
+                team_pubkey: { type: string }
+                client_id: { type: string }
+                redirect_uri: { type: string, description: Same origin as the session }
+                scope: { type: string, enum: ['policy:commerce_envelope'] }
+                merchant_pubkey: { type: string, description: Optional; must match the app's merchant }
+      responses:
+        '200':
+          description: The grant
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_pubkey: { type: string }
+                  role: { type: string, enum: [admin, orderer, viewer] }
+                  permission: { type: string, enum: [commerce_envelope, decrypt_only] }
+                  session_token: { type: string, description: Names the grant; use it on /nostr }
+                  expires_in: { type: integer }
+                  authorization:
+                    type: object
+                    properties:
+                      bunker_url: { type: string }
+        '403': { description: Not a member of the team }
+  /admin/customer-teams:
+    get:
+      tags: [Buyer teams]
+      summary: List the buyer teams a customer belongs to (full admin)
+      parameters:
+        - { name: email, in: query, schema: { type: string } }
+        - { name: pubkey, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: The customer's teams
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pubkey: { type: string }
+                  teams:
+                    type: array
+                    items: { $ref: '#/components/schemas/BuyerTeamMembership' }
+        '404': { description: No such customer }
+    post:
+      tags: [Buyer teams]
+      summary: Make a buyer team and its key, with a first admin or with no member (full admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                admin_email: { type: string }
+                admin_pubkey: { type: string, description: Send one of admin_email and admin_pubkey, or neither }
+      responses:
+        '200':
+          description: The team
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_pubkey: { type: string }
+                  name: { type: string }
+                  admin_pubkey: { type: string, nullable: true }
+        '404': { description: No such customer }
+  /admin/customer-teams/{team_pubkey}:
+    delete:
+      tags: [Buyer teams]
+      summary: Delete a team that has no member, with its key (full admin)
+      parameters:
+        - { name: team_pubkey, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '`{"deleted": true}`' }
+        '404': { description: No such team }
+        '409': { description: The team still has members }
+  /admin/customer-teams/{team_pubkey}/members:
+    get:
+      tags: [Buyer teams]
+      summary: List a team's members (full admin)
+      parameters:
+        - { name: team_pubkey, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The members
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuyerTeamMembers' }
+        '404': { description: No such team }
+  /admin/customer-teams/{team_pubkey}/admins:
+    post:
+      tags: [Buyer teams]
+      summary: Make a customer an admin of the team (full admin)
+      description: For a store invitation accepted and for the support restore. Adds the person, or raises their role.
+      parameters:
+        - { name: team_pubkey, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                pubkey: { type: string }
+      responses:
+        '200':
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_pubkey: { type: string }
+                  admin_pubkey: { type: string }
+        '404': { description: No such team or customer }
+
 tags:
+  - name: Buyer teams
+    description: Buyer accounts on the customer tenant, each a team with its own key
   - name: Authentication
     description: User registration and authentication endpoints
   - name: Signing

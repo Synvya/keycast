@@ -304,3 +304,48 @@ New test files: `bcrypt_cleanup_test`, `tenant_isolation_test`, `magic_link_test
 3. Decide on `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet`, which staging has. Check real order sizes first: the common rules block request bodies over 8 KB, and orders are encrypted through `/api/nostr`.
 
 **Once per merchant — the approved list:** `POST /api/admin/customer-origins` on the owner hostname with `{ "origin": "https://orders.example.com", "merchant_name": "Example Coffee", "merchant_pubkey": "<hex or npub>" }`. `merchant_pubkey` is required, and a missing or invalid one gets 400. Check it: customers signing in through that app can only send orders to this key. It works at once, with no deploy, and fails until the customer hostname is set. There is no screen for it yet. A merchant not on the list gets 400 on sign-in requests and no email is sent. Posting the same origin again changes its name and key for new sign-ins; customers already signed in keep the merchant they were granted until revoked.
+
+---
+
+## 15. Buyer teams
+
+A buyer account is a team in the customer tenant with its own key. Members order as the team: the team key signs and seals every order, through Keycast. The design is [buyer-team-keys.md](https://github.com/Synvya/docs/blob/main/02-auth-and-identity/architecture/buyer-team-keys.md); the routes Synvya Server and the buyer app use are listed in [store-api-contract.md](https://github.com/Synvya/docs/blob/main/06-domains-and-services/specs/store-api-contract.md) §12.8.
+
+**Reality:** built on `synvya/buyer-teams` (2026-11-16), not merged. Migration `20261116000000_add_buyer_teams.sql`.
+
+**Data.** A team is a `teams` row in the customer tenant with one `stored_keys` row, generated and encrypted by Keycast like any stored key. `team_users.role` is `admin`, `orderer` or `viewer` (the migration widens the check; `admin` and `member` stay valid for owner teams, and the owner routes refuse `orderer` and `viewer`). A member's grant is an `authorizations` row on the team key with `member_pubkey` set. `team_signing_activity` records each signature and encryption under such a grant: the grant, the team key, the member, the method and the event kind. Grants with no member (restaurant staff, support) write nothing there.
+
+**Customer routes**, on the customer hostname with the Bearer session from §3.3. Each path is in `is_customer_route` by itself; the generic `/api/teams/*` and `/api/invitations/*` routes still answer 404 there.
+
+| Route | Who | Body or query | Answer |
+|---|---|---|---|
+| `GET /api/customer/teams` | Any buyer | — | `{ teams: [{ team_pubkey, name, role, joined_at }] }` |
+| `POST /api/customer/teams` | Any buyer; becomes the first `admin` | `{ name? }` | `{ team_pubkey, name, role: "admin" }` |
+| `GET /api/customer/teams/members` | A member | `?team_pubkey=` | `{ team_pubkey, name, members: [{ pubkey, email, role, joined_at }] }` |
+| `POST /api/customer/teams/invite` | Team `admin` | `{ team_pubkey, email, role, app_url }` | `{ invitation: { email, role, expires_at } }`. Emails `app_url` with `team_invite=<token>` added; `app_url` must be on the approved list (§10) |
+| `POST /api/customer/teams/accept` | The invited email, signed in | `{ token }` | `{ team_pubkey, name, role }` |
+| `POST /api/customer/teams/role` | Team `admin` | `{ team_pubkey, member_pubkey, role }` | Echo. 409 `last_admin` for the last admin |
+| `POST /api/customer/teams/remove` | Team `admin`, or the member to leave | `{ team_pubkey, member_pubkey }` | `{ removed, revoked_grants }`. 409 `last_admin` for the last admin |
+| `POST /api/customer/teams/grant` | A member | `{ team_pubkey, client_id, redirect_uri, scope, merchant_pubkey? }` | `{ team_pubkey, role, permission, session_token, expires_in, authorization: { bunker_url } }` |
+
+**Admin routes**, on the owner hostname, full admin (Synvya Server signs with NIP-98). They act on the customer tenant.
+
+| Route | Body or query | Answer |
+|---|---|---|
+| `POST /api/admin/customer-teams` | `{ name?, admin_email? \| admin_pubkey? }`; neither makes a team with no member | `{ team_pubkey, name, admin_pubkey }` |
+| `GET /api/admin/customer-teams` | `?email=` or `?pubkey=` | `{ pubkey, teams: [...] }` |
+| `GET /api/admin/customer-teams/:team_pubkey/members` | — | As the customer route |
+| `POST /api/admin/customer-teams/:team_pubkey/admins` | `{ email \| pubkey }` | `{ team_pubkey, admin_pubkey }`. Adds the person or raises them to `admin`: a store invitation accepted, or the support restore. The server writes the audit record |
+| `DELETE /api/admin/customer-teams/:team_pubkey` | — | `{ deleted: true }`; 409 while the team has members |
+
+**The grant on the team key.** `/api/customer/teams/grant`, or `/api/auth/magic-link/verify` with `team_pubkey` beside the grant fields, checks the caller's role:
+
+- `admin` or `orderer`: `commerce_envelope` for the merchant, with `sent_by` set to the member's personal key. The policy is the team's own, one for each merchant and member.
+- `viewer`: `decrypt_only`. It reads the replies and sends nothing.
+- anyone else: 403, and nothing is created. On verify, an email with no account is refused before an account is made; the link is used up, as for any refused grant.
+
+The merchant comes from the approved list, by the session's origin on the grant route and by the link's origin on verify (§10). The answer's `session_token` names the grant, so `/api/nostr` signs with the team key; `get_public_key` answers the team key.
+
+**`sent_by`.** On a team grant, `commerce_envelope` encrypts an envelope only if its content, the payload as JSON, holds `extensions["openmarkets:sent_by"].pubkey` equal to the member's personal key in lowercase hex. A missing, malformed or different value is refused. Personal grants (the orders app) do not check it.
+
+**Revocation.** Removing a member, making a member a `viewer`, or the member deleting their account revokes their grants on the team key at once (the RPC cache and the signer are told, as in §7). Deleting an account is never refused: if the person was the last `admin`, the team is left with no admin until the admin route restores one.

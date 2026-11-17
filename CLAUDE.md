@@ -174,6 +174,7 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - All other `/api` routes return 404 on the customer hostname (`customer_tenant_guard`). A new customer route must be added to `is_customer_route`
 - `/api/customer/account`: Delete the account. Only the session from a `delete_account` link (requested with `purpose` on `/api/auth/magic-link`) can do it
 - `/api/customer/authorizations` and `/api/customer/authorizations/revoke`: The account page's list of apps, and revoking one
+- `/api/customer/teams` and `/api/customer/teams/{members,invite,accept,role,remove,grant}`: Buyer teams, each with its own key; the grant is on the team key. Server-side counterparts are `/api/admin/customer-teams*`. See `docs/synvya/customer-accounts.md` §15
 - CORS: Permissive (each merchant's orders app is its own origin)
 - Allowed app origins are rows in `customer_app_origins`, managed with `/api/admin/customer-origins` on another hostname. Adding a merchant needs no deploy
 
