@@ -332,6 +332,33 @@ async fn grant(app: &TestApp, team: &str, buyer: &Buyer, merchant: &Merchant) ->
     .await
 }
 
+/// A team grant at an origin, naming the merchant or leaving it out.
+async fn grant_for(
+    app: &TestApp,
+    team: &str,
+    buyer: &Buyer,
+    origin: &str,
+    merchant: Option<&PublicKey>,
+) -> Answer {
+    let mut body = json!({
+        "team_pubkey": team,
+        "client_id": origin,
+        "redirect_uri": format!("{origin}/signin"),
+        "scope": "policy:commerce_envelope",
+    });
+    if let Some(merchant) = merchant {
+        body["merchant_pubkey"] = json!(merchant.to_hex());
+    }
+    customer(
+        app,
+        Method::POST,
+        "/api/customer/teams/grant",
+        &buyer.session,
+        body,
+    )
+    .await
+}
+
 async fn rpc(app: &TestApp, session: &str, method: &str, params: Value) -> Answer {
     customer(
         app,
@@ -446,6 +473,51 @@ async fn test_buyer_makes_a_team_with_its_own_key_and_lists_it() {
     assert_eq!(teams[0]["team_pubkey"], team.as_str());
     assert_eq!(teams[0]["name"], "Fernhollow Kitchen");
     assert_eq!(teams[0]["role"], "admin");
+}
+
+/// A team grant follows the origin's merchant list: a listed merchant is granted, an unlisted
+/// one is refused, and an omitted one is allowed only while the list has one merchant.
+#[tokio::test]
+#[serial]
+async fn test_team_grant_follows_the_origins_merchant_list() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+
+    let omitted = grant_for(&app, &team, &owner, &merchant.origin, None).await;
+    assert_eq!(omitted.status, StatusCode::OK, "{}", omitted.raw);
+
+    let second = Keys::generate().public_key();
+    let added = admin(
+        &app,
+        Method::POST,
+        "/api/admin/customer-origins",
+        json!({
+            "origin": merchant.origin,
+            "merchant_name": "Second Shop",
+            "merchant_pubkey": second.to_hex(),
+        }),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.raw);
+
+    for listed in [&merchant.pubkey, &second] {
+        let answer = grant_for(&app, &team, &owner, &merchant.origin, Some(listed)).await;
+        assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+    }
+    let unlisted = Keys::generate().public_key();
+    let refused = grant_for(&app, &team, &owner, &merchant.origin, Some(&unlisted)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    let omitted = grant_for(&app, &team, &owner, &merchant.origin, None).await;
+    assert_eq!(omitted.status, StatusCode::BAD_REQUEST, "{}", omitted.raw);
+
+    let policies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM policies WHERE name LIKE $1")
+        .bind(format!("commerce_envelope:{}:%", unlisted.to_hex()))
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(policies, 0, "An unlisted merchant gets no policy");
 }
 
 #[tokio::test]

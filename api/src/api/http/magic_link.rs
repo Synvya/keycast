@@ -97,7 +97,7 @@ pub async fn allowed_app_url(
     }
 
     let merchant_name = CustomerAppOriginRepository::new(pool.clone())
-        .find_merchant_name(tenant_id, &url.origin().ascii_serialization())
+        .find_name(tenant_id, &url.origin().ascii_serialization())
         .await?;
     Ok(merchant_name.map(|merchant_name| (url, merchant_name)))
 }
@@ -375,8 +375,12 @@ fn same_origin(a: &str, b: &str) -> bool {
     }
 }
 
-/// The merchant a grant is for, in hex: the approved list's merchant for the link's app. Keycast
+/// The merchant a grant is for, in hex, from the merchant list of the link's app. Keycast
 /// recorded the link's page when it was requested, so the app cannot change which row this is.
+///
+/// A named merchant must be on the list. An omitted one is allowed only when the list has
+/// exactly one merchant. Keycast does not know which stores admitted the buyer: the server
+/// checks that before it asks.
 pub(super) async fn merchant_for_grant(
     pool: &PgPool,
     tenant_id: i64,
@@ -393,20 +397,35 @@ pub(super) async fn merchant_for_grant(
         .map_err(|_| AuthError::BadRequest(INVALID_LINK.to_string()))?
         .origin()
         .ascii_serialization();
-    let merchant = CustomerAppOriginRepository::new(pool.clone())
-        .find_merchant_pubkey(tenant_id, &origin)
+    let merchants = CustomerAppOriginRepository::new(pool.clone())
+        .find_merchant_pubkeys(tenant_id, &origin)
         .await?
         .ok_or_else(|| AuthError::BadRequest("This app is not allowed".to_string()))?;
 
-    if let Some(requested) = &grant.merchant_pubkey {
-        if requested.to_hex() != merchant {
-            return Err(AuthError::BadRequest(
-                "merchant_pubkey does not match this app".to_string(),
-            ));
-        }
-    }
+    choose_merchant(&merchants, grant.merchant_pubkey.as_ref())
+        .map_err(|msg| AuthError::BadRequest(msg.to_string()))
+}
 
-    Ok(merchant)
+/// The grant rule over an origin's merchant list.
+fn choose_merchant(
+    merchants: &[String],
+    requested: Option<&nostr_sdk::PublicKey>,
+) -> Result<String, &'static str> {
+    match requested {
+        Some(requested) => {
+            let requested = requested.to_hex();
+            if merchants.contains(&requested) {
+                Ok(requested)
+            } else {
+                Err("merchant_pubkey does not match this app")
+            }
+        }
+        None => match merchants {
+            [only] => Ok(only.clone()),
+            [] => Err("This app has no merchant"),
+            _ => Err("merchant_pubkey is required: this app sells for more than one merchant"),
+        },
+    }
 }
 
 /// The customer's pubkey, creating the account and its key on the first click.
@@ -685,6 +704,9 @@ async fn verify_with_team_grant(
 #[derive(Debug, Serialize)]
 pub struct CustomerApp {
     pub app_origin: String,
+    /// The merchant this app may send orders to. An origin that sells for several merchants
+    /// has one entry per merchant; revoking the origin revokes them all.
+    pub merchant_pubkey: Option<String>,
     pub merchant_name: Option<String>,
     pub granted_at: chrono::DateTime<Utc>,
 }
@@ -710,11 +732,14 @@ pub async fn list_customer_apps(
         .list_customer_apps(&pubkey, tenant_id)
         .await?
         .into_iter()
-        .map(|(app_origin, merchant_name, granted_at)| CustomerApp {
-            app_origin,
-            merchant_name,
-            granted_at,
-        })
+        .map(
+            |(app_origin, merchant_pubkey, merchant_name, granted_at)| CustomerApp {
+                app_origin,
+                merchant_pubkey,
+                merchant_name,
+                granted_at,
+            },
+        )
         .collect();
 
     Ok(Json(CustomerAppsResponse { authorizations }).into_response())

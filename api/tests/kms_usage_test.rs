@@ -179,12 +179,19 @@ async fn post(app: &TestApp, path: &str, bearer: Option<&str>, body: Value) -> (
 /// Put the app on the approved list. Returns its merchant's key in hex.
 async fn approve_merchant(app: &TestApp) -> String {
     let merchant = Keys::generate().public_key().to_hex();
-    CustomerAppOriginRepository::new(app.pool.clone())
-        .add(
+    // A fresh list, so the origin sells for this merchant only
+    let origins = CustomerAppOriginRepository::new(app.pool.clone());
+    origins
+        .remove(app.tenant_id, "https://orders.example.com")
+        .await
+        .unwrap();
+    origins
+        .add_merchant(
             app.tenant_id,
             "https://orders.example.com",
-            "Example Shop",
             &merchant,
+            "Example Shop",
+            None,
         )
         .await
         .unwrap();

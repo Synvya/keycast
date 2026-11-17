@@ -31,7 +31,9 @@ pub use buyer_team::{
     TeamDeletion,
 };
 pub use claim_token::ClaimTokenRepository;
-pub use customer_app_origin::{CustomerAppOrigin, CustomerAppOriginRepository};
+pub use customer_app_origin::{
+    CustomerAppOrigin, CustomerAppOriginRepository, MerchantRemoval, OriginMerchant,
+};
 pub use deletion_notice::{DeletionNotice, DeletionNoticeRepository};
 pub use error::RepositoryError;
 pub use magic_link_token::{

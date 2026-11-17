@@ -338,23 +338,36 @@ impl OAuthAuthorizationRepository {
         Ok(exists.is_some())
     }
 
-    /// The apps that can act for a customer: one row per origin, however many times they
-    /// signed in there, with when access was first granted and the merchant's name.
+    /// The apps that can act for a customer: one row per origin and merchant, however many
+    /// times they signed in there, with when access was first granted. The merchant is the
+    /// authorization's own, read from its `commerce_envelope:{merchant}` policy, since one
+    /// origin can sell for several merchants. Returns (origin, merchant key, merchant name,
+    /// granted at).
+    #[allow(clippy::type_complexity)]
     pub async fn list_customer_apps(
         &self,
         user_pubkey: &str,
         tenant_id: i64,
-    ) -> Result<Vec<(String, Option<String>, DateTime<Utc>)>, RepositoryError> {
+    ) -> Result<Vec<(String, Option<String>, Option<String>, DateTime<Utc>)>, RepositoryError> {
         sqlx::query_as(
-            "SELECT oa.redirect_origin, cao.merchant_name, MIN(oa.created_at)
-             FROM oauth_authorizations oa
+            "WITH grants AS (
+                 SELECT oa.redirect_origin, oa.created_at,
+                        CASE WHEN p.name LIKE 'commerce_envelope:%'
+                             THEN substr(p.name, 19, 64) END AS merchant_pubkey
+                 FROM oauth_authorizations oa
+                 LEFT JOIN policies p ON p.id = oa.policy_id
+                 WHERE oa.user_pubkey = $1 AND oa.tenant_id = $2
+                   AND oa.revoked_at IS NULL
+                   AND (oa.expires_at IS NULL OR oa.expires_at > NOW())
+             )
+             SELECT g.redirect_origin, g.merchant_pubkey, m.merchant_name, MIN(g.created_at)
+             FROM grants g
              LEFT JOIN customer_app_origins cao
-               ON cao.tenant_id = oa.tenant_id AND cao.origin = oa.redirect_origin
-             WHERE oa.user_pubkey = $1 AND oa.tenant_id = $2
-               AND oa.revoked_at IS NULL
-               AND (oa.expires_at IS NULL OR oa.expires_at > NOW())
-             GROUP BY oa.redirect_origin, cao.merchant_name
-             ORDER BY MIN(oa.created_at)",
+               ON cao.tenant_id = $2 AND cao.origin = g.redirect_origin
+             LEFT JOIN customer_app_origin_merchants m
+               ON m.origin_id = cao.id AND m.merchant_pubkey = g.merchant_pubkey
+             GROUP BY g.redirect_origin, g.merchant_pubkey, m.merchant_name
+             ORDER BY MIN(g.created_at)",
         )
         .bind(user_pubkey)
         .bind(tenant_id)

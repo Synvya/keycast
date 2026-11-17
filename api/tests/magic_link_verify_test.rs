@@ -218,10 +218,21 @@ fn commerce_grant(token: &str, merchant: &str) -> Value {
     })
 }
 
-/// Put the app on the approved list, selling for this merchant.
+/// Put the app on the approved list, selling for this merchant only.
 async fn approve_merchant(app: &TestApp, merchant: &str) {
-    CustomerAppOriginRepository::new(app.pool.clone())
-        .add(app.customer_tenant, APP_ORIGIN, "Example Shop", merchant)
+    let origins = CustomerAppOriginRepository::new(app.pool.clone());
+    origins
+        .remove(app.customer_tenant, APP_ORIGIN)
+        .await
+        .unwrap();
+    origins
+        .add_merchant(
+            app.customer_tenant,
+            APP_ORIGIN,
+            merchant,
+            "Example Shop",
+            None,
+        )
         .await
         .unwrap();
 }

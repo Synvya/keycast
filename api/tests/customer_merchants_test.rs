@@ -205,6 +205,11 @@ async fn add_merchant(app: &TestApp, origin: &str, merchant_name: &str) -> Strin
 
 /// Sign in at a merchant's origin, granting the app the commerce permission.
 async fn sign_in_at(app: &TestApp, email: &str, origin: &str, merchant: &str) -> Answer {
+    sign_in_for(app, email, origin, Some(merchant)).await
+}
+
+/// Sign in at an origin with a grant, naming the merchant or leaving it out.
+async fn sign_in_for(app: &TestApp, email: &str, origin: &str, merchant: Option<&str>) -> Answer {
     let token = Uuid::new_v4().to_string();
     let page = format!("{origin}/signin");
     MagicLinkTokenRepository::new(app.pool.clone())
@@ -219,21 +224,74 @@ async fn sign_in_at(app: &TestApp, email: &str, origin: &str, merchant: &str) ->
         )
         .await
         .unwrap();
+    let mut body = json!({
+        "token": token,
+        "client_id": origin,
+        "redirect_uri": page,
+        "scope": "policy:commerce_envelope",
+    });
+    if let Some(merchant) = merchant {
+        body["merchant_pubkey"] = json!(merchant);
+    }
     request(
         app,
         Method::POST,
         CUSTOMER_HOST,
         "/api/auth/magic-link/verify",
         None,
-        json!({
-            "token": token,
-            "client_id": origin,
-            "redirect_uri": page,
-            "scope": "policy:commerce_envelope",
-            "merchant_pubkey": merchant,
-        }),
+        body,
     )
     .await
+}
+
+/// Put one more merchant on an origin's list through the admin API. Returns the answer.
+async fn post_origin(app: &TestApp, body: Value) -> Answer {
+    let admin = admin_session(app, Some("full")).await;
+    request(
+        app,
+        Method::POST,
+        OWNER_HOST,
+        "/api/admin/customer-origins",
+        Some(&admin),
+        body,
+    )
+    .await
+}
+
+async fn delete_origin(app: &TestApp, body: Value) -> Answer {
+    let admin = admin_session(app, Some("full")).await;
+    request(
+        app,
+        Method::DELETE,
+        OWNER_HOST,
+        "/api/admin/customer-origins",
+        Some(&admin),
+        body,
+    )
+    .await
+}
+
+/// The admin API's row for one origin.
+async fn listed_origin(app: &TestApp, origin: &str) -> Value {
+    let admin = admin_session(app, Some("full")).await;
+    let listed = request(
+        app,
+        Method::GET,
+        OWNER_HOST,
+        "/api/admin/customer-origins",
+        Some(&admin),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.raw);
+    listed
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["origin"] == origin)
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 async fn rpc_status(app: &TestApp, session: &str) -> StatusCode {
@@ -633,20 +691,239 @@ async fn test_merchant_key_given_as_npub_is_stored_as_hex() {
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
 }
 
-/// Adding an origin again changes its merchant for new sign-ins; existing grants stay as they are.
+/// Posting an origin again with another merchant adds that merchant to its list; the first
+/// merchant stays, and existing grants are not changed.
 #[tokio::test]
 #[serial]
-async fn test_adding_an_origin_again_changes_its_merchant_for_new_sign_ins() {
+async fn test_adding_an_origin_again_adds_a_merchant_to_its_list() {
     let app = setup().await;
     let origin = unique_origin();
     let old_merchant = add_merchant(&app, &origin, "Shop").await;
     let session = session_of(&sign_in_at(&app, &unique_email(), &origin, &old_merchant).await);
 
-    let new_merchant = add_merchant(&app, &origin, "Shop").await;
+    let new_merchant = add_merchant(&app, &origin, "Other Shop").await;
 
-    let refused = sign_in_at(&app, &unique_email(), &origin, &old_merchant).await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
-    let granted = sign_in_at(&app, &unique_email(), &origin, &new_merchant).await;
-    assert_eq!(granted.status, StatusCode::OK, "{}", granted.raw);
+    for merchant in [&old_merchant, &new_merchant] {
+        let granted = sign_in_at(&app, &unique_email(), &origin, merchant).await;
+        assert_eq!(granted.status, StatusCode::OK, "{}", granted.raw);
+    }
     assert_eq!(rpc_status(&app, &session).await, StatusCode::OK);
+
+    let row = listed_origin(&app, &origin).await;
+    assert_eq!(row["merchant_name"], "Shop", "The origin keeps its name");
+    assert!(row["merchant_pubkey"].is_null(), "{row}");
+    let merchants: Vec<&str> = row["merchants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["merchant_pubkey"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        merchants,
+        vec![old_merchant.as_str(), new_merchant.as_str()]
+    );
+}
+
+/// A one-merchant origin grants its merchant whether or not the request names it.
+#[tokio::test]
+#[serial]
+async fn test_one_merchant_origin_grants_with_and_without_the_key() {
+    let app = setup().await;
+    let origin = unique_origin();
+    let merchant = add_merchant(&app, &origin, "Shop").await;
+
+    let named = sign_in_for(&app, &unique_email(), &origin, Some(&merchant)).await;
+    assert_eq!(named.status, StatusCode::OK, "{}", named.raw);
+    let omitted = sign_in_for(&app, &unique_email(), &origin, None).await;
+    assert_eq!(omitted.status, StatusCode::OK, "{}", omitted.raw);
+
+    let row = listed_origin(&app, &origin).await;
+    assert_eq!(row["merchant_pubkey"], merchant.as_str());
+    assert_eq!(row["merchants"].as_array().unwrap().len(), 1);
+}
+
+/// An origin with two merchants grants each of them, and refuses an unlisted merchant and a
+/// request that names none.
+#[tokio::test]
+#[serial]
+async fn test_two_merchant_origin_grants_only_a_named_listed_merchant() {
+    let app = setup().await;
+    let origin = unique_origin();
+    let first = add_merchant(&app, &origin, "First Shop").await;
+    let second = add_merchant(&app, &origin, "Second Shop").await;
+    let email = unique_email();
+
+    let at_first = sign_in_for(&app, &email, &origin, Some(&first)).await;
+    assert_eq!(at_first.status, StatusCode::OK, "{}", at_first.raw);
+    let at_second = sign_in_for(&app, &email, &origin, Some(&second)).await;
+    assert_eq!(at_second.status, StatusCode::OK, "{}", at_second.raw);
+
+    let unlisted = Keys::generate().public_key().to_hex();
+    let refused = sign_in_for(&app, &unique_email(), &origin, Some(&unlisted)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+
+    let omitted = sign_in_for(&app, &unique_email(), &origin, None).await;
+    assert_eq!(omitted.status, StatusCode::BAD_REQUEST, "{}", omitted.raw);
+    assert!(
+        omitted.raw.contains("more than one merchant"),
+        "{}",
+        omitted.raw
+    );
+
+    // The account page lists one entry per merchant, each with its own name
+    let listed = request(
+        &app,
+        Method::GET,
+        CUSTOMER_HOST,
+        "/api/customer/authorizations",
+        Some(&session_of(&at_second)),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.raw);
+    let entries: Vec<(&str, &str)> = listed.body["authorizations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            assert_eq!(a["app_origin"], origin.as_str());
+            (
+                a["merchant_pubkey"].as_str().unwrap(),
+                a["merchant_name"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![
+            (first.as_str(), "First Shop"),
+            (second.as_str(), "Second Shop")
+        ]
+    );
+}
+
+/// The admin API takes one merchant off an origin's list and keeps the last one.
+#[tokio::test]
+#[serial]
+async fn test_admin_adds_and_removes_one_merchant_on_an_origin() {
+    let app = setup().await;
+    let origin = unique_origin();
+    let first = add_merchant(&app, &origin, "First Shop").await;
+    let second = Keys::generate().public_key();
+
+    let added = post_origin(
+        &app,
+        json!({
+            "origin": origin,
+            "merchant_name": "Second Shop",
+            "merchant_pubkey": second.to_bech32().unwrap(),
+            "origin_name": "Stores",
+        }),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.raw);
+    assert_eq!(
+        added.body["merchant_name"], "Stores",
+        "origin_name names it"
+    );
+    assert_eq!(added.body["merchants"].as_array().unwrap().len(), 2);
+    assert!(added.body["merchant_pubkey"].is_null());
+
+    let unlisted = delete_origin(
+        &app,
+        json!({ "origin": origin, "merchant_pubkey": Keys::generate().public_key().to_hex() }),
+    )
+    .await;
+    assert_eq!(unlisted.status, StatusCode::OK, "{}", unlisted.raw);
+    assert_eq!(unlisted.body["removed"], false);
+
+    let removed = delete_origin(
+        &app,
+        json!({ "origin": origin, "merchant_pubkey": second.to_hex() }),
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.raw);
+    assert_eq!(removed.body["removed"], true);
+
+    let refused = sign_in_for(&app, &unique_email(), &origin, Some(&second.to_hex())).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    let omitted = sign_in_for(&app, &unique_email(), &origin, None).await;
+    assert_eq!(
+        omitted.status,
+        StatusCode::OK,
+        "One merchant left: {}",
+        omitted.raw
+    );
+
+    let last = delete_origin(&app, json!({ "origin": origin, "merchant_pubkey": first })).await;
+    assert_eq!(last.status, StatusCode::CONFLICT, "{}", last.raw);
+    let row = listed_origin(&app, &origin).await;
+    assert_eq!(row["merchant_pubkey"], first.as_str(), "{row}");
+
+    let bad_key = delete_origin(&app, json!({ "origin": origin, "merchant_pubkey": "abcd" })).await;
+    assert_eq!(bad_key.status, StatusCode::BAD_REQUEST, "{}", bad_key.raw);
+}
+
+/// The migration that added merchant lists copies each origin's merchant into its list.
+#[tokio::test]
+#[serial]
+async fn test_merchant_list_migration_copies_existing_origins() {
+    const LIST_MIGRATION: i64 = 20261116000100;
+    let app = setup().await;
+
+    let database = format!("keycast_migration_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE {database}"))
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let base_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:password@localhost/keycast_test".to_string());
+    let (server, _) = base_url.rsplit_once('/').unwrap();
+    let pool = PgPool::connect(&format!("{server}/{database}"))
+        .await
+        .unwrap();
+
+    let all = sqlx::migrate!("../database/migrations");
+    let before = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            all.migrations
+                .iter()
+                .filter(|m| m.version < LIST_MIGRATION)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: false,
+        locking: true,
+        no_tx: false,
+    };
+    before.run(&pool).await.unwrap();
+
+    let merchant = Keys::generate().public_key().to_hex();
+    sqlx::query(
+        "INSERT INTO customer_app_origins (tenant_id, origin, merchant_name, merchant_pubkey)
+         VALUES (1, 'https://orders.example.com', 'Shop', $1)",
+    )
+    .bind(&merchant)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    all.run(&pool).await.unwrap();
+
+    let copied: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT m.tenant_id, m.merchant_pubkey, m.merchant_name
+         FROM customer_app_origin_merchants m
+         JOIN customer_app_origins o ON o.id = m.origin_id
+         WHERE o.origin = 'https://orders.example.com'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+    sqlx::query(&format!("DROP DATABASE {database} WITH (FORCE)"))
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(copied, vec![(1, merchant, "Shop".to_string())]);
 }

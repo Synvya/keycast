@@ -20,7 +20,7 @@ use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
     RestaurantKeySummary, StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
 };
-use keycast_core::repositories::{CustomerAppOrigin, CustomerAppOriginRepository};
+use keycast_core::repositories::{CustomerAppOrigin, CustomerAppOriginRepository, MerchantRemoval};
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::claim_token::generate_claim_token;
 
@@ -2037,11 +2037,19 @@ pub struct AddCustomerOriginRequest {
     /// Hex or npub. Defaults to empty so a missing key gets the same 400 as an invalid one.
     #[serde(default)]
     pub merchant_pubkey: String,
+    /// The origin's own name, for the sign-in email. Optional: a one-merchant origin uses the
+    /// merchant's name.
+    #[serde(default)]
+    pub origin_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RemoveCustomerOriginRequest {
     pub origin: String,
+    /// Hex or npub. Given: take only this merchant off the origin's list. Omitted: remove the
+    /// origin with all its merchants.
+    #[serde(default)]
+    pub merchant_pubkey: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2106,7 +2114,8 @@ pub async fn list_customer_origins(
     Ok(Json(origins))
 }
 
-/// POST /api/admin/customer-origins - add a merchant's orders app. Takes effect at once.
+/// POST /api/admin/customer-origins - put a merchant on an origin's list, approving the origin
+/// if it is new. Takes effect at once. Merchants already on the list stay.
 pub async fn add_customer_origin(
     State(auth_state): State<AuthState>,
     auth: UcanAuth,
@@ -2121,16 +2130,27 @@ pub async fn add_customer_origin(
         return Err(ApiError::bad_request("merchant_name is required"));
     }
     let merchant_pubkey = normalize_merchant_pubkey(&req.merchant_pubkey)?;
+    let origin_name = match req.origin_name.as_deref().map(str::trim) {
+        Some("") => return Err(ApiError::bad_request("origin_name must not be empty")),
+        other => other,
+    };
 
     let pool = &auth_state.state.db;
     let tenant_id = customer_tenant_id(pool).await?;
     let added = CustomerAppOriginRepository::new(pool.clone())
-        .add(tenant_id, &origin, merchant_name, &merchant_pubkey)
+        .add_merchant(
+            tenant_id,
+            &origin,
+            &merchant_pubkey,
+            merchant_name,
+            origin_name,
+        )
         .await?;
     Ok(Json(added))
 }
 
-/// DELETE /api/admin/customer-origins - stop new sign-ins from a merchant's orders app.
+/// DELETE /api/admin/customer-origins - stop new grants for one merchant of an origin, or stop
+/// new sign-ins from the origin altogether.
 pub async fn remove_customer_origin(
     State(auth_state): State<AuthState>,
     auth: UcanAuth,
@@ -2140,10 +2160,31 @@ pub async fn remove_customer_origin(
         return Err(ApiError::forbidden("Admin access required"));
     }
     let origin = normalize_app_origin(&req.origin)?;
+    let merchant_pubkey = req
+        .merchant_pubkey
+        .as_deref()
+        .map(normalize_merchant_pubkey)
+        .transpose()?;
     let pool = &auth_state.state.db;
     let tenant_id = customer_tenant_id(pool).await?;
-    let removed = CustomerAppOriginRepository::new(pool.clone())
-        .remove(tenant_id, &origin)
-        .await?;
+    let repo = CustomerAppOriginRepository::new(pool.clone());
+
+    let removed = match merchant_pubkey {
+        None => repo.remove(tenant_id, &origin).await?,
+        Some(merchant_pubkey) => {
+            match repo
+                .remove_merchant(tenant_id, &origin, &merchant_pubkey)
+                .await?
+            {
+                MerchantRemoval::Removed => true,
+                MerchantRemoval::NotListed => false,
+                MerchantRemoval::LastMerchant => {
+                    return Err(ApiError::conflict(
+                        "This is the origin's only merchant: remove the origin instead",
+                    ))
+                }
+            }
+        }
+    };
     Ok(Json(RemoveCustomerOriginResponse { removed }))
 }

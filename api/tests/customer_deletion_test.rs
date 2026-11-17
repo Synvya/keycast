@@ -107,12 +107,19 @@ async fn setup() -> TestApp {
     let customer = upsert_tenant(&pool, CUSTOMER_HOST).await;
     let owner = upsert_tenant(&pool, OWNER_HOST).await;
     let (customer_tenant, owner_tenant) = (customer.id, owner.id);
-    CustomerAppOriginRepository::new(pool.clone())
-        .add(
+    // A fresh list each run, so the origin keeps one merchant
+    let origins = CustomerAppOriginRepository::new(pool.clone());
+    origins
+        .remove(customer_tenant, "https://orders.example.com")
+        .await
+        .unwrap();
+    origins
+        .add_merchant(
             customer_tenant,
             "https://orders.example.com",
-            "Example Shop",
             &Keys::generate().public_key().to_hex(),
+            "Example Shop",
+            None,
         )
         .await
         .unwrap();
