@@ -98,7 +98,7 @@ The orders app's landing page reads `token` from its URL and posts it. POST only
 }
 ```
 
-`client_id`, `redirect_uri` and `scope` come together or not at all. `merchant_pubkey` is optional: Keycast takes the merchant from the approved list (§10), and a different one is refused. Together they are the **grant**: permission for this app to place orders for the customer.
+`client_id`, `redirect_uri` and `scope` come together or not at all. `merchant_pubkey` must be on the origin's merchant list (§10), and may be left out only when that list has one merchant. Together they are the **grant**: permission for this app to place orders for the customer.
 
 1. Consume the token for this tenant. Unknown, used, expired and other-tenant tokens all get the same 400.
 2. **New email:** create the user (verified, no password) and a key. If `local_key` is a valid secret key, store it as the key instead (the Synvya Diners claim case). **Existing email:** use the existing key and ignore `local_key`. A key is never replaced.
@@ -187,42 +187,57 @@ Restaurant-owner deletion (`/user/account`) is unchanged. Customers do not use i
 
 Each merchant's orders app is its own origin with its own authorization on the customer's key. The same email at two merchants is one user, one key, two authorizations.
 
-**The list** — `customer_app_origins`, read at request time, so adding a merchant needs no deploy:
+**The list** — `customer_app_origins`, one row per origin, and `customer_app_origin_merchants`, the merchants each origin sells for (BY-15: Synvya's multi-store site is one origin with many merchants). Both are read at request time, so adding an origin or a merchant needs no deploy:
 
 ```sql
 CREATE TABLE customer_app_origins (
     id             BIGSERIAL PRIMARY KEY,
     tenant_id      BIGINT NOT NULL,
     origin         TEXT NOT NULL,         -- https://orders.example.com, no path
-    merchant_name  TEXT NOT NULL,         -- shown to customers: "Sign in to Example Coffee"
-    merchant_pubkey CHAR(64) NOT NULL,    -- #102: the merchant this app sells for
+    merchant_name  TEXT NOT NULL,         -- the origin's own name, in the email: "Sign in to Example Coffee"
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (tenant_id, origin)
+    UNIQUE (tenant_id, origin),
+    UNIQUE (id, tenant_id)
+);
+
+CREATE TABLE customer_app_origin_merchants (
+    id              BIGSERIAL PRIMARY KEY,
+    origin_id       BIGINT NOT NULL,
+    tenant_id       BIGINT NOT NULL,      -- must match the origin's: composite foreign key
+    merchant_pubkey CHAR(64) NOT NULL,    -- hex
+    merchant_name   TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (origin_id, merchant_pubkey),
+    FOREIGN KEY (origin_id, tenant_id) REFERENCES customer_app_origins (id, tenant_id) ON DELETE CASCADE
 );
 ```
+
+Migration `20261116000100_add_customer_app_origin_merchants.sql` made the second table, copied each origin's `merchant_pubkey` and name into it, and dropped `customer_app_origins.merchant_pubkey`. An origin approved before then sells for its one merchant, with no admin action.
 
 **Admin routes**, on the owner hostname with a full admin session (the customer hostname has no admin routes):
 
 | Route | Does |
 |---|---|
-| `GET /api/admin/customer-origins` | List the approved orders apps |
-| `POST /api/admin/customer-origins` | Add one: `{ "origin", "merchant_name", "merchant_pubkey" }`. `origin` is https with no path |
-| `DELETE /api/admin/customer-origins` | Remove one: `{ "origin" }`. New sign-ins stop; existing authorizations keep working until revoked |
+| `GET /api/admin/customer-origins` | List the approved origins: `[{ origin, merchant_name, merchant_pubkey, merchants: [{ merchant_pubkey, merchant_name, created_at }], created_at }]`. `merchant_pubkey` is the merchant when the list has one, otherwise null |
+| `POST /api/admin/customer-origins` | Put a merchant on an origin's list, approving the origin if it is new: `{ "origin", "merchant_name", "merchant_pubkey", "origin_name"? }`. `origin` is https with no path. Merchants already listed stay; a listed merchant posted again gets the new name. `origin_name` sets the origin's own name; without it, the name follows `merchant_name` while the origin has one merchant. Answers the origin as `GET` lists it |
+| `DELETE /api/admin/customer-origins` | `{ "origin" }` removes the origin and its list: new sign-ins stop. `{ "origin", "merchant_pubkey" }` takes one merchant off the list; the last merchant is refused with 409 (remove the origin). `{ removed }` is false when nothing was listed. Existing authorizations keep working until revoked |
 
 **Account page routes**, on the customer hostname with the customer's session:
 
 | Route | Does |
 |---|---|
-| `GET /api/customer/authorizations` | The apps that can act for the customer: origin, merchant name, when granted |
-| `POST /api/customer/authorizations/revoke` | Revoke one; it stops at its next call (§7) |
+| `GET /api/customer/authorizations` | The apps that can act for the customer: one entry per origin and merchant, with `app_origin`, `merchant_pubkey`, `merchant_name` and when granted. The merchant is the authorization's own, read from its `commerce_envelope:{merchant}` policy |
+| `POST /api/customer/authorizations/revoke` | Revoke one origin, for every merchant on it; it stops at its next call (§7) |
 
-**Binding each app to its merchant — #102.** `merchant_pubkey` is required when an origin is added (hex or npub, stored as hex). At verify (§3.3), Keycast takes the merchant from the row for the link's `app_origin`, which it recorded when the link was requested, so the app cannot change it:
-- a `merchant_pubkey` in the request that differs from the row's is refused with 400 and nothing is granted; for a new customer, no account is created either;
-- an omitted `merchant_pubkey` uses the row's;
+**Binding each grant to a listed merchant — #102, BY-15.** At verify (§3.3), Keycast reads the list of the link's `app_origin`, which it recorded when the link was requested, so the app cannot change which list it is. The team grant (§15) reads the list of the session's origin. The rule is the same for both:
+- a `merchant_pubkey` on the list is granted;
+- a `merchant_pubkey` not on the list is refused with 400 (`merchant_pubkey does not match this app`) and nothing is granted; for a new customer, no account is created either;
+- an omitted `merchant_pubkey` is granted the list's merchant when the list has exactly one; when it has more, it is refused with 400 (`merchant_pubkey is required: this app sells for more than one merchant`);
 - a `redirect_uri` on another origin than the link's is refused;
 - **a refused grant uses up the link.** Keycast learns the link's origin only by consuming it, so a misconfigured app makes the customer ask for a new link;
-- a merchant removed from the list after the link was sent: the grant is refused, because there is no merchant left to bind it to;
-- **posting an origin again** changes its name and key for new sign-ins only. Customers already signed in keep the merchant they were granted until they are revoked, so correcting a wrong key does not fix existing grants: revoke them as well.
+- an origin removed after the link was sent: the grant is refused. A merchant taken off the list: a grant naming it is refused;
+- **Keycast does not check that a store admitted the buyer.** Synvya Server does, under the store's buyer-access policy, and asks only for a merchant that passed;
+- **changing an origin's list** changes new grants only. Customers already signed in keep the merchant they were granted until they are revoked, so correcting a wrong key does not fix existing grants: take the wrong merchant off, and revoke them as well.
 
 Without this, a compromised orders app could ask for a different merchant and the customer's key would be allowed to send orders there.
 
@@ -303,7 +318,7 @@ New test files: `bcrypt_cleanup_test`, `tenant_isolation_test`, `magic_link_test
 2. Add `AWSManagedRulesAmazonIpReputationList`.
 3. Decide on `AWSManagedRulesCommonRuleSet` and `AWSManagedRulesKnownBadInputsRuleSet`, which staging has. Check real order sizes first: the common rules block request bodies over 8 KB, and orders are encrypted through `/api/nostr`.
 
-**Once per merchant — the approved list:** `POST /api/admin/customer-origins` on the owner hostname with `{ "origin": "https://orders.example.com", "merchant_name": "Example Coffee", "merchant_pubkey": "<hex or npub>" }`. `merchant_pubkey` is required, and a missing or invalid one gets 400. Check it: customers signing in through that app can only send orders to this key. It works at once, with no deploy, and fails until the customer hostname is set. There is no screen for it yet. A merchant not on the list gets 400 on sign-in requests and no email is sent. Posting the same origin again changes its name and key for new sign-ins; customers already signed in keep the merchant they were granted until revoked.
+**Once per merchant — the approved list:** `POST /api/admin/customer-origins` on the owner hostname with `{ "origin": "https://orders.example.com", "merchant_name": "Example Coffee", "merchant_pubkey": "<hex or npub>" }`. `merchant_pubkey` is required, and a missing or invalid one gets 400. Check it: customers signing in through that app can only send orders to this key. It works at once, with no deploy, and fails until the customer hostname is set. There is no screen for it yet. A merchant not on the list gets 400 on sign-in requests and no email is sent. Posting the same origin again with another key adds that merchant to the origin's list; to replace a key, post the new one and `DELETE` the old one with its `merchant_pubkey`. Customers already signed in keep the merchant they were granted until revoked.
 
 ---
 

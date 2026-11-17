@@ -58,6 +58,26 @@ components:
       required:
         - error
 
+    CustomerAppOrigin:
+      type: object
+      properties:
+        origin: { type: string }
+        merchant_name: { type: string, description: The origin's own name, used in the sign-in email }
+        merchant_pubkey:
+          type: string
+          nullable: true
+          description: The merchant when the list has exactly one, otherwise null
+        merchants:
+          type: array
+          description: The merchants a grant from this origin may name
+          items:
+            type: object
+            properties:
+              merchant_pubkey: { type: string, description: 64 lowercase hex }
+              merchant_name: { type: string }
+              created_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
     BuyerTeamMembership:
       type: object
       properties:
@@ -1187,7 +1207,7 @@ paths:
                 client_id: { type: string }
                 redirect_uri: { type: string, description: Same origin as the session }
                 scope: { type: string, enum: ['policy:commerce_envelope'] }
-                merchant_pubkey: { type: string, description: Optional; must match the app's merchant }
+                merchant_pubkey: { type: string, description: 'Must be on the origin''s merchant list. May be omitted only when the list has one merchant; otherwise 400' }
       responses:
         '200':
           description: The grant
@@ -1300,8 +1320,71 @@ paths:
                   team_pubkey: { type: string }
                   admin_pubkey: { type: string }
         '404': { description: No such team or customer }
+  # The approved app origins of the customer tenant. Owner hostname only, full admin.
+  /admin/customer-origins:
+    get:
+      tags: [Customer origins]
+      summary: List the approved origins, each with its merchant list (full admin)
+      responses:
+        '200':
+          description: The origins
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CustomerAppOrigin' }
+    post:
+      tags: [Customer origins]
+      summary: Put a merchant on an origin's list, approving the origin if it is new (full admin)
+      description: |
+        Merchants already on the list stay; posting a listed merchant again changes its name.
+        Takes effect at once. Grants already made are not changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin, merchant_name, merchant_pubkey]
+              properties:
+                origin: { type: string, description: 'https with no path, e.g. https://orders.example.com' }
+                merchant_name: { type: string }
+                merchant_pubkey: { type: string, description: Hex or npub; stored as hex }
+                origin_name:
+                  type: string
+                  description: The origin's own name, for the sign-in email. When omitted, a one-merchant origin uses the merchant's name and a new origin starts with it
+      responses:
+        '200':
+          description: The origin after the change
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerAppOrigin' }
+        '400': { description: Invalid origin, merchant_name or merchant_pubkey }
+    delete:
+      tags: [Customer origins]
+      summary: Take one merchant off an origin's list, or remove the origin (full admin)
+      description: |
+        With `merchant_pubkey`, only that merchant is removed; the origin's last merchant is
+        refused with 409, so remove the origin instead. Without it, the origin and its list go.
+        Authorizations already granted keep working until revoked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin]
+              properties:
+                origin: { type: string }
+                merchant_pubkey: { type: string, description: Hex or npub }
+      responses:
+        '200': { description: '`{"removed": true}`, or false when the origin or merchant was not listed' }
+        '400': { description: Invalid origin or merchant_pubkey }
+        '409': { description: The merchant is the origin's last one }
 
 tags:
+  - name: Customer origins
+    description: The apps allowed to sign customers in, and the merchants each sells for
   - name: Buyer teams
     description: Buyer accounts on the customer tenant, each a team with its own key
   - name: Authentication
