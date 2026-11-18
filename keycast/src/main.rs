@@ -296,6 +296,12 @@ fn validate_environment() -> Result<(), String> {
         _ => errors.push("KMS_PROVIDER must be 'file', 'gcp', or 'aws'"),
     }
 
+    // The per-email sign-in link limits: relaxed on a local stack only
+    let email_limits_error = keycast_api::api::http::magic_link::EmailLimits::from_env().err();
+    if let Some(e) = &email_limits_error {
+        errors.push(e.as_str());
+    }
+
     // Docker deployment requires additional vars
     if env::var("POSTGRES_PASSWORD").is_err() {
         // Only required for docker-compose, so just warn

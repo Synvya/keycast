@@ -75,7 +75,7 @@ The token is `generate_secure_token` (64 alphanumeric characters). Only its hash
 
 1. **Customer hostname only.** Elsewhere it is 404, or owners could sign in without their password.
 2. **The app must be on the approved list.** The origin of `app_url` (scheme, host, port; any path is fine) must be a row in `customer_app_origins` (§10). Otherwise 400 and no email. The row also gives the merchant name the email uses.
-3. **Throttles** (`api/src/rate_limit.rs`, Redis `incr_with_ttl`): one link per email per purpose per minute, five per email per hour, and `RATE_LIMIT_IP_PER_HOUR` per IP (default 60). The client IP is the last `X-Forwarded-For` entry, the one the load balancer appends; without that header the IP limit does not apply. A throttled request still answers `{ "success": true }` and sends nothing.
+3. **Throttles** (`api/src/rate_limit.rs`, Redis `incr_with_ttl`): one link per email per purpose per minute, five per email per hour, and `RATE_LIMIT_IP_PER_HOUR` per IP (default 60). A local stack may relax the two per-email limits with `MAGIC_LINK_EMAIL_WINDOW_SECONDS` and `MAGIC_LINK_EMAIL_HOURLY_LIMIT` (0 seconds turns the window off); a looser value than the default refuses to start when `NODE_ENV` is `staging` or `production`. The client IP is the last `X-Forwarded-For` entry, the one the load balancer appends; without that header the IP limit does not apply. A throttled request still answers `{ "success": true }` and sends nothing.
 4. Store the token and send the email in the background, so timing does not reveal whether an email went out.
 5. **Create nothing.** The account is created when the link is clicked.
 

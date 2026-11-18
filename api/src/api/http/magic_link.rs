@@ -32,10 +32,6 @@ use std::net::IpAddr;
 
 /// How long a link works.
 const MAGIC_LINK_EXPIRY_MINUTES: i64 = 15;
-/// At most one link per email in this many seconds.
-const EMAIL_WINDOW_SECONDS: u64 = 60;
-/// At most this many links per email per hour.
-const EMAIL_HOURLY_LIMIT: i64 = 5;
 /// At most this many requests per IP per hour.
 const IP_HOURLY_LIMIT: u64 = 20;
 const HOUR_SECONDS: u64 = 3600;
@@ -110,6 +106,90 @@ pub fn magic_link(app_url: &Url, token: &str) -> String {
     link.to_string()
 }
 
+/// The per-email limits on sign-in links. A deployment keeps the defaults; a
+/// local stack may relax them, because its test buyers sign in again and
+/// again (Synvya/keycast#108). The per-IP limit is not configurable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmailLimits {
+    /// At most one link per email in this many seconds. 0 turns the check off.
+    pub window_seconds: u64,
+    /// At most this many links per email per hour.
+    pub hourly: i64,
+}
+
+impl EmailLimits {
+    pub const DEFAULT: EmailLimits = EmailLimits {
+        window_seconds: 60,
+        hourly: 5,
+    };
+
+    /// The limits from `MAGIC_LINK_EMAIL_WINDOW_SECONDS` and
+    /// `MAGIC_LINK_EMAIL_HOURLY_LIMIT`, given `NODE_ENV`. Unset means the
+    /// default. A value looser than the default is refused on a deployment
+    /// (`NODE_ENV` `production` or `staging`), so a stray variable cannot switch
+    /// the abuse limits off there.
+    pub fn from_values(
+        window: Option<&str>,
+        hourly: Option<&str>,
+        node_env: &str,
+    ) -> Result<Self, String> {
+        let window_seconds = match window {
+            None => Self::DEFAULT.window_seconds,
+            Some(v) => v
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| format!("MAGIC_LINK_EMAIL_WINDOW_SECONDS must be a whole number of seconds, got \"{v}\""))?,
+        };
+        let hourly = match hourly {
+            None => Self::DEFAULT.hourly,
+            Some(v) => v
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    format!(
+                        "MAGIC_LINK_EMAIL_HOURLY_LIMIT must be a whole number above 0, got \"{v}\""
+                    )
+                })?,
+        };
+        let limits = EmailLimits {
+            window_seconds,
+            hourly,
+        };
+        let relaxed =
+            window_seconds < Self::DEFAULT.window_seconds || hourly > Self::DEFAULT.hourly;
+        if relaxed && (node_env == "production" || node_env == "staging") {
+            return Err(format!(
+                "MAGIC_LINK_EMAIL_WINDOW_SECONDS and MAGIC_LINK_EMAIL_HOURLY_LIMIT may not be looser than {}s and {} per hour when NODE_ENV={node_env}",
+                Self::DEFAULT.window_seconds,
+                Self::DEFAULT.hourly
+            ));
+        }
+        Ok(limits)
+    }
+
+    /// The limits from the process environment.
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_values(
+            std::env::var("MAGIC_LINK_EMAIL_WINDOW_SECONDS")
+                .ok()
+                .as_deref(),
+            std::env::var("MAGIC_LINK_EMAIL_HOURLY_LIMIT")
+                .ok()
+                .as_deref(),
+            &std::env::var("NODE_ENV").unwrap_or_default(),
+        )
+    }
+
+    /// The limits this process runs with, read once. Startup has already
+    /// refused a bad value (`from_env` in main), so a failure here keeps the defaults.
+    pub fn current() -> Self {
+        static LIMITS: std::sync::OnceLock<EmailLimits> = std::sync::OnceLock::new();
+        *LIMITS.get_or_init(|| Self::from_env().unwrap_or(Self::DEFAULT))
+    }
+}
+
 /// A link to send.
 pub struct LinkRequest<'a> {
     pub tenant_id: i64,
@@ -118,6 +198,7 @@ pub struct LinkRequest<'a> {
     pub merchant_name: &'a str,
     pub purpose: &'a str,
     pub request_ip: Option<IpAddr>,
+    pub limits: EmailLimits,
 }
 
 /// Apply the limits, store the token and send the email. Returns whether a link was sent.
@@ -136,6 +217,7 @@ pub async fn send_link(
         merchant_name,
         purpose,
         request_ip,
+        limits,
     } = request;
 
     if let Some(ip) = request_ip {
@@ -149,7 +231,7 @@ pub async fn send_link(
     let repo = MagicLinkTokenRepository::new(pool.clone());
     let an_hour_ago = Utc::now() - Duration::hours(1);
     match repo.count_recent(tenant_id, email, an_hour_ago).await {
-        Ok(count) if count >= EMAIL_HOURLY_LIMIT => {
+        Ok(count) if count >= limits.hourly => {
             tracing::warn!("Sign-in link throttled: hourly limit for one email");
             return false;
         }
@@ -165,7 +247,9 @@ pub async fn send_link(
         "magic_link:email:{tenant_id}:{purpose}:{}",
         rate_limit::email_key(email)
     );
-    if !rate_limit::once_per_window(redis, &key, EMAIL_WINDOW_SECONDS).await {
+    if limits.window_seconds > 0
+        && !rate_limit::once_per_window(redis, &key, limits.window_seconds).await
+    {
         tracing::warn!("Sign-in link throttled: one link per email per minute");
         return false;
     }
@@ -284,6 +368,7 @@ pub async fn request_magic_link(
                 merchant_name: &merchant_name,
                 purpose: &purpose,
                 request_ip,
+                limits: EmailLimits::current(),
             },
         )
         .await;
@@ -796,6 +881,50 @@ pub async fn revoke_customer_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_email_limits_default_when_unset() {
+        for env in ["", "development", "staging", "production"] {
+            assert_eq!(
+                EmailLimits::from_values(None, None, env),
+                Ok(EmailLimits::DEFAULT)
+            );
+        }
+    }
+
+    #[test]
+    fn test_email_limits_relax_locally() {
+        assert_eq!(
+            EmailLimits::from_values(Some("0"), Some("1000"), "development"),
+            Ok(EmailLimits {
+                window_seconds: 0,
+                hourly: 1000
+            })
+        );
+    }
+
+    #[test]
+    fn test_email_limits_refuse_a_relaxed_value_on_a_deployment() {
+        for env in ["staging", "production"] {
+            assert!(EmailLimits::from_values(Some("0"), None, env).is_err());
+            assert!(EmailLimits::from_values(None, Some("6"), env).is_err());
+            // Stricter than the default is allowed anywhere
+            assert_eq!(
+                EmailLimits::from_values(Some("120"), Some("3"), env),
+                Ok(EmailLimits {
+                    window_seconds: 120,
+                    hourly: 3
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_email_limits_refuse_a_malformed_value() {
+        assert!(EmailLimits::from_values(Some("soon"), None, "development").is_err());
+        assert!(EmailLimits::from_values(None, Some("0"), "development").is_err());
+        assert!(EmailLimits::from_values(None, Some("-1"), "development").is_err());
+    }
 
     #[test]
     fn test_normalize_email() {

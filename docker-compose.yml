@@ -115,6 +115,11 @@ services:
       # b2b-auth.local.synvya.com in .env.local, and that name must also be in
       # ALLOWED_TENANT_DOMAINS. Empty turns customer accounts off.
       CUSTOMER_TENANT_DOMAIN: ${CUSTOMER_TENANT_DOMAIN:-}
+      # The per-email sign-in link limits. Unset keeps 60 s and 5 per hour;
+      # .env.local relaxes them, because local test buyers sign in again and
+      # again. Refused at startup when NODE_ENV is staging or production.
+      MAGIC_LINK_EMAIL_WINDOW_SECONDS: ${MAGIC_LINK_EMAIL_WINDOW_SECONDS:-}
+      MAGIC_LINK_EMAIL_HOURLY_LIMIT: ${MAGIC_LINK_EMAIL_HOURLY_LIMIT:-}
       WEB_BUILD_DIR: /app/web
       SERVER_NSEC: ${SERVER_NSEC:?error}
       REDIS_URL: redis://redis:6379

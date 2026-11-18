@@ -10,7 +10,7 @@ use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
-use keycast_api::api::http::magic_link::{allowed_app_url, send_link, LinkRequest};
+use keycast_api::api::http::magic_link::{allowed_app_url, send_link, EmailLimits, LinkRequest};
 use keycast_api::api::http::routes::api_routes;
 use keycast_api::api::tenant::Tenant;
 use keycast_api::bcrypt_queue::BcryptQueue;
@@ -66,6 +66,17 @@ async fn send_test_link(
     email: &str,
     request_ip: Option<IpAddr>,
 ) -> bool {
+    send_link_with(pool, redis, sender, email, request_ip, EmailLimits::DEFAULT).await
+}
+
+async fn send_link_with(
+    pool: &PgPool,
+    redis: Option<&PrefixedRedis>,
+    sender: &DevEmailSender,
+    email: &str,
+    request_ip: Option<IpAddr>,
+    limits: EmailLimits,
+) -> bool {
     send_link(
         pool,
         redis,
@@ -77,6 +88,7 @@ async fn send_test_link(
             merchant_name: "Example Shop",
             purpose: PURPOSE_SIGN_IN,
             request_ip,
+            limits,
         },
     )
     .await
@@ -187,6 +199,7 @@ async fn test_a_recent_sign_in_link_does_not_hold_back_a_deletion_link() {
             merchant_name: "Example Shop",
             purpose: PURPOSE_DELETE_ACCOUNT,
             request_ip: None,
+            limits: EmailLimits::DEFAULT,
         },
     )
     .await;
@@ -209,6 +222,23 @@ async fn test_five_links_per_email_per_hour() {
 
     assert_eq!(sender.get_captured_emails().len(), 5);
     assert_eq!(row_count(&pool, &email).await, 5);
+}
+
+#[tokio::test]
+async fn test_relaxed_limits_let_a_local_stack_sign_in_again_and_again() {
+    let pool = common::setup_test_db().await;
+    let redis = test_redis().await;
+    let sender = DevEmailSender::new();
+    let email = unique_email();
+    let relaxed = EmailLimits::from_values(Some("0"), Some("1000"), "development").unwrap();
+
+    // Six links in a row, each within the minute and past the default five an hour
+    for _ in 0..6 {
+        assert!(send_link_with(&pool, Some(&redis), &sender, &email, None, relaxed).await);
+    }
+
+    assert_eq!(sender.get_captured_emails().len(), 6);
+    assert_eq!(row_count(&pool, &email).await, 6);
 }
 
 #[tokio::test]
