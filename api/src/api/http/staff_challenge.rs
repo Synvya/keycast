@@ -34,15 +34,26 @@ const MAX_VALUE_LEN: usize = 128;
 pub struct StaffChallengeOrigins(Vec<String>);
 
 impl StaffChallengeOrigins {
-    /// The list from `STAFF_CHALLENGE_ORIGINS`, given `NODE_ENV`. Each entry is
-    /// a bare origin: a scheme, a host and an optional port, with no path. On a
-    /// deployment (`NODE_ENV` `production` or `staging`) every entry must be
-    /// `https`, so a local origin left in the variable cannot reach one.
-    pub fn from_values(value: Option<&str>, node_env: &str) -> Result<Self, String> {
+    /// The list from `STAFF_CHALLENGE_ORIGINS`, given `NODE_ENV` and
+    /// `ALLOW_LOCALHOST_ORIGINS`. Each entry is a bare origin: a scheme, a host
+    /// and an optional port, with no path.
+    ///
+    /// On a deployment (`NODE_ENV` `production` or `staging`) every entry must be
+    /// `https`, unless `ALLOW_LOCALHOST_ORIGINS=true`. That flag is staging-only
+    /// (it already lets local apps through CORS), so a local app pointed at
+    /// staging can get the staff session, and production never accepts an `http`
+    /// entry. Off a deployment, `http` is accepted. An `http` entry must name a
+    /// local host: `localhost` or a name under `local.synvya.com`.
+    pub fn from_values(
+        value: Option<&str>,
+        node_env: &str,
+        allow_localhost: bool,
+    ) -> Result<Self, String> {
         let Some(value) = value else {
             return Ok(Self::default());
         };
         let deployment = node_env == "production" || node_env == "staging";
+        let http_allowed = !deployment || allow_localhost;
         let mut origins = Vec::new();
         for raw in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             let url = nostr_sdk::Url::parse(raw).map_err(|_| {
@@ -59,10 +70,21 @@ impl StaffChallengeOrigins {
                     "STAFF_CHALLENGE_ORIGINS entries are bare origins such as https://account.synvya.com, got \"{raw}\""
                 ));
             }
-            if url.scheme() != "https" && (deployment || url.scheme() != "http") {
-                return Err(format!(
-                    "STAFF_CHALLENGE_ORIGINS entries must be https when NODE_ENV={node_env}, got \"{raw}\""
-                ));
+            match url.scheme() {
+                "https" => {}
+                "http" if http_allowed => {
+                    let host = url.host_str().unwrap_or_default();
+                    if host != "localhost" && !host.ends_with(".local.synvya.com") {
+                        return Err(format!(
+                            "STAFF_CHALLENGE_ORIGINS http entries must name localhost or a host under local.synvya.com, got \"{raw}\""
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "STAFF_CHALLENGE_ORIGINS entries must be https when NODE_ENV={node_env} and ALLOW_LOCALHOST_ORIGINS is not true, got \"{raw}\""
+                    ));
+                }
             }
             origins.push(raw.to_string());
         }
@@ -73,6 +95,7 @@ impl StaffChallengeOrigins {
         Self::from_values(
             std::env::var("STAFF_CHALLENGE_ORIGINS").ok().as_deref(),
             &std::env::var("NODE_ENV").unwrap_or_default(),
+            std::env::var("ALLOW_LOCALHOST_ORIGINS").is_ok_and(|v| v == "true"),
         )
     }
 
@@ -188,7 +211,7 @@ mod tests {
 
     #[test]
     fn unset_allows_no_origin() {
-        let o = StaffChallengeOrigins::from_values(None, "production").unwrap();
+        let o = StaffChallengeOrigins::from_values(None, "production", false).unwrap();
         assert!(!o.allows("https://account.synvya.com"));
     }
 
@@ -197,6 +220,7 @@ mod tests {
         let o = StaffChallengeOrigins::from_values(
             Some("https://account.synvya.com, https://account.staging.synvya.com"),
             "production",
+            false,
         )
         .unwrap();
         assert!(o.allows("https://account.synvya.com"));
@@ -206,11 +230,48 @@ mod tests {
     }
 
     #[test]
-    fn http_only_off_a_deployment() {
+    fn http_off_a_deployment_or_with_allow_localhost_only() {
         let local = "http://account.local.synvya.com:5173";
-        assert!(StaffChallengeOrigins::from_values(Some(local), "development").is_ok());
-        assert!(StaffChallengeOrigins::from_values(Some(local), "staging").is_err());
-        assert!(StaffChallengeOrigins::from_values(Some(local), "production").is_err());
+        let from = |env, allow| StaffChallengeOrigins::from_values(Some(local), env, allow);
+        assert!(from("development", false).is_ok());
+        assert!(from("staging", false).is_err());
+        assert!(from("production", false).is_err());
+        // Staging runs NODE_ENV=production with ALLOW_LOCALHOST_ORIGINS=true.
+        let staging = StaffChallengeOrigins::from_values(
+            Some(&format!("https://account.staging.synvya.com,{local}")),
+            "production",
+            true,
+        )
+        .unwrap();
+        assert!(staging.allows(local));
+        assert!(staging.allows("https://account.staging.synvya.com"));
+    }
+
+    #[test]
+    fn an_http_entry_names_a_local_host() {
+        for ok in [
+            "http://localhost:5173",
+            "http://account.local.synvya.com:5173",
+        ] {
+            assert!(
+                StaffChallengeOrigins::from_values(Some(ok), "production", true).is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "http://account.synvya.com",
+            "http://evil.example:5173",
+            "http://local.synvya.com.evil.example",
+        ] {
+            assert!(
+                StaffChallengeOrigins::from_values(Some(bad), "production", true).is_err(),
+                "{bad} should be refused"
+            );
+            assert!(
+                StaffChallengeOrigins::from_values(Some(bad), "development", false).is_err(),
+                "{bad} should be refused off a deployment too"
+            );
+        }
     }
 
     #[test]
@@ -223,7 +284,7 @@ mod tests {
             "account.synvya.com",
         ] {
             assert!(
-                StaffChallengeOrigins::from_values(Some(bad), "development").is_err(),
+                StaffChallengeOrigins::from_values(Some(bad), "development", false).is_err(),
                 "{bad} should be refused"
             );
         }

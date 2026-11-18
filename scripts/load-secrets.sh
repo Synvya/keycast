@@ -21,9 +21,10 @@ if [ "$ENV" = "staging" ]; then
     ALLOW_LOCALHOST_ORIGINS=true
     LOCAL_DEV_ORIGINS=http://account.local.synvya.com:5173
     # Sessions from these origins may have the staff challenge signed with the
-    # person's key (docs/synvya/staff-challenge.md). https only: a local client
-    # against staging cannot, and falls back to the team list.
-    STAFF_CHALLENGE_ORIGINS=https://account.staging.synvya.com
+    # person's key (docs/synvya/staff-challenge.md). The local account app is
+    # listed so it can run against staging; Keycast accepts an http entry only
+    # because ALLOW_LOCALHOST_ORIGINS=true here, and only for a local host.
+    STAFF_CHALLENGE_ORIGINS=https://account.staging.synvya.com,http://account.local.synvya.com:5173
     KMS_KEY_ID=alias/keycast-master-key
     INVITE_BASE_URL=https://account.staging.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.staging.synvya.com
@@ -37,6 +38,8 @@ elif [ "$ENV" = "production" ]; then
     CUSTOMER_TENANT_DOMAIN=
     ALLOW_LOCALHOST_ORIGINS=false
     LOCAL_DEV_ORIGINS=
+    # https only: ALLOW_LOCALHOST_ORIGINS is false, so Keycast refuses to start
+    # with an http entry here.
     STAFF_CHALLENGE_ORIGINS=https://account.synvya.com
     KMS_KEY_ID=alias/synvya-production-keycast-masterkey
     INVITE_BASE_URL=https://account.synvya.com
