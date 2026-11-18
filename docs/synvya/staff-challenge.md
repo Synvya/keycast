@@ -36,8 +36,8 @@ Body: `{ "challenge_id", "nonce", "expires_at" }`, each 1 to 128 printable ASCII
 
 | Environment | Value | Set in |
 |---|---|---|
-| Local | `http://account.local.synvya.com:5173` | `.env.local` |
-| Staging | `https://account.staging.synvya.com,http://account.local.synvya.com:5173` | `scripts/load-secrets.sh` |
+| Local | `http://account.local.synvya.com:5273` | `.env.local` |
+| Staging | `https://account.staging.synvya.com,http://account.local.synvya.com:5273` | `scripts/load-secrets.sh` |
 | Production | `https://account.synvya.com` | `scripts/load-secrets.sh` |
 
 Staging lists the local account app so a developer can run it against staging with staging credentials (decided 2026-11-18). A session the person opened on `https://account.staging.synvya.com` is still refused from the local app: a session's origin is fixed at login.
@@ -51,7 +51,7 @@ Staging lists the local account app so a developer can run it against staging wi
 | A page on another origin | The session cookie is `SameSite=Lax` and CORS allows only `ALLOWED_ORIGINS`. On top of that, the session's own origin must be listed here, so a session made by the admin or diners app cannot use the route |
 | Script injected into a listed origin | It can get a staff session for the signed-in person. The same session cookie can already mint a signing authorization for every team key the person holds (`/api/teams/:id/keys/:pubkey/authorizations`), which is more power than a staff session. The route adds no capability that script did not have |
 | A local origin left on production | Startup refuses an `http` entry when `NODE_ENV` is `staging` or `production` and `ALLOW_LOCALHOST_ORIGINS` is not `true`. Production's `ALLOW_LOCALHOST_ORIGINS=false` is the one setting to keep; keycast#107 checks it after each deploy |
-| The local origin on staging | Any page served as `http://account.local.synvya.com:5173` on the developer's machine (the name points to 127.0.0.1) can get a staff session for a person who logged in there. The reach is staging data only, and the same session cookie can already mint team-key authorizations from that origin, which staging allows through CORS. An `http` entry must name a local host, so a public `http` origin cannot be listed by mistake |
+| The local origin on staging | Any page served as `http://account.local.synvya.com:5273` on the developer's machine (the name points to 127.0.0.1) can get a staff session for a person who logged in there. The reach is staging data only, and the same session cookie can already mint team-key authorizations from that origin, which staging allows through CORS. An `http` entry must name a local host, so a public `http` origin cannot be listed by mistake |
 | Audit | Each signature logs `staff_challenge_signed` with the tenant, origin and person. Each refusal for the origin logs `staff_challenge_refused` |
 
 **Why not `/api/user/sign` with a new rule.** That route signs any event the caller sends. A rule there that let first-party sessions sign kind 27235 would sign the server's admin challenge too. A separate route that builds its own event cannot.

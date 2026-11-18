@@ -56,7 +56,7 @@ cargo build --bin keycast
 DATABASE_URL=postgres://postgres:password@localhost/keycast \
 REDIS_URL=redis://localhost:16379 \
 MASTER_KEY_PATH=./master.key \
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3000 \
+ALLOWED_ORIGINS=http://localhost:5273,http://localhost:5274,http://localhost:3000 \
 SERVER_NSEC=0000000000000000000000000000000000000000000000000000000000000001 \
 WEB_BUILD_DIR=./web/build \
 BUNKER_RELAYS=ws://localhost:8080 \

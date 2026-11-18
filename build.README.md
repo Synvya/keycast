@@ -118,9 +118,9 @@ The relevant env vars in `.env.local` (and the matching `${VAR:-default}` interp
 |---|---|---|
 | `BASE_URL` | `http://keycast.local.synvya.com:3000` | Base for verify-email + claim URLs keycast embeds in outbound mail |
 | `APP_URL` | `http://keycast.local.synvya.com:3000` | Frontend's API base URL — must equal the hostname the browser loads from, or CORS preflight fails |
-| `ADMIN_BASE_URL` | `http://admin.local.synvya.com:5175` | "Open Synvya Admin" button on the claim-success page (defaults to `https://admin.synvya.com` when unset — would send local admins to production) |
+| `ADMIN_BASE_URL` | `http://admin.local.synvya.com:5275` | "Open Synvya Admin" button on the claim-success page (defaults to `https://admin.synvya.com` when unset — would send local admins to production) |
 | `ALLOWED_TENANT_DOMAINS` | `keycast.local.synvya.com,host.docker.internal,localhost` | Whitelist override that bypasses the prod tenant-domain blocklist (`.internal`/`.local`/`.test` etc.) |
-| `ALLOWED_ORIGINS` | `http://{admin,account,diners,keycast}.local.synvya.com:{5175,5173,5174,3000}` + `localhost:*` fallback | CORS allowlist for credentialed `/api/auth/*` and `/api/user/*` fetches |
+| `ALLOWED_ORIGINS` | `http://{admin,account,diners,buyers,keycast}.local.synvya.com:{5275,5273,5274,5276,3000}` + `localhost:*` fallback | CORS allowlist for credentialed `/api/auth/*` and `/api/user/*` fetches |
 
 Full architecture (including why `synvya.local` was retired in favour of `local.synvya.com`): [`docs/ops/local-environment.md`](https://github.com/Synvya/docs/blob/main/ops/local-environment.md) → "Same-site cookie design".
 

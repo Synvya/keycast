@@ -155,7 +155,7 @@ services:
       # `https://admin.synvya.com` wins and a freshly-claimed local admin
       # gets sent to production. Prod values come from
       # keycast/scripts/load-secrets.sh.
-      ADMIN_BASE_URL: ${ADMIN_BASE_URL:-http://admin.local.synvya.com:5175}
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:-http://admin.local.synvya.com:5275}
       # DISABLE_EMAILS: ${DISABLE_EMAILS:-}
       # Server configuration
       PORT: ${PORT:-3000}

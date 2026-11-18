@@ -19,12 +19,12 @@ if [ "$ENV" = "staging" ]; then
     CUSTOMER_TENANT_DOMAIN=b2b-auth.staging.synvya.com
     # Local client development runs against staging
     ALLOW_LOCALHOST_ORIGINS=true
-    LOCAL_DEV_ORIGINS=http://account.local.synvya.com:5173
+    LOCAL_DEV_ORIGINS=http://account.local.synvya.com:5273
     # Sessions from these origins may have the staff challenge signed with the
     # person's key (docs/synvya/staff-challenge.md). The local account app is
     # listed so it can run against staging; Keycast accepts an http entry only
     # because ALLOW_LOCALHOST_ORIGINS=true here, and only for a local host.
-    STAFF_CHALLENGE_ORIGINS=https://account.staging.synvya.com,http://account.local.synvya.com:5173
+    STAFF_CHALLENGE_ORIGINS=https://account.staging.synvya.com,http://account.local.synvya.com:5273
     KMS_KEY_ID=alias/keycast-master-key
     INVITE_BASE_URL=https://account.staging.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.staging.synvya.com

@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn http_off_a_deployment_or_with_allow_localhost_only() {
-        let local = "http://account.local.synvya.com:5173";
+        let local = "http://account.local.synvya.com:5273";
         let from = |env, allow| StaffChallengeOrigins::from_values(Some(local), env, allow);
         assert!(from("development", false).is_ok());
         assert!(from("staging", false).is_err());
@@ -250,8 +250,8 @@ mod tests {
     #[test]
     fn an_http_entry_names_a_local_host() {
         for ok in [
-            "http://localhost:5173",
-            "http://account.local.synvya.com:5173",
+            "http://localhost:5273",
+            "http://account.local.synvya.com:5273",
         ] {
             assert!(
                 StaffChallengeOrigins::from_values(Some(ok), "production", true).is_ok(),
@@ -260,7 +260,7 @@ mod tests {
         }
         for bad in [
             "http://account.synvya.com",
-            "http://evil.example:5173",
+            "http://evil.example:5273",
             "http://local.synvya.com.evil.example",
         ] {
             assert!(
