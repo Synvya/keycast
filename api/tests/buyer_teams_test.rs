@@ -1073,3 +1073,80 @@ async fn test_owner_tenant_teams_refuse_buyer_roles() {
     .await;
     assert_eq!(added.status, StatusCode::BAD_REQUEST, "{}", added.raw);
 }
+
+/// The customer session route tells Synvya Server whose session a Bearer token is, and only for
+/// a live token of the customer tenant.
+#[tokio::test]
+#[serial]
+async fn test_customer_session_names_the_buyer_and_nothing_else() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let buyer = sign_in(&app, &merchant).await;
+
+    let live = customer(
+        &app,
+        Method::GET,
+        "/api/customer/session",
+        &buyer.session,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.raw);
+    assert_eq!(live.body["pubkey"], buyer.pubkey.as_str());
+    assert_eq!(live.body["email"], buyer.email.as_str());
+
+    let forged = customer(
+        &app,
+        Method::GET,
+        "/api/customer/session",
+        "not-a-token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(forged.status, StatusCode::UNAUTHORIZED, "{}", forged.raw);
+
+    let none = request(
+        &app,
+        Method::GET,
+        CUSTOMER_HOST,
+        "/api/customer/session",
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(none.status, StatusCode::UNAUTHORIZED, "{}", none.raw);
+
+    // A token of the owner tenant is not a customer session.
+    let owner_token = admin_session(&app).await;
+    let other_tenant = customer(
+        &app,
+        Method::GET,
+        "/api/customer/session",
+        &owner_token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        other_tenant.status,
+        StatusCode::UNAUTHORIZED,
+        "{}",
+        other_tenant.raw
+    );
+
+    // The route exists only on the customer hostname.
+    let on_owner_host = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        "/api/customer/session",
+        Some(&buyer.session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        on_owner_host.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        on_owner_host.raw
+    );
+}

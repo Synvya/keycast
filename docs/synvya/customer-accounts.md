@@ -342,6 +342,7 @@ A buyer account is a team in the customer tenant with its own key. Members order
 | `POST /api/customer/teams/role` | Team `admin` | `{ team_pubkey, member_pubkey, role }` | Echo. 409 `last_admin` for the last admin |
 | `POST /api/customer/teams/remove` | Team `admin`, or the member to leave | `{ team_pubkey, member_pubkey }` | `{ removed, revoked_grants }`. 409 `last_admin` for the last admin |
 | `POST /api/customer/teams/grant` | A member | `{ team_pubkey, client_id, redirect_uri, scope, merchant_pubkey? }` | `{ team_pubkey, role, permission, session_token, expires_in, authorization: { bunker_url } }` |
+| `GET /api/customer/session` | Any buyer; called by Synvya Server with the buyer's Bearer token | — | `{ pubkey, email }`: the session's personal key and email. 401 for a missing, forged or expired token, or one of another tenant. The server makes its own buyer session from the answer |
 
 **Admin routes**, on the owner hostname, full admin (Synvya Server signs with NIP-98). They act on the customer tenant.
 

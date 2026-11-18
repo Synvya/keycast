@@ -1021,6 +1021,23 @@ paths:
   # Buyer teams. Customer routes exist only on the customer hostname and take the Bearer
   # session from /auth/magic-link/verify. Admin routes run on another hostname, full admin
   # (NIP-98 service auth or an admin UCAN), and act on the customer tenant.
+  /customer/session:
+    get:
+      tags: [Buyer teams]
+      summary: Whose session this is. Synvya Server calls it to make its own buyer session
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: The session's personal key and email
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pubkey, email]
+                properties:
+                  pubkey: { type: string, description: Personal key, 64 lowercase hex }
+                  email: { type: string }
+        '401': { description: Missing, forged or expired token, or a token of another tenant }
   /customer/teams:
     get:
       tags: [Buyer teams]

@@ -333,6 +333,32 @@ pub(super) async fn create_team_grant(
 // ============================================================================
 
 #[derive(Debug, Serialize)]
+pub struct CustomerSessionResponse {
+    pub pubkey: String,
+    pub email: String,
+}
+
+/// GET /api/customer/session - whose session this is: the buyer's personal key and email.
+/// Synvya Server calls it once with the buyer's Bearer token to make its own buyer session.
+/// Any token that does not validate on the customer tenant answers 401.
+pub async fn customer_session(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    if !tenant.0.is_customer_tenant() {
+        return Ok(not_customer_tenant());
+    }
+    let tenant_id = tenant.0.id;
+    let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
+    let email = UserRepository::new(auth_state.state.db.clone())
+        .get_email(&pubkey, tenant_id)
+        .await
+        .map_err(|_| ApiError::auth("Invalid session"))?;
+    Ok(Json(CustomerSessionResponse { pubkey, email }).into_response())
+}
+
+#[derive(Debug, Serialize)]
 pub struct MyTeamsResponse {
     pub teams: Vec<BuyerTeamMembership>,
 }

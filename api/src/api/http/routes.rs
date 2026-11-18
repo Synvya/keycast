@@ -84,6 +84,8 @@ pub fn api_routes(
             "/customer/authorizations/revoke",
             post(magic_link::revoke_customer_app),
         )
+        // Whose session this is, for Synvya Server's buyer session.
+        .route("/customer/session", get(buyer_teams::customer_session))
         // Buyer teams. Each path is also in `is_customer_route`; the generic /teams routes
         // stay closed on the customer hostname.
         .route(
