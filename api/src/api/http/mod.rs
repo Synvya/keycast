@@ -12,6 +12,7 @@ pub mod nostr_rpc;
 pub mod oauth;
 pub mod policies;
 pub mod routes;
+pub mod staff_challenge;
 pub mod teams;
 
 pub use routes::*;

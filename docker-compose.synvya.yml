@@ -77,6 +77,9 @@ services:
       ALLOWED_TENANT_DOMAINS: ${ALLOWED_TENANT_DOMAINS:?error}
       # Hostname of the customer tenant; customer accounts are off when empty
       CUSTOMER_TENANT_DOMAIN: ${CUSTOMER_TENANT_DOMAIN:-}
+      # Origins whose sessions may have the staff challenge signed with the
+      # person's key; https only here. Empty signs nothing (docs/synvya/staff-challenge.md)
+      STAFF_CHALLENGE_ORIGINS: ${STAFF_CHALLENGE_ORIGINS:-}
       # Requests per IP per hour on endpoints that send email or call KMS
       RATE_LIMIT_IP_PER_HOUR: ${RATE_LIMIT_IP_PER_HOUR:-60}
       # Synvya Server's endpoint for customer account deletions; notices wait in the database

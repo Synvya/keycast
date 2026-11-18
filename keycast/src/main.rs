@@ -302,6 +302,13 @@ fn validate_environment() -> Result<(), String> {
         errors.push(e.as_str());
     }
 
+    // Synvya: the origins that may have the staff challenge signed; https on a deployment
+    let staff_origins_error =
+        keycast_api::api::http::staff_challenge::StaffChallengeOrigins::from_env().err();
+    if let Some(e) = &staff_origins_error {
+        errors.push(e.as_str());
+    }
+
     // Docker deployment requires additional vars
     if env::var("POSTGRES_PASSWORD").is_err() {
         // Only required for docker-compose, so just warn

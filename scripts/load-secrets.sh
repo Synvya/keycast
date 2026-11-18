@@ -20,6 +20,10 @@ if [ "$ENV" = "staging" ]; then
     # Local client development runs against staging
     ALLOW_LOCALHOST_ORIGINS=true
     LOCAL_DEV_ORIGINS=http://account.local.synvya.com:5173
+    # Sessions from these origins may have the staff challenge signed with the
+    # person's key (docs/synvya/staff-challenge.md). https only: a local client
+    # against staging cannot, and falls back to the team list.
+    STAFF_CHALLENGE_ORIGINS=https://account.staging.synvya.com
     KMS_KEY_ID=alias/keycast-master-key
     INVITE_BASE_URL=https://account.staging.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.staging.synvya.com
@@ -33,6 +37,7 @@ elif [ "$ENV" = "production" ]; then
     CUSTOMER_TENANT_DOMAIN=
     ALLOW_LOCALHOST_ORIGINS=false
     LOCAL_DEV_ORIGINS=
+    STAFF_CHALLENGE_ORIGINS=https://account.synvya.com
     KMS_KEY_ID=alias/synvya-production-keycast-masterkey
     INVITE_BASE_URL=https://account.synvya.com
     PASSWORD_RESET_BASE_URL=https://account.synvya.com
@@ -65,6 +70,7 @@ ALLOWED_ORIGINS=https://$DOMAIN,$EXTRA_ALLOWED_ORIGINS${LOCAL_DEV_ORIGINS:+,$LOC
 ALLOW_LOCALHOST_ORIGINS=$ALLOW_LOCALHOST_ORIGINS
 ALLOWED_TENANT_DOMAINS=$ALLOWED_TENANT_DOMAINS
 CUSTOMER_TENANT_DOMAIN=$CUSTOMER_TENANT_DOMAIN
+STAFF_CHALLENGE_ORIGINS=$STAFF_CHALLENGE_ORIGINS
 BASE_URL=https://$DOMAIN
 APP_URL=https://$DOMAIN
 INVITE_BASE_URL=$INVITE_BASE_URL

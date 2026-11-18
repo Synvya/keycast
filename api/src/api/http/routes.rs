@@ -203,6 +203,16 @@ pub fn api_routes(
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
+    // Synvya: the staff challenge, signed with the person's key for a session
+    // whose origin is in STAFF_CHALLENGE_ORIGINS (staff_challenge.rs)
+    let staff_challenge_route = Router::new()
+        .route(
+            "/user/staff-challenge/sign",
+            post(super::staff_challenge::sign_staff_challenge),
+        )
+        .layer(auth_cors.clone())
+        .with_state(auth_state.clone());
+
     // Change key route (needs AuthState for key_manager and auth_tx)
     let change_key_route = Router::new()
         .route("/user/change-key", post(auth::change_key))
@@ -371,6 +381,7 @@ pub fn api_routes(
         .merge(bunker_routes) // Has auth_cors (bunker creation)
         .merge(key_export_routes) // Has auth_cors (authenticated, needs cookies)
         .merge(change_key_route) // Has auth_cors (authenticated, needs cookies)
+        .merge(staff_challenge_route) // Has auth_cors (authenticated, needs cookies)
         .merge(logout_route) // Has auth_cors (credentialed cookie logout)
         .merge(account_delete_route.layer(auth_cors.clone())) // Auth CORS - session cookie from the Synvya web apps; Bearer still accepted
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer

@@ -120,6 +120,10 @@ services:
       # again. Refused at startup when NODE_ENV is staging or production.
       MAGIC_LINK_EMAIL_WINDOW_SECONDS: ${MAGIC_LINK_EMAIL_WINDOW_SECONDS:-}
       MAGIC_LINK_EMAIL_HOURLY_LIMIT: ${MAGIC_LINK_EMAIL_HOURLY_LIMIT:-}
+      # Origins whose sessions may have the staff challenge signed with the
+      # person's key (docs/synvya/staff-challenge.md). .env.local lists the
+      # local account app. Empty signs nothing.
+      STAFF_CHALLENGE_ORIGINS: ${STAFF_CHALLENGE_ORIGINS:-}
       WEB_BUILD_DIR: /app/web
       SERVER_NSEC: ${SERVER_NSEC:?error}
       REDIS_URL: redis://redis:6379
