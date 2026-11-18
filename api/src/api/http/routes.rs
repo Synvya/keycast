@@ -298,6 +298,10 @@ pub fn api_routes(
             "/admin/customer-teams/:team_pubkey/admins",
             post(buyer_teams::admin_add_team_admin),
         )
+        .route(
+            "/admin/customer-teams/:team_pubkey/members/:member_pubkey",
+            delete(buyer_teams::admin_remove_team_member),
+        )
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 

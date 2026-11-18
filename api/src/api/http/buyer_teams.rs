@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use keycast_core::authorization_channel::AuthorizationCommand;
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
-    BuyerTeam, BuyerTeamMember, BuyerTeamMembership, BuyerTeamRepository, MemberChange,
+    BuyerTeam, BuyerTeamMember, BuyerTeamMembership, BuyerTeamRepository, LastAdmin, MemberChange,
     TeamDeletion, TeamInvitationRepository, UserRepository,
 };
 use keycast_core::types::authorization::Authorization;
@@ -726,7 +726,7 @@ pub async fn remove_member(
     }
 
     let change = BuyerTeamRepository::new(pool.clone())
-        .remove_member(&team, &member)
+        .remove_member(&team, &member, LastAdmin::Stays)
         .await?;
     let revoked = member_change_result(change)?;
     forget_grants(&auth_state, &revoked).await;
@@ -979,6 +979,39 @@ pub async fn admin_list_team_members(
         team_pubkey: team.team_pubkey,
         name: team.name,
         members,
+    }))
+}
+
+/// DELETE /api/admin/customer-teams/:team_pubkey/members/:member_pubkey - remove a member and
+/// revoke their grants on the team key: a buyer account closed. The last admin may go only when
+/// no other member remains, so the team is left empty with its key, never with members and no
+/// admin.
+pub async fn admin_remove_team_member(
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path((team_pubkey, member_pubkey)): Path<(String, String)>,
+) -> ApiResult<Json<RemoveMemberResponse>> {
+    require_full_admin(&auth)?;
+    let pool = &auth_state.state.db;
+    let tenant_id = customer_tenant_id(pool).await?;
+    let team = find_team(pool, tenant_id, &team_pubkey).await?;
+    let member = parse_pubkey(&member_pubkey, "member_pubkey")?;
+    let change = BuyerTeamRepository::new(pool.clone())
+        .remove_member(&team, &member, LastAdmin::MayLeaveAnEmptyTeam)
+        .await?;
+    let revoked = member_change_result(change)?;
+    forget_grants(&auth_state, &revoked).await;
+    tracing::info!(
+        event = "buyer_team_member_removed",
+        tenant_id = tenant_id,
+        team_id = team.team_id,
+        member = &member[..8],
+        caller = &auth.pubkey[..8.min(auth.pubkey.len())],
+        "Buyer team member removed by the admin API"
+    );
+    Ok(Json(RemoveMemberResponse {
+        removed: true,
+        revoked_grants: revoked.len(),
     }))
 }
 

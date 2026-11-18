@@ -53,6 +53,16 @@ pub struct MemberGrant {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// Whether a removal may take the last admin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastAdmin {
+    /// Never: a team keeps an admin. A buyer leaving or removing someone.
+    Stays,
+    /// Only when no other member remains, so the team is left empty with its key: a buyer
+    /// account closed (Synvya Server, through the admin API).
+    MayLeaveAnEmptyTeam,
+}
+
 /// The outcome of a change to a member.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberChange {
@@ -316,13 +326,23 @@ impl BuyerTeamRepository {
         &self,
         team: &BuyerTeam,
         member_pubkey: &str,
+        last_admin: LastAdmin,
     ) -> Result<MemberChange, RepositoryError> {
         let mut tx = self.pool.begin().await?;
         let Some(current) = lock_and_read_role(&mut tx, team.team_id, member_pubkey).await? else {
             return Ok(MemberChange::NotMember);
         };
         if current == "admin" && other_admins(&mut tx, team.team_id, member_pubkey).await? == 0 {
-            return Ok(MemberChange::LastAdmin);
+            let refuse = match last_admin {
+                LastAdmin::Stays => true,
+                // Only when the team would be left with members and no admin
+                LastAdmin::MayLeaveAnEmptyTeam => {
+                    other_members(&mut tx, team.team_id, member_pubkey).await? > 0
+                }
+            };
+            if refuse {
+                return Ok(MemberChange::LastAdmin);
+            }
         }
 
         sqlx::query("DELETE FROM team_users WHERE team_id = $1 AND user_pubkey = $2")
@@ -573,6 +593,19 @@ async fn other_admins(
     .fetch_one(&mut **tx)
     .await
     .map_err(Into::into)
+}
+
+async fn other_members(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: i32,
+    member_pubkey: &str,
+) -> Result<i64, RepositoryError> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM team_users WHERE team_id = $1 AND user_pubkey != $2")
+        .bind(team_id)
+        .bind(member_pubkey)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(Into::into)
 }
 
 async fn revoke_member_grants(

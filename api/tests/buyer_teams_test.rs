@@ -923,6 +923,55 @@ async fn test_admin_api_manages_teams_for_the_server() {
     .await;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.raw);
 
+    // A closed account: the last admin goes only once no other member remains
+    let other = sign_in(&app, &merchant).await;
+    add_to_team(&app, &team, &buyer, &other, "orderer").await;
+    let held = admin(
+        &app,
+        Method::DELETE,
+        &format!("/api/admin/customer-teams/{team}/members/{}", buyer.pubkey),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(held.status, StatusCode::CONFLICT, "{}", held.raw);
+    assert!(held.raw.contains("last_admin"), "{}", held.raw);
+    for member in [&other, &buyer] {
+        let removed = admin(
+            &app,
+            Method::DELETE,
+            &format!("/api/admin/customer-teams/{team}/members/{}", member.pubkey),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(removed.status, StatusCode::OK, "{}", removed.raw);
+        assert_eq!(removed.body["removed"], true);
+    }
+    let empty = admin(
+        &app,
+        Method::GET,
+        &format!("/api/admin/customer-teams/{team}/members"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        empty.body["members"],
+        json!([]),
+        "The team stays, with its key"
+    );
+    let not_member = admin(
+        &app,
+        Method::DELETE,
+        &format!("/api/admin/customer-teams/{team}/members/{}", buyer.pubkey),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        not_member.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        not_member.raw
+    );
+
     // Not for anyone but a full admin
     let plain = request(
         &app,

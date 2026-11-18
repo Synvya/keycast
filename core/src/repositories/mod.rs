@@ -27,8 +27,8 @@ pub use atproto_oauth_session::{
 pub use authorization::AuthorizationRepository;
 pub use buyer_team::{
     plaintext_event_kind, record_team_signing, revoke_grants_of_deleted_member, BuyerTeam,
-    BuyerTeamMember, BuyerTeamMembership, BuyerTeamRepository, MemberChange, MemberGrant,
-    TeamDeletion,
+    BuyerTeamMember, BuyerTeamMembership, BuyerTeamRepository, LastAdmin, MemberChange,
+    MemberGrant, TeamDeletion,
 };
 pub use claim_token::ClaimTokenRepository;
 pub use customer_app_origin::{

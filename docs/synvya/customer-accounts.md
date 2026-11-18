@@ -352,6 +352,7 @@ A buyer account is a team in the customer tenant with its own key. Members order
 | `GET /api/admin/customer-teams` | `?email=` or `?pubkey=` | `{ pubkey, teams: [...] }` |
 | `GET /api/admin/customer-teams/:team_pubkey/members` | — | As the customer route |
 | `POST /api/admin/customer-teams/:team_pubkey/admins` | `{ email \| pubkey }` | `{ team_pubkey, admin_pubkey }`. Adds the person or raises them to `admin`: a store invitation accepted, or the support restore. The server writes the audit record |
+| `DELETE /api/admin/customer-teams/:team_pubkey/members/:member_pubkey` | — | `{ removed: true, revoked_grants }`. Removes the member and revokes their grants: a buyer account closed. The last admin may go only when no other member remains (409 `last_admin` otherwise), so the team is left empty with its key |
 | `DELETE /api/admin/customer-teams/:team_pubkey` | — | `{ deleted: true }`; 409 while the team has members |
 
 **The grant on the team key.** `/api/customer/teams/grant`, or `/api/auth/magic-link/verify` with `team_pubkey` beside the grant fields, checks the caller's role:

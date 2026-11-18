@@ -1337,6 +1337,26 @@ paths:
                   team_pubkey: { type: string }
                   admin_pubkey: { type: string }
         '404': { description: No such team or customer }
+  /admin/customer-teams/{team_pubkey}/members/{member_pubkey}:
+    delete:
+      tags: [Buyer teams]
+      summary: Remove a member and revoke their grants on the team key (full admin)
+      description: For a buyer account closed. The last admin may go only when no other member remains, so the team is left empty with its key.
+      parameters:
+        - { name: team_pubkey, in: path, required: true, schema: { type: string } }
+        - { name: member_pubkey, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: boolean }
+                  revoked_grants: { type: integer }
+        '404': { description: No such team, or not a member }
+        '409': { description: '`last_admin`: other members remain' }
   # The approved app origins of the customer tenant. Owner hostname only, full admin.
   /admin/customer-origins:
     get:
