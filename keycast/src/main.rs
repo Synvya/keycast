@@ -1034,8 +1034,17 @@ async fn async_main(worker_threads: usize) -> Result<(), Box<dyn std::error::Err
     // Close task tracker to prevent new tasks from being spawned
     task_tracker.close();
 
+    // Leave the cluster first. Nothing deregisters the instance on drop, so a
+    // restarted instance found this one still in the hashring and skipped every
+    // bunker hashed to it until the 30-second stale cleanup.
+    if let Err(e) = coordinator.force_deregister().await {
+        tracing::warn!(
+            "Cluster deregister failed; the stale cleanup removes this instance: {}",
+            e
+        );
+    }
+
     // Shutdown signer client (disconnect from relays)
-    // Note: ClusterCoordinator will be dropped automatically, triggering deregister
     client_for_shutdown.shutdown().await;
 
     // Wait for API server to drain (max 15s to leave buffer before Cloud Run's 30s timeout)

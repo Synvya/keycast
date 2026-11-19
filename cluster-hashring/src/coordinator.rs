@@ -183,6 +183,11 @@ impl ClusterCoordinator {
 
                     _ = heartbeat_interval.tick() => {
                         let mut reg = registry.lock().await;
+                        // A deregister cancels first and then takes this lock;
+                        // a heartbeat after it would add the instance back.
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
 
                         // Check if IAM token needs refresh (before it expires)
                         if factory.uses_iam_auth() {
@@ -466,6 +471,9 @@ impl ClusterCoordinator {
     ///
     /// Use when you can't take ownership (e.g., Arc::try_unwrap fails).
     pub async fn force_deregister(&self) -> Result<(), Error> {
+        // Stop the heartbeat first, or its next tick adds the instance back
+        // and the cluster waits for the stale cleanup anyway.
+        self.cancel_token.cancel();
         let mut reg = self.registry.lock().await;
 
         // Publish leave event
@@ -641,6 +649,34 @@ mod tests {
 
         coord1.shutdown().await.unwrap();
         coord2.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Redis via TEST_REDIS_URL or local Redis on localhost:16379"]
+    async fn test_force_deregister_stays_out_past_a_heartbeat() {
+        let redis_url = get_redis_url();
+        let prefix = test_prefix();
+
+        let coord1 = ClusterCoordinator::start_with_prefix(&redis_url, Some(&prefix))
+            .await
+            .unwrap();
+        let coord2 = ClusterCoordinator::start_with_prefix(&redis_url, Some(&prefix))
+            .await
+            .unwrap();
+
+        coord2.force_deregister().await.unwrap();
+
+        // A heartbeat that survived the deregister would add coord2 back within
+        // one interval, and a restarted instance would skip its keys.
+        tokio::time::sleep(Duration::from_secs(DEFAULT_HEARTBEAT_INTERVAL_SECS + 1)).await;
+        coord1.refresh().await.unwrap();
+        assert_eq!(
+            coord1.instance_count(),
+            1,
+            "coord2 came back after deregistering"
+        );
+
+        coord1.shutdown().await.unwrap();
     }
 
     #[tokio::test]

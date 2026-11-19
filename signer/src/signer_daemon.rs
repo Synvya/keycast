@@ -897,7 +897,9 @@ impl UnifiedSigner {
             }
         } else {
             // Load regular authorization
-            let auth_data: Option<(i32, String, i64)> = sqlx::query_as(
+            // `stored_key_id` is an `integer` column: decoding it as i64 failed
+            // every Upsert, and only the on-demand load served the request.
+            let auth_data: Option<(i32, String, i32)> = sqlx::query_as(
                 "SELECT id, secret_hash, stored_key_id FROM authorizations
                  WHERE tenant_id = $1 AND bunker_public_key = $2
                    AND revoked_at IS NULL",
