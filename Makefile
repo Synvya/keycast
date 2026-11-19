@@ -2,7 +2,7 @@
 # Keycast Development Helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: check-prereq install-prereq setup migrate help dev test fmt fmt-check clippy ci ci-fast install-hooks env-local env-staging docker-build docker-up docker-down docker-logs support-admin-grant support-admin-revoke support-admin-list
+.PHONY: check-prereq install-prereq setup migrate help dev test fmt fmt-check clippy ci ci-fast install-hooks env-local env-staging docker-build docker-up docker-rebuild docker-migrations-check docker-down docker-logs support-admin-grant support-admin-revoke support-admin-list
 
 # Default target: show help
 all: help
@@ -115,6 +115,26 @@ docker-up: ## Docker: Start the services via docker-compose
 	@$(MAKE) env-check
 	@echo "==> Starting Keycast stack..."
 	docker compose up -d
+
+docker-rebuild: ## Docker: Rebuild keycast and the migrate image, apply new migrations, restart, and check every migration ran
+	@$(MAKE) env-check
+	@echo "==> Rebuilding keycast and migrate (the migrate image copies database/migrations in at build time)..."
+	docker compose build migrate keycast
+	docker compose up -d migrate keycast
+	@$(MAKE) docker-migrations-check
+
+docker-migrations-check: ## Docker: Check that the database has applied every file in database/migrations
+	@set -eu; \
+	files=$$(ls database/migrations/*.sql | wc -l | tr -d ' '); \
+	for i in $$(seq 1 30); do \
+	  applied=$$(docker compose exec -T postgres psql -U postgres -d keycast -tAc "SELECT count(*) FROM _sqlx_migrations WHERE success" 2>/dev/null | tr -d ' ' || true); \
+	  [ "$$applied" = "$$files" ] && break; sleep 1; \
+	done; \
+	if [ "$$applied" = "$$files" ]; then \
+	  echo "  ✓ $$applied of $$files migrations applied"; \
+	else \
+	  echo "  ✗ $${applied:-0} of $$files migrations applied. Run: make docker-rebuild"; exit 1; \
+	fi
 
 docker-down: ## Docker: Stop the services
 	@$(MAKE) env-check
