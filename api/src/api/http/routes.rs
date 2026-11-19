@@ -317,6 +317,16 @@ pub fn api_routes(
             "/admin/customer-teams/:team_pubkey/members/:member_pubkey",
             delete(buyer_teams::admin_remove_team_member),
         )
+        // The team change log and the signing log, for Synvya Server's account activity and
+        // support lookups
+        .route(
+            "/admin/customer-team-events",
+            get(buyer_teams::admin_list_team_events),
+        )
+        .route(
+            "/admin/customer-signing-activity/:event_id",
+            get(buyer_teams::admin_get_signing_activity),
+        )
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 

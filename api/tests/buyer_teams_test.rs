@@ -1507,3 +1507,306 @@ async fn test_a_confirmation_expires_after_ten_minutes() {
     );
     assert_eq!(invitations_of(&app, &team).await, 0);
 }
+
+/// The team change log, read through the admin API from after `after`.
+async fn team_events_after(app: &TestApp, after: i64) -> Vec<Value> {
+    let answer = admin(
+        app,
+        Method::GET,
+        &format!("/api/admin/customer-team-events?after={after}&limit=500"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+    answer.body["events"].as_array().unwrap().clone()
+}
+
+/// How many entries of one team the change log answers from `since` on.
+async fn team_events_since(app: &TestApp, team: &str, since: &str) -> usize {
+    let answer = admin(
+        app,
+        Method::GET,
+        &format!(
+            "/api/admin/customer-team-events?since={}&limit=500",
+            since.replace('+', "%2B")
+        ),
+        json!({}),
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.raw);
+    answer.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["team_pubkey"] == team)
+        .count()
+}
+
+async fn last_team_event_id(app: &TestApp) -> i64 {
+    sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM customer_team_events")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn test_each_member_change_is_logged_and_read_in_order() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let start = last_team_event_id(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let invitee_email = format!("buyer-{}@example.com", Uuid::new_v4());
+
+    let invited = confirmed_change(
+        &app,
+        "/api/customer/teams/invite",
+        &owner.session,
+        json!({
+            "team_pubkey": team,
+            "email": invitee_email,
+            "role": "orderer",
+            "app_url": format!("{}/team", merchant.origin),
+        }),
+    )
+    .await;
+    assert_eq!(invited.status, StatusCode::OK, "{}", invited.raw);
+    let token: String = sqlx::query_scalar("SELECT token FROM team_invitations WHERE email = $1")
+        .bind(&invitee_email)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let page = format!("{}/signin", merchant.origin);
+    let link = new_link(&app, &invitee_email, PURPOSE_SIGN_IN, &page).await;
+    let verified = request(
+        &app,
+        Method::POST,
+        CUSTOMER_HOST,
+        "/api/auth/magic-link/verify",
+        None,
+        json!({ "token": link }),
+    )
+    .await;
+    let session = verified.body["session_token"].as_str().unwrap().to_string();
+    let accepted = customer(
+        &app,
+        Method::POST,
+        "/api/customer/teams/accept",
+        &session,
+        json!({ "token": token }),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.raw);
+    let member: String =
+        sqlx::query_scalar("SELECT pubkey FROM users WHERE email = $1 AND tenant_id = $2")
+            .bind(&invitee_email)
+            .bind(app.customer_tenant)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+
+    let changed = change_role(&app, &team, &owner, &member, "viewer").await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.raw);
+    let left = confirmed_change(
+        &app,
+        "/api/customer/teams/remove",
+        &session,
+        json!({ "team_pubkey": team, "member_pubkey": member }),
+    )
+    .await;
+    assert_eq!(left.status, StatusCode::OK, "{}", left.raw);
+
+    let events: Vec<Value> = team_events_after(&app, start)
+        .await
+        .into_iter()
+        .filter(|e| e["team_pubkey"] == team.as_str())
+        .collect();
+    let summary: Vec<(String, Value, Value, Value)> = events
+        .iter()
+        .map(|e| {
+            (
+                e["action"].as_str().unwrap().to_string(),
+                e["member_pubkey"].clone(),
+                e["role"].clone(),
+                e["actor_pubkey"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (
+                "joined".into(),
+                json!(owner.pubkey),
+                json!("admin"),
+                json!(owner.pubkey)
+            ),
+            (
+                "invited".into(),
+                Value::Null,
+                json!("orderer"),
+                json!(owner.pubkey)
+            ),
+            (
+                "joined".into(),
+                json!(member),
+                json!("orderer"),
+                json!(member)
+            ),
+            (
+                "role_set".into(),
+                json!(member),
+                json!("viewer"),
+                json!(owner.pubkey)
+            ),
+            ("removed".into(), json!(member), Value::Null, json!(member)),
+        ]
+    );
+    // The invitation and every change after it name the member by email
+    for event in &events[1..] {
+        assert_eq!(event["member_email"], invitee_email.as_str(), "{event}");
+    }
+    let ids: Vec<i64> = events.iter().map(|e| e["id"].as_i64().unwrap()).collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "In id order: {ids:?}");
+
+    // Read again from the last id: nothing newer, and next_after stays
+    let last = *ids.last().unwrap();
+    let answer = admin(
+        &app,
+        Method::GET,
+        &format!("/api/admin/customer-team-events?after={last}"),
+        json!({}),
+    )
+    .await;
+    assert!(answer.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["team_pubkey"] != team.as_str()));
+    assert!(answer.body["next_after"].as_i64().unwrap() >= last);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_admin_api_changes_are_logged_with_no_actor() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let start = last_team_event_id(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let other = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    add_to_team(&app, &team, &owner, &other, "admin").await;
+    let removed = admin(
+        &app,
+        Method::DELETE,
+        &format!("/api/admin/customer-teams/{team}/members/{}", other.pubkey),
+        json!({}),
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.raw);
+
+    let events: Vec<Value> = team_events_after(&app, start)
+        .await
+        .into_iter()
+        .filter(|e| {
+            e["team_pubkey"] == team.as_str() && e["member_pubkey"] == other.pubkey.as_str()
+        })
+        .collect();
+    let actions: Vec<&str> = events
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, vec!["joined", "removed"]);
+    assert!(events.iter().all(|e| e["actor_pubkey"].is_null()));
+
+    // `since` reads from a point in time: a time after the changes answers none of them, a time
+    // before answers both; a bad time is refused.
+    let later = (Utc::now() + Duration::minutes(5)).to_rfc3339();
+    let earlier = (Utc::now() - Duration::minutes(5)).to_rfc3339();
+    assert_eq!(team_events_since(&app, &team, &later).await, 0);
+    assert_eq!(
+        team_events_since(&app, &team, &earlier).await,
+        3,
+        "the owner's join, then the other's join and removal"
+    );
+    let bad = admin(
+        &app,
+        Method::GET,
+        "/api/admin/customer-team-events?since=yesterday",
+        json!({}),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.raw);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_signing_log_names_the_member_behind_a_signed_event() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let orderer = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    add_to_team(&app, &team, &owner, &orderer, "orderer").await;
+    let answer = grant(&app, &team, &orderer, &merchant).await;
+    let session = answer.body["session_token"].as_str().unwrap().to_string();
+
+    let seal = serde_json::to_value(
+        EventBuilder::new(Kind::from(13), "sealed").build(PublicKey::from_hex(&team).unwrap()),
+    )
+    .unwrap();
+    let signed = rpc(&app, &session, "sign_event", json!([seal])).await;
+    assert_eq!(signed.status, StatusCode::OK, "{}", signed.raw);
+    let event_id = signed.body["result"]["id"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            serde_json::from_str::<Value>(signed.body["result"].as_str()?).ok()?["id"]
+                .as_str()
+                .map(str::to_string)
+        })
+        .expect("a signed event id");
+
+    // Written in the background
+    let mut row = None;
+    for _ in 0..50 {
+        let read = admin(
+            &app,
+            Method::GET,
+            &format!("/api/admin/customer-signing-activity/{event_id}"),
+            json!({}),
+        )
+        .await;
+        if read.status == StatusCode::OK {
+            row = Some(read.body);
+            break;
+        }
+        assert_eq!(read.status, StatusCode::NOT_FOUND, "{}", read.raw);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let row = row.expect("the signature is in the log");
+    assert_eq!(row["event_id"], event_id.as_str());
+    assert_eq!(row["team_pubkey"], team.as_str());
+    assert_eq!(row["member_pubkey"], orderer.pubkey.as_str());
+    assert_eq!(row["member_email"], orderer.email.as_str());
+    assert_eq!(row["method"], "sign_event");
+    assert_eq!(row["event_kind"], 13);
+
+    let unknown = admin(
+        &app,
+        Method::GET,
+        &format!("/api/admin/customer-signing-activity/{}", "ab".repeat(32)),
+        json!({}),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.raw);
+    let bad = admin(
+        &app,
+        Method::GET,
+        "/api/admin/customer-signing-activity/not-hex",
+        json!({}),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.raw);
+}

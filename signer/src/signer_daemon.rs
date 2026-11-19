@@ -1425,6 +1425,7 @@ impl UnifiedSigner {
                 handler.spawn_record_team_signing(
                     "nip44_encrypt",
                     keycast_core::repositories::plaintext_event_kind(plaintext),
+                    None,
                 );
 
                 serde_json::json!({
@@ -1505,6 +1506,7 @@ impl UnifiedSigner {
                 handler.spawn_record_team_signing(
                     "nip04_encrypt",
                     keycast_core::repositories::plaintext_event_kind(plaintext),
+                    None,
                 );
 
                 serde_json::json!({
@@ -1651,7 +1653,11 @@ impl SigningHandler for Nip46Handler {
         tracing::debug!("Successfully signed event: {}", signed_event.id);
 
         self.spawn_update_activity();
-        self.spawn_record_team_signing("sign_event", Some(kind as i32));
+        self.spawn_record_team_signing(
+            "sign_event",
+            Some(kind as i32),
+            Some(signed_event.id.to_hex()),
+        );
 
         Ok(signed_event)
     }
@@ -1756,7 +1762,11 @@ impl Nip46Handler {
         tracing::debug!("Successfully signed event: {}", signed_event.id);
 
         self.spawn_update_activity();
-        self.spawn_record_team_signing("sign_event", Some(kind as i32));
+        self.spawn_record_team_signing(
+            "sign_event",
+            Some(kind as i32),
+            Some(signed_event.id.to_hex()),
+        );
 
         // Extract request ID to include in response
         let request_id = request["id"].clone();
@@ -1769,7 +1779,12 @@ impl Nip46Handler {
 
     /// Record a signature or encryption made under a team-key grant that names a member
     /// (background, non-blocking). Other team grants write nothing; OAuth grants are skipped.
-    fn spawn_record_team_signing(&self, method: &'static str, event_kind: Option<i32>) {
+    fn spawn_record_team_signing(
+        &self,
+        method: &'static str,
+        event_kind: Option<i32>,
+        event_id: Option<String>,
+    ) {
         if self.is_oauth {
             return;
         }
@@ -1781,6 +1796,7 @@ impl Nip46Handler {
                 authorization_id,
                 method,
                 event_kind,
+                event_id.as_deref(),
             )
             .await
             {

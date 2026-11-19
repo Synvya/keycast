@@ -173,6 +173,7 @@ pub async fn nostr_rpc(
                 &handler,
                 "sign_event",
                 Some(signed.kind.as_u16() as i32),
+                Some(signed.id.to_hex()),
             );
 
             serde_json::to_value(&signed)
@@ -193,6 +194,7 @@ pub async fn nostr_rpc(
                 &handler,
                 "nip44_encrypt",
                 plaintext_event_kind(&plaintext),
+                None,
             );
 
             JsonValue::String(ciphertext)
@@ -226,6 +228,7 @@ pub async fn nostr_rpc(
                 &handler,
                 "nip04_encrypt",
                 plaintext_event_kind(&plaintext),
+                None,
             );
 
             JsonValue::String(ciphertext)
@@ -672,13 +675,22 @@ fn spawn_record_team_signing(
     handler: &HttpRpcHandler,
     method: &'static str,
     event_kind: Option<i32>,
+    event_id: Option<String>,
 ) {
     if handler.is_oauth() || handler.authorization_id() <= 0 {
         return;
     }
     let authorization_id = handler.authorization_id();
     tokio::spawn(async move {
-        if let Err(e) = record_team_signing(&pool, authorization_id, method, event_kind).await {
+        if let Err(e) = record_team_signing(
+            &pool,
+            authorization_id,
+            method,
+            event_kind,
+            event_id.as_deref(),
+        )
+        .await
+        {
             tracing::error!("Failed to record team signing activity: {}", e);
         }
     });

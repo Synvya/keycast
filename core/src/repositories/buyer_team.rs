@@ -1,5 +1,6 @@
 // ABOUTME: Buyer teams in the customer tenant: the team, its own key, its members and their grants
 // ABOUTME: Keeps at least one admin, and revokes a member's grants on the team key when they leave
+// ABOUTME: Logs each member change (customer_team_events) and each signature (team_signing_activity)
 
 use crate::repositories::RepositoryError;
 use chrono::{DateTime, Utc};
@@ -95,7 +96,8 @@ impl BuyerTeamRepository {
     }
 
     /// Create a team and its key in one transaction, with a first admin or with no member.
-    /// The first admin must already be a user.
+    /// The first admin must already be a user. The first admin's arrival is logged as `joined`,
+    /// with `actor` as who made the team (None through the admin API).
     pub async fn create(
         &self,
         tenant_id: i64,
@@ -103,6 +105,7 @@ impl BuyerTeamRepository {
         team_pubkey: &str,
         encrypted_secret: &[u8],
         first_admin: Option<&str>,
+        actor: Option<&str>,
     ) -> Result<BuyerTeam, RepositoryError> {
         let mut tx = self.pool.begin().await?;
 
@@ -137,6 +140,19 @@ impl BuyerTeamRepository {
             .bind(team_id)
             .bind(admin)
             .execute(&mut *tx)
+            .await?;
+            record_team_event(
+                &mut *tx,
+                &TeamEvent {
+                    tenant_id,
+                    team_pubkey,
+                    action: "joined",
+                    member_email: None,
+                    member_pubkey: Some(admin),
+                    role: Some("admin"),
+                    actor_pubkey: actor,
+                },
+            )
             .await?;
         }
 
@@ -238,12 +254,15 @@ impl BuyerTeamRepository {
     }
 
     /// Add a person to a team. Returns false, and changes nothing, if they are already a member.
+    /// `event` is logged in the same transaction when the person is added.
     pub async fn add_member(
         &self,
         team_id: i32,
         member_pubkey: &str,
         role: &str,
+        event: Option<&TeamEvent<'_>>,
     ) -> Result<bool, RepositoryError> {
+        let mut tx = self.pool.begin().await?;
         let added = sqlx::query(
             "INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
              VALUES ($1, $2, $3, NOW(), NOW())
@@ -252,27 +271,57 @@ impl BuyerTeamRepository {
         .bind(team_id)
         .bind(member_pubkey)
         .bind(role)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        Ok(added.rows_affected() > 0)
+        let added = added.rows_affected() > 0;
+        if let (true, Some(event)) = (added, event) {
+            record_team_event(&mut *tx, event).await?;
+        }
+        tx.commit().await?;
+        Ok(added)
     }
 
     /// Make a person an admin of a team: add them, or raise their role. For a store invitation
-    /// accepted and for the support restore.
+    /// accepted and for the support restore. Logged as `joined` for a new member and `role_set`
+    /// for a raised one, with no actor: only the admin API calls it.
     pub async fn make_admin(
         &self,
-        team_id: i32,
+        tenant_id: i64,
+        team: &BuyerTeam,
         member_pubkey: &str,
     ) -> Result<(), RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let before = lock_and_read_role(&mut tx, team.team_id, member_pubkey).await?;
         sqlx::query(
             "INSERT INTO team_users (team_id, user_pubkey, role, created_at, updated_at)
              VALUES ($1, $2, 'admin', NOW(), NOW())
              ON CONFLICT (team_id, user_pubkey) DO UPDATE SET role = 'admin', updated_at = NOW()",
         )
-        .bind(team_id)
+        .bind(team.team_id)
         .bind(member_pubkey)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        let action = match before.as_deref() {
+            None => Some("joined"),
+            Some("admin") => None,
+            Some(_) => Some("role_set"),
+        };
+        if let Some(action) = action {
+            record_team_event(
+                &mut *tx,
+                &TeamEvent {
+                    tenant_id,
+                    team_pubkey: &team.team_pubkey,
+                    action,
+                    member_email: None,
+                    member_pubkey: Some(member_pubkey),
+                    role: Some("admin"),
+                    actor_pubkey: None,
+                },
+            )
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -283,6 +332,7 @@ impl BuyerTeamRepository {
         team: &BuyerTeam,
         member_pubkey: &str,
         role: &str,
+        event: Option<&TeamEvent<'_>>,
     ) -> Result<MemberChange, RepositoryError> {
         let mut tx = self.pool.begin().await?;
         let Some(current) = lock_and_read_role(&mut tx, team.team_id, member_pubkey).await? else {
@@ -316,6 +366,9 @@ impl BuyerTeamRepository {
         } else {
             Vec::new()
         };
+        if let Some(event) = event {
+            record_team_event(&mut *tx, event).await?;
+        }
 
         tx.commit().await?;
         Ok(MemberChange::Done { revoked_bunkers })
@@ -327,6 +380,7 @@ impl BuyerTeamRepository {
         team: &BuyerTeam,
         member_pubkey: &str,
         last_admin: LastAdmin,
+        event: Option<&TeamEvent<'_>>,
     ) -> Result<MemberChange, RepositoryError> {
         let mut tx = self.pool.begin().await?;
         let Some(current) = lock_and_read_role(&mut tx, team.team_id, member_pubkey).await? else {
@@ -357,6 +411,10 @@ impl BuyerTeamRepository {
             REVOKED_MEMBER_LEFT,
         )
         .await?;
+        if let Some(event) = event {
+            // The email is copied now, so the log names who left after the account is gone.
+            record_team_event(&mut *tx, event).await?;
+        }
 
         tx.commit().await?;
         Ok(MemberChange::Done { revoked_bunkers })
@@ -648,26 +706,144 @@ pub async fn revoke_grants_of_deleted_member(
 }
 
 /// Record one signature or encryption made under a grant. Does nothing unless the grant names a
-/// member, so restaurant staff and support grants write nothing.
+/// member, so restaurant staff and support grants write nothing. `event_id` is the signed
+/// event's id on a `sign_event`, so support can name the member behind one message.
 pub async fn record_team_signing(
     pool: &PgPool,
     authorization_id: i64,
     method: &str,
     event_kind: Option<i32>,
+    event_id: Option<&str>,
 ) -> Result<(), RepositoryError> {
     sqlx::query(
         "INSERT INTO team_signing_activity
-             (tenant_id, authorization_id, stored_key_id, member_pubkey, method, event_kind)
-         SELECT tenant_id, id, stored_key_id, member_pubkey, $2, $3
+             (tenant_id, authorization_id, stored_key_id, member_pubkey, method, event_kind, event_id)
+         SELECT tenant_id, id, stored_key_id, member_pubkey, $2, $3, $4
          FROM authorizations
          WHERE id = $1 AND member_pubkey IS NOT NULL",
     )
     .bind(authorization_id as i32)
     .bind(method)
     .bind(event_kind)
+    .bind(event_id)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The signing log row of one event a team key signed under a member's grant.
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct TeamSigning {
+    pub event_id: String,
+    pub team_pubkey: String,
+    pub member_pubkey: String,
+    pub member_email: Option<String>,
+    pub method: String,
+    pub event_kind: Option<i32>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The signing log row of `event_id` in a tenant, or none. The member's email is the tenant
+/// user's, and none when the account is gone.
+pub async fn find_team_signing(
+    pool: &PgPool,
+    tenant_id: i64,
+    event_id: &str,
+) -> Result<Option<TeamSigning>, RepositoryError> {
+    sqlx::query_as(
+        "SELECT a.event_id, sk.pubkey AS team_pubkey, a.member_pubkey, u.email AS member_email,
+                a.method, a.event_kind, a.created_at
+         FROM team_signing_activity a
+         JOIN stored_keys sk ON sk.id = a.stored_key_id
+         LEFT JOIN users u ON u.pubkey = a.member_pubkey AND u.tenant_id = a.tenant_id
+         WHERE a.tenant_id = $1 AND a.event_id = $2
+         ORDER BY a.id LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+/// One member change of a buyer team, for the team change log (`customer_team_events`).
+#[derive(Debug, Clone)]
+pub struct TeamEvent<'a> {
+    pub tenant_id: i64,
+    pub team_pubkey: &'a str,
+    /// `invited`, `joined`, `role_set` or `removed`.
+    pub action: &'a str,
+    /// The invited email. None: the member's own, read from the tenant's users.
+    pub member_email: Option<&'a str>,
+    /// None on an invitation.
+    pub member_pubkey: Option<&'a str>,
+    pub role: Option<&'a str>,
+    /// Who made the change. None for a change made through the admin API.
+    pub actor_pubkey: Option<&'a str>,
+}
+
+/// Append one member change to the team change log, in the caller's transaction when it has one.
+pub async fn record_team_event<'e, E>(
+    executor: E,
+    event: &TeamEvent<'_>,
+) -> Result<(), RepositoryError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query(
+        "INSERT INTO customer_team_events
+             (tenant_id, team_pubkey, action, member_email, member_pubkey, role, actor_pubkey)
+         VALUES ($1, $2, $3,
+                 COALESCE($4, (SELECT email FROM users WHERE pubkey = $5 AND tenant_id = $1)),
+                 $5, $6, $7)",
+    )
+    .bind(event.tenant_id)
+    .bind(event.team_pubkey)
+    .bind(event.action)
+    .bind(event.member_email)
+    .bind(event.member_pubkey)
+    .bind(event.role)
+    .bind(event.actor_pubkey)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// One entry of the team change log, as the admin API answers it.
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct TeamEventRow {
+    pub id: i64,
+    pub team_pubkey: String,
+    pub action: String,
+    pub member_email: Option<String>,
+    pub member_pubkey: Option<String>,
+    pub role: Option<String>,
+    pub actor_pubkey: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The team change log of a tenant after `after`, and from `since` when given, in id order, at
+/// most `limit` entries.
+pub async fn list_team_events(
+    pool: &PgPool,
+    tenant_id: i64,
+    after: i64,
+    since: Option<DateTime<Utc>>,
+    limit: i64,
+) -> Result<Vec<TeamEventRow>, RepositoryError> {
+    sqlx::query_as(
+        "SELECT id, team_pubkey, action, member_email, member_pubkey, role, actor_pubkey, created_at
+         FROM customer_team_events
+         WHERE tenant_id = $1 AND id > $2 AND ($4::timestamptz IS NULL OR created_at >= $4)
+         ORDER BY id LIMIT $3",
+    )
+    .bind(tenant_id)
+    .bind(after)
+    .bind(limit)
+    .bind(since)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
 }
 
 /// The kind of the event in an encryption's plaintext, if it is an event.

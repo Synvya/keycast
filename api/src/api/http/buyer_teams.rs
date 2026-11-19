@@ -1,7 +1,7 @@
 // ABOUTME: Buyer teams on the customer tenant: a team with its own key, members who order as it
 // ABOUTME: Customer routes for the buyer app, admin routes for Synvya Server, and the team grant
 
-use super::admin::{customer_tenant_id, is_full_admin};
+use super::admin::{customer_tenant_id, is_full_admin, is_support_admin};
 use super::auth::{generate_secure_token, generate_server_signed_ucan, token_expiry_seconds};
 use super::confirmations::{parse_body, require_confirmation, ConfirmedChange};
 use super::magic_link::{allowed_app_url, merchant_for_grant, normalize_email, CommerceGrant};
@@ -20,8 +20,9 @@ use chrono::{DateTime, Utc};
 use keycast_core::authorization_channel::AuthorizationCommand;
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
-    BuyerTeam, BuyerTeamMember, BuyerTeamMembership, BuyerTeamRepository, LastAdmin, MemberChange,
-    TeamDeletion, TeamInvitationRepository, UserRepository,
+    find_team_signing, list_team_events, record_team_event, BuyerTeam, BuyerTeamMember,
+    BuyerTeamMembership, BuyerTeamRepository, LastAdmin, MemberChange, TeamDeletion, TeamEvent,
+    TeamEventRow, TeamInvitationRepository, TeamSigning, UserRepository,
 };
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::user::BUYER_TEAM_ROLES;
@@ -116,6 +117,7 @@ async fn make_team(
     tenant_id: i64,
     name: &str,
     first_admin: Option<&str>,
+    actor: Option<&str>,
 ) -> ApiResult<BuyerTeam> {
     let keys = Keys::generate();
     let encrypted_secret = auth_state
@@ -131,6 +133,7 @@ async fn make_team(
             &keys.public_key().to_hex(),
             &encrypted_secret,
             first_admin,
+            actor,
         )
         .await?;
     tracing::info!(
@@ -439,7 +442,7 @@ pub async fn create_my_team(
     let tenant_id = tenant.0.id;
     let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
     let name = team_name(req.name.as_deref())?;
-    let team = make_team(&auth_state, tenant_id, &name, Some(&pubkey)).await?;
+    let team = make_team(&auth_state, tenant_id, &name, Some(&pubkey), Some(&pubkey)).await?;
     Ok(Json(CreatedTeamResponse {
         team_pubkey: team.team_pubkey,
         name: team.name,
@@ -582,6 +585,20 @@ pub async fn invite_member(
     let invitation = invitations
         .create(team.team_id, tenant_id, &email, role, &token, &pubkey)
         .await?;
+    // The invitation repository keeps its own connection, so the log entry follows it.
+    record_team_event(
+        pool,
+        &TeamEvent {
+            tenant_id,
+            team_pubkey: &team.team_pubkey,
+            action: "invited",
+            member_email: Some(&email),
+            member_pubkey: None,
+            role: Some(role),
+            actor_pubkey: Some(&pubkey),
+        },
+    )
+    .await?;
 
     let mut link = app_url.clone();
     link.set_fragment(None);
@@ -666,15 +683,6 @@ pub async fn accept_team_invitation(
         ));
     }
 
-    let teams = BuyerTeamRepository::new(pool.clone());
-    if !teams
-        .add_member(invitation.team_id, &pubkey, &invitation.role)
-        .await?
-    {
-        return Err(ApiError::conflict("You are already a member of this team"));
-    }
-    invitations.accept(&req.token, &pubkey).await?;
-
     let team: Option<(String, String)> = sqlx::query_as(
         "SELECT sk.pubkey, t.name FROM teams t
          JOIN stored_keys sk ON sk.team_id = t.id
@@ -684,6 +692,24 @@ pub async fn accept_team_invitation(
     .fetch_optional(pool)
     .await?;
     let (team_pubkey, name) = team.ok_or_else(not_found)?;
+
+    let teams = BuyerTeamRepository::new(pool.clone());
+    let joined = TeamEvent {
+        tenant_id,
+        team_pubkey: &team_pubkey,
+        action: "joined",
+        member_email: None,
+        member_pubkey: Some(&pubkey),
+        role: Some(&invitation.role),
+        actor_pubkey: Some(&pubkey),
+    };
+    if !teams
+        .add_member(invitation.team_id, &pubkey, &invitation.role, Some(&joined))
+        .await?
+    {
+        return Err(ApiError::conflict("You are already a member of this team"));
+    }
+    invitations.accept(&req.token, &pubkey).await?;
 
     Ok(Json(AcceptTeamInvitationResponse {
         team_pubkey,
@@ -742,8 +768,17 @@ pub async fn change_member_role(
         return Ok(required);
     }
 
+    let event = TeamEvent {
+        tenant_id,
+        team_pubkey: &team.team_pubkey,
+        action: "role_set",
+        member_email: None,
+        member_pubkey: Some(&member),
+        role: Some(role),
+        actor_pubkey: Some(&pubkey),
+    };
     let change = BuyerTeamRepository::new(pool.clone())
-        .change_role(&team, &member, role)
+        .change_role(&team, &member, role, Some(&event))
         .await?;
     let revoked = member_change_result(change)?;
     forget_grants(&auth_state, &revoked).await;
@@ -806,8 +841,18 @@ pub async fn remove_member(
         return Ok(required);
     }
 
+    // An admin removing someone, or the member leaving: the actor says which.
+    let event = TeamEvent {
+        tenant_id,
+        team_pubkey: &team.team_pubkey,
+        action: "removed",
+        member_email: None,
+        member_pubkey: Some(&member),
+        role: None,
+        actor_pubkey: Some(&pubkey),
+    };
     let change = BuyerTeamRepository::new(pool.clone())
-        .remove_member(&team, &member, LastAdmin::Stays)
+        .remove_member(&team, &member, LastAdmin::Stays, Some(&event))
         .await?;
     let revoked = member_change_result(change)?;
     forget_grants(&auth_state, &revoked).await;
@@ -999,7 +1044,7 @@ pub async fn admin_create_team(
         req.admin_pubkey.as_deref(),
     )
     .await?;
-    let team = make_team(&auth_state, tenant_id, &name, admin.as_deref()).await?;
+    let team = make_team(&auth_state, tenant_id, &name, admin.as_deref(), None).await?;
     Ok(Json(CreatedTeamResponse {
         team_pubkey: team.team_pubkey,
         name: team.name,
@@ -1077,8 +1122,17 @@ pub async fn admin_remove_team_member(
     let tenant_id = customer_tenant_id(pool).await?;
     let team = find_team(pool, tenant_id, &team_pubkey).await?;
     let member = parse_pubkey(&member_pubkey, "member_pubkey")?;
+    let event = TeamEvent {
+        tenant_id,
+        team_pubkey: &team.team_pubkey,
+        action: "removed",
+        member_email: None,
+        member_pubkey: Some(&member),
+        role: None,
+        actor_pubkey: None,
+    };
     let change = BuyerTeamRepository::new(pool.clone())
-        .remove_member(&team, &member, LastAdmin::MayLeaveAnEmptyTeam)
+        .remove_member(&team, &member, LastAdmin::MayLeaveAnEmptyTeam, Some(&event))
         .await?;
     let revoked = member_change_result(change)?;
     forget_grants(&auth_state, &revoked).await;
@@ -1124,7 +1178,7 @@ pub async fn admin_add_team_admin(
         .await?
         .ok_or_else(|| ApiError::bad_request("Send an email or a pubkey"))?;
     BuyerTeamRepository::new(pool.clone())
-        .make_admin(team.team_id, &admin)
+        .make_admin(tenant_id, &team, &admin)
         .await?;
     tracing::info!(
         event = "buyer_team_admin_added",
@@ -1161,4 +1215,82 @@ pub async fn admin_delete_team(
         }
         TeamDeletion::HasMembers => Err(ApiError::conflict("Team still has members")),
     }
+}
+
+/// The most entries one read of the team change log answers.
+const TEAM_EVENTS_MAX: i64 = 500;
+const TEAM_EVENTS_DEFAULT: i64 = 100;
+
+/// The reads of the logs are open to support admins as well as full admins.
+fn require_support_admin_sync(is_admin: bool) -> ApiResult<()> {
+    if is_admin {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Admin access required"))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamEventsQuery {
+    pub after: Option<i64>,
+    /// ISO 8601. Used only when `after` is absent or 0: the first read from a point in time.
+    pub since: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeamEventsResponse {
+    pub events: Vec<TeamEventRow>,
+    /// The last id answered, or `after` when nothing is newer: the next read's `after`.
+    pub next_after: i64,
+}
+
+/// GET /api/admin/customer-team-events?after=&limit= - the team change log of the customer
+/// tenant, in id order (account-activity.md AA-7). Synvya Server reads it on a sweep and writes
+/// the member records of the account activity.
+pub async fn admin_list_team_events(
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Query(query): Query<TeamEventsQuery>,
+) -> ApiResult<Json<TeamEventsResponse>> {
+    require_support_admin_sync(is_support_admin(&auth).await)?;
+    let after = query.after.unwrap_or(0).max(0);
+    let limit = query
+        .limit
+        .unwrap_or(TEAM_EVENTS_DEFAULT)
+        .clamp(1, TEAM_EVENTS_MAX);
+    let since = match (after, query.since.as_deref()) {
+        (0, Some(value)) => Some(
+            DateTime::parse_from_rfc3339(value)
+                .map_err(|_| ApiError::bad_request("since must be an ISO 8601 time"))?
+                .with_timezone(&Utc),
+        ),
+        _ => None,
+    };
+    let pool = &auth_state.state.db;
+    let tenant_id = customer_tenant_id(pool).await?;
+    let events = list_team_events(pool, tenant_id, after, since, limit).await?;
+    let next_after = events.last().map_or(after, |e| e.id);
+    Ok(Json(TeamEventsResponse { events, next_after }))
+}
+
+/// GET /api/admin/customer-signing-activity/:event_id - the signing log row of one event a team
+/// key signed under a member's grant: who sent a disputed message (buyer-team-keys.md §5.7).
+pub async fn admin_get_signing_activity(
+    State(auth_state): State<AuthState>,
+    auth: UcanAuth,
+    Path(event_id): Path<String>,
+) -> ApiResult<Json<TeamSigning>> {
+    require_support_admin_sync(is_support_admin(&auth).await)?;
+    // An event id is 32 bytes of hex, but not a public key: no curve check.
+    let event_id = event_id.trim().to_ascii_lowercase();
+    if event_id.len() != 64 || !event_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ApiError::bad_request("Invalid event_id"));
+    }
+    let pool = &auth_state.state.db;
+    let tenant_id = customer_tenant_id(pool).await?;
+    find_team_signing(pool, tenant_id, &event_id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("No signature of a team key with this event id"))
 }
