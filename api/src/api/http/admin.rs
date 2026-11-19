@@ -2072,7 +2072,15 @@ pub(super) async fn customer_tenant_id(pool: &sqlx::PgPool) -> ApiResult<i64> {
 fn normalize_app_origin(origin: &str) -> ApiResult<String> {
     let url = nostr_sdk::Url::parse(origin.trim())
         .map_err(|_| ApiError::bad_request("Invalid origin"))?;
-    let is_local = matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"));
+    // Synvya: a local stack's apps are http names under local.synvya.com, as
+    // the staff challenge allows them, away from a deployment or with
+    // ALLOW_LOCALHOST_ORIGINS=true.
+    let node_env = std::env::var("NODE_ENV").unwrap_or_default();
+    let deployment = node_env == "staging" || node_env == "production";
+    let allow_localhost = std::env::var("ALLOW_LOCALHOST_ORIGINS").is_ok_and(|v| v == "true");
+    let synvya_local = (!deployment || allow_localhost)
+        && url.host_str().is_some_and(|h| h.ends_with(".local.synvya.com"));
+    let is_local = matches!(url.host_str(), Some("localhost") | Some("127.0.0.1")) || synvya_local;
     let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && is_local);
     let is_only_an_origin = url.path() == "/"
         && url.query().is_none()
