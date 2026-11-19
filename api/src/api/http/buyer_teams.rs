@@ -3,6 +3,7 @@
 
 use super::admin::{customer_tenant_id, is_full_admin};
 use super::auth::{generate_secure_token, generate_server_signed_ucan, token_expiry_seconds};
+use super::confirmations::{parse_body, require_confirmation, ConfirmedChange};
 use super::magic_link::{allowed_app_url, merchant_for_grant, normalize_email, CommerceGrant};
 use super::routes::AuthState;
 use crate::api::error::{ApiError, ApiResult};
@@ -10,7 +11,8 @@ use crate::api::extractors::UcanAuth;
 use crate::api::tenant::TenantExtractor;
 use crate::email_service::EmailService;
 use crate::handlers::http_rpc_handler::invalidate_handlers_for_bunker;
-use axum::extract::{Path, Query, State};
+use axum::body::Bytes;
+use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -156,6 +158,35 @@ async fn forget_grants(auth_state: &AuthState, bunker_pubkeys: &[String]) {
             }
         }
     }
+}
+
+/// The fresh confirmation of a member or role change (store API contract §14.5): `Some(428)`
+/// until the request carries a confirmation bound to exactly this method, path and body.
+#[allow(clippy::too_many_arguments)]
+async fn confirmation_for(
+    pool: &PgPool,
+    headers: &HeaderMap,
+    uri: &OriginalUri,
+    body: &[u8],
+    tenant_id: i64,
+    pubkey: &str,
+    action: &'static str,
+    what: &'static str,
+) -> ApiResult<Option<Response>> {
+    require_confirmation(
+        pool,
+        headers,
+        &ConfirmedChange {
+            tenant_id,
+            member_pubkey: pubkey,
+            action,
+            what,
+            method: "POST",
+            path: uri.0.path(),
+            body,
+        },
+    )
+    .await
 }
 
 fn member_change_result(change: MemberChange) -> ApiResult<Vec<String>> {
@@ -483,11 +514,13 @@ pub async fn invite_member(
     tenant: TenantExtractor,
     State(auth_state): State<AuthState>,
     headers: HeaderMap,
-    Json(req): Json<InviteMemberRequest>,
+    uri: OriginalUri,
+    body: Bytes,
 ) -> ApiResult<Response> {
     if !tenant.0.is_customer_tenant() {
         return Ok(not_customer_tenant());
     }
+    let req: InviteMemberRequest = parse_body(&body)?;
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
     let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
@@ -500,13 +533,6 @@ pub async fn invite_member(
     let (app_url, _) = allowed_app_url(pool, tenant_id, &req.app_url)
         .await?
         .ok_or_else(|| ApiError::bad_request("app_url is not allowed"))?;
-
-    let redis = crate::rate_limit::shared_redis();
-    if !crate::rate_limit::allow_request(redis, "team_invite", tenant_id, &headers, Some(&email))
-        .await
-    {
-        return Err(ApiError::TooManyRequests);
-    }
 
     let users = UserRepository::new(pool.clone());
     if let Some(existing) = users.find_pubkey_by_email(&email, tenant_id).await? {
@@ -529,6 +555,29 @@ pub async fn invite_member(
             "Invitation already pending for this email",
         ));
     }
+
+    if let Some(required) = confirmation_for(
+        pool,
+        &headers,
+        &uri,
+        &body,
+        tenant_id,
+        &pubkey,
+        "team_invite",
+        "invite a team member",
+    )
+    .await?
+    {
+        return Ok(required);
+    }
+
+    let redis = crate::rate_limit::shared_redis();
+    if !crate::rate_limit::allow_request(redis, "team_invite", tenant_id, &headers, Some(&email))
+        .await
+    {
+        return Err(ApiError::TooManyRequests);
+    }
+
     let token = generate_secure_token();
     let invitation = invitations
         .create(team.team_id, tenant_id, &email, role, &token, &pubkey)
@@ -664,11 +713,13 @@ pub async fn change_member_role(
     tenant: TenantExtractor,
     State(auth_state): State<AuthState>,
     headers: HeaderMap,
-    Json(req): Json<ChangeRoleRequest>,
+    uri: OriginalUri,
+    body: Bytes,
 ) -> ApiResult<Response> {
     if !tenant.0.is_customer_tenant() {
         return Ok(not_customer_tenant());
     }
+    let req: ChangeRoleRequest = parse_body(&body)?;
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
     let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
@@ -676,6 +727,20 @@ pub async fn change_member_role(
     require_admin(pool, &team, &pubkey).await?;
     let member = parse_pubkey(&req.member_pubkey, "member_pubkey")?;
     let role = parse_buyer_role(&req.role)?;
+    if let Some(required) = confirmation_for(
+        pool,
+        &headers,
+        &uri,
+        &body,
+        tenant_id,
+        &pubkey,
+        "team_role",
+        "change a team member's role",
+    )
+    .await?
+    {
+        return Ok(required);
+    }
 
     let change = BuyerTeamRepository::new(pool.clone())
         .change_role(&team, &member, role)
@@ -709,11 +774,13 @@ pub async fn remove_member(
     tenant: TenantExtractor,
     State(auth_state): State<AuthState>,
     headers: HeaderMap,
-    Json(req): Json<RemoveMemberRequest>,
+    uri: OriginalUri,
+    body: Bytes,
 ) -> ApiResult<Response> {
     if !tenant.0.is_customer_tenant() {
         return Ok(not_customer_tenant());
     }
+    let req: RemoveMemberRequest = parse_body(&body)?;
     let tenant_id = tenant.0.id;
     let pool = &auth_state.state.db;
     let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
@@ -723,6 +790,20 @@ pub async fn remove_member(
         require_member(pool, &team, &pubkey).await?;
     } else {
         require_admin(pool, &team, &pubkey).await?;
+    }
+    if let Some(required) = confirmation_for(
+        pool,
+        &headers,
+        &uri,
+        &body,
+        tenant_id,
+        &pubkey,
+        "team_remove",
+        "remove a team member",
+    )
+    .await?
+    {
+        return Ok(required);
     }
 
     let change = BuyerTeamRepository::new(pool.clone())

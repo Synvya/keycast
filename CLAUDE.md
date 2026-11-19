@@ -176,6 +176,7 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - `/api/customer/authorizations` and `/api/customer/authorizations/revoke`: The account page's list of apps, and revoking one
 - `/api/customer/session`: The session's personal key and email. Synvya Server calls it once with the buyer's Bearer token to make its own buyer session
 - `/api/customer/teams` and `/api/customer/teams/{members,invite,accept,role,remove,grant}`: Buyer teams, each with its own key; the grant is on the team key. Server-side counterparts are `/api/admin/customer-teams*`. See `docs/synvya/customer-accounts.md` §15
+- `/api/customer/confirmations/:token`: Synvya. `invite`, `role` and `remove` answer 428 `confirmation_required` until the member confirms through an emailed link and sends the request again with `X-Synvya-Confirmation` (`api/src/api/http/confirmations.rs`, customer-accounts.md §15)
 - CORS: Permissive (each merchant's orders app is its own origin)
 - Allowed app origins are rows in `customer_app_origins`, each with its merchant list in `customer_app_origin_merchants` (a grant may name only a listed merchant), managed with `/api/admin/customer-origins` on another hostname. Adding a merchant needs no deploy
 

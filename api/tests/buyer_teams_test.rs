@@ -11,6 +11,7 @@ use axum::Router;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
 use keycast_api::api::http::auth::generate_server_signed_ucan;
+use keycast_api::api::http::confirmations::token_hash;
 use keycast_api::api::http::routes::api_routes;
 use keycast_api::api::tenant::Tenant;
 use keycast_api::bcrypt_queue::BcryptQueue;
@@ -144,6 +145,18 @@ async fn request(
     bearer: Option<&str>,
     body: Value,
 ) -> Answer {
+    request_with(app, method, host, path, bearer, &[], body).await
+}
+
+async fn request_with(
+    app: &TestApp,
+    method: Method,
+    host: &str,
+    path: &str,
+    bearer: Option<&str>,
+    extra: &[(&str, &str)],
+    body: Value,
+) -> Answer {
     let mut builder = Request::builder()
         .method(method)
         .uri(path)
@@ -151,6 +164,9 @@ async fn request(
         .header(header::CONTENT_TYPE, "application/json");
     if let Some(token) = bearer {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    for (name, value) in extra {
+        builder = builder.header(*name, *value);
     }
     let response = app
         .router
@@ -170,6 +186,68 @@ async fn request(
 
 async fn customer(app: &TestApp, method: Method, path: &str, session: &str, body: Value) -> Answer {
     request(app, method, CUSTOMER_HOST, path, Some(session), body).await
+}
+
+/// The link token of a confirmation. The table keeps only its hash, so the test sets a known one.
+async fn link_token(app: &TestApp, confirmation_id: &str) -> String {
+    let token = format!("test-token-{confirmation_id}");
+    let updated = sqlx::query("UPDATE fresh_confirmations SET token_hash = $1 WHERE id = $2")
+        .bind(token_hash(&token))
+        .bind(confirmation_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.rows_affected(),
+        1,
+        "no confirmation {confirmation_id}"
+    );
+    token
+}
+
+async fn confirm(app: &TestApp, token: &str, session: &str) -> Answer {
+    customer(
+        app,
+        Method::POST,
+        &format!("/api/customer/confirmations/{token}"),
+        session,
+        json!({}),
+    )
+    .await
+}
+
+async fn with_confirmation(
+    app: &TestApp,
+    path: &str,
+    session: &str,
+    confirmation_id: &str,
+    body: Value,
+) -> Answer {
+    request_with(
+        app,
+        Method::POST,
+        CUSTOMER_HOST,
+        path,
+        Some(session),
+        &[("X-Synvya-Confirmation", confirmation_id)],
+        body,
+    )
+    .await
+}
+
+/// A team change that needs a fresh confirmation: sent, answered 428, confirmed by the same
+/// member through the link, and sent again with the confirmation. Any other first answer is
+/// returned as it is.
+async fn confirmed_change(app: &TestApp, path: &str, session: &str, body: Value) -> Answer {
+    let first = customer(app, Method::POST, path, session, body.clone()).await;
+    if first.status != StatusCode::PRECONDITION_REQUIRED {
+        return first;
+    }
+    let id = first.body["confirmation_id"].as_str().unwrap().to_string();
+    let token = link_token(app, &id).await;
+    let confirmed = confirm(app, &token, session).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.raw);
+    with_confirmation(app, path, session, &id, body).await
 }
 
 async fn admin_session(app: &TestApp) -> String {
@@ -294,9 +372,8 @@ async fn add_to_team(app: &TestApp, team: &str, by: &Buyer, buyer: &Buyer, role:
 }
 
 async fn change_role(app: &TestApp, team: &str, by: &Buyer, member: &str, role: &str) -> Answer {
-    customer(
+    confirmed_change(
         app,
-        Method::POST,
         "/api/customer/teams/role",
         &by.session,
         json!({ "team_pubkey": team, "member_pubkey": member, "role": role }),
@@ -305,9 +382,8 @@ async fn change_role(app: &TestApp, team: &str, by: &Buyer, member: &str, role: 
 }
 
 async fn remove(app: &TestApp, team: &str, by: &Buyer, member: &str) -> Answer {
-    customer(
+    confirmed_change(
         app,
-        Method::POST,
         "/api/customer/teams/remove",
         &by.session,
         json!({ "team_pubkey": team, "member_pubkey": member }),
@@ -994,9 +1070,8 @@ async fn test_admin_invites_by_email_and_the_invitee_accepts() {
     let team = create_team(&app, &owner).await;
     let invitee_email = format!("buyer-{}@example.com", Uuid::new_v4());
 
-    let invited = customer(
+    let invited = confirmed_change(
         &app,
-        Method::POST,
         "/api/customer/teams/invite",
         &owner.session,
         json!({
@@ -1198,4 +1273,237 @@ async fn test_customer_session_names_the_buyer_and_nothing_else() {
         "{}",
         on_owner_host.raw
     );
+}
+
+// ============================================================================
+// Fresh confirmation on member and role changes (store API contract §14.5)
+// ============================================================================
+
+fn invite_body(team: &str, merchant: &Merchant) -> Value {
+    json!({
+        "team_pubkey": team,
+        "email": format!("buyer-{}@example.com", Uuid::new_v4()),
+        "role": "viewer",
+        "app_url": format!("{}/team", merchant.origin),
+    })
+}
+
+async fn invitations_of(app: &TestApp, team_pubkey: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM team_invitations ti
+         JOIN stored_keys sk ON sk.team_id = ti.team_id WHERE sk.pubkey = $1",
+    )
+    .bind(team_pubkey)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn test_a_team_change_answers_428_until_confirmed_and_changes_nothing_before() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let path = "/api/customer/teams/invite";
+    let body = invite_body(&team, &merchant);
+
+    let first = customer(&app, Method::POST, path, &owner.session, body.clone()).await;
+    assert_eq!(
+        first.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        first.raw
+    );
+    assert_eq!(first.body["code"], "confirmation_required");
+    let id = first.body["confirmation_id"].as_str().unwrap().to_string();
+    assert_eq!(id.len(), 32);
+    assert!(first.body["expires_at"].as_str().is_some());
+    assert_eq!(invitations_of(&app, &team).await, 0);
+
+    // Sent again before the link is used: still 428, with a new confirmation.
+    let early = with_confirmation(&app, path, &owner.session, &id, body.clone()).await;
+    assert_eq!(
+        early.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        early.raw
+    );
+    assert_ne!(early.body["confirmation_id"], id.as_str());
+
+    let token = link_token(&app, &id).await;
+    let confirmed = confirm(&app, &token, &owner.session).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.raw);
+    assert_eq!(confirmed.body["confirmation_id"], id.as_str());
+    assert_eq!(confirmed.body["action"], "team_invite");
+    assert!(confirmed.body["confirmed_at"].as_str().is_some());
+
+    // Bound to the body: another invitation does not spend it.
+    let other = with_confirmation(
+        &app,
+        path,
+        &owner.session,
+        &id,
+        invite_body(&team, &merchant),
+    )
+    .await;
+    assert_eq!(
+        other.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        other.raw
+    );
+    // Bound to the path: a remove with the same id is refused too.
+    let elsewhere = with_confirmation(
+        &app,
+        "/api/customer/teams/remove",
+        &owner.session,
+        &id,
+        json!({ "team_pubkey": team, "member_pubkey": owner.pubkey }),
+    )
+    .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        elsewhere.raw
+    );
+
+    let done = with_confirmation(&app, path, &owner.session, &id, body.clone()).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.raw);
+    assert_eq!(invitations_of(&app, &team).await, 1);
+
+    // Used once: the same confirmation does not run a second request.
+    let again = with_confirmation(
+        &app,
+        path,
+        &owner.session,
+        &id,
+        invite_body(&team, &merchant),
+    )
+    .await;
+    assert_eq!(
+        again.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        again.raw
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_only_the_member_who_asked_confirms_and_a_link_works_once() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let stranger = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let first = customer(
+        &app,
+        Method::POST,
+        "/api/customer/teams/invite",
+        &owner.session,
+        invite_body(&team, &merchant),
+    )
+    .await;
+    let id = first.body["confirmation_id"].as_str().unwrap().to_string();
+    let token = link_token(&app, &id).await;
+
+    let by_stranger = confirm(&app, &token, &stranger.session).await;
+    assert_eq!(
+        by_stranger.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        by_stranger.raw
+    );
+    assert_eq!(by_stranger.body["code"], "not_found");
+    let no_session = request(
+        &app,
+        Method::POST,
+        CUSTOMER_HOST,
+        &format!("/api/customer/confirmations/{token}"),
+        None,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        no_session.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        no_session.raw
+    );
+    let unknown = confirm(&app, "no-such-token", &owner.session).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.raw);
+
+    assert_eq!(
+        confirm(&app, &token, &owner.session).await.status,
+        StatusCode::OK
+    );
+    let twice = confirm(&app, &token, &owner.session).await;
+    assert_eq!(twice.status, StatusCode::GONE, "{}", twice.raw);
+    assert_eq!(twice.body["code"], "confirmation_expired");
+
+    // The route is not on the owner hostname.
+    let on_owner_host = request(
+        &app,
+        Method::POST,
+        OWNER_HOST,
+        &format!("/api/customer/confirmations/{token}"),
+        Some(&owner.session),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        on_owner_host.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        on_owner_host.raw
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_a_confirmation_expires_after_ten_minutes() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let path = "/api/customer/teams/invite";
+    let body = invite_body(&team, &merchant);
+    let first = customer(&app, Method::POST, path, &owner.session, body.clone()).await;
+    let id = first.body["confirmation_id"].as_str().unwrap().to_string();
+    let expires_at =
+        chrono::DateTime::parse_from_rfc3339(first.body["expires_at"].as_str().unwrap()).unwrap();
+    let lifetime = expires_at.with_timezone(&Utc) - Utc::now();
+    assert!(lifetime > Duration::minutes(9) && lifetime <= Duration::minutes(10));
+    let token = link_token(&app, &id).await;
+
+    // A link opened after it expired.
+    sqlx::query(
+        "UPDATE fresh_confirmations SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(&id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let late = confirm(&app, &token, &owner.session).await;
+    assert_eq!(late.status, StatusCode::GONE, "{}", late.raw);
+
+    // A confirmed link whose request comes back after it expired.
+    sqlx::query(
+        "UPDATE fresh_confirmations SET confirmed_at = NOW() - INTERVAL '5 seconds' WHERE id = $1",
+    )
+    .bind(&id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let after = with_confirmation(&app, path, &owner.session, &id, body).await;
+    assert_eq!(
+        after.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        after.raw
+    );
+    assert_eq!(invitations_of(&app, &team).await, 0);
 }

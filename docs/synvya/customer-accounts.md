@@ -343,6 +343,15 @@ A buyer account is a team in the customer tenant with its own key. Members order
 | `POST /api/customer/teams/remove` | Team `admin`, or the member to leave | `{ team_pubkey, member_pubkey }` | `{ removed, revoked_grants }`. 409 `last_admin` for the last admin |
 | `POST /api/customer/teams/grant` | A member | `{ team_pubkey, client_id, redirect_uri, scope, merchant_pubkey? }` | `{ team_pubkey, role, permission, session_token, expires_in, authorization: { bunker_url } }` |
 | `GET /api/customer/session` | Any buyer; called by Synvya Server with the buyer's Bearer token | — | `{ pubkey, email }`: the session's personal key and email. 401 for a missing, forged or expired token, or one of another tenant. The server makes its own buyer session from the answer |
+| `POST /api/customer/confirmations/:token` | The member who asked for the change | — | `{ confirmation_id, action, confirmed_at }`. 404 `not_found` for another member's session, no session or an unknown token; 410 `confirmation_expired` for a used or expired one. See "Fresh confirmation" below |
+
+**Fresh confirmation** (BSP-14; [store-api-contract.md](https://github.com/Synvya/docs/blob/main/06-domains-and-services/specs/store-api-contract.md) §14.5). `invite`, `role` and `remove` change who orders as the team, so each needs a confirmation from the member who asks, even though a script on the buyer app's page could hold the session. Migration `20261118000000_add_fresh_confirmations.sql`; code `api/src/api/http/confirmations.rs`.
+
+1. After the caller's role and the body pass, a request with no usable confirmation answers 428 `{ error, code: "confirmation_required", confirmation_id, expires_at }` and changes nothing. Keycast emails the member `<origin>/confirm/keycast/<token>`: `<origin>` is the request's `Origin` when it is in `ALLOWED_ORIGINS`, otherwise the first entry. The dev sender logs `[DEV EMAIL] Confirmation link for <email> to <what>: <link>`.
+2. The buyer app calls `POST /api/customer/confirmations/:token` with the member's Bearer session.
+3. The app sends the same request again with `X-Synvya-Confirmation: <confirmation_id>`. It runs only if the confirmation is confirmed, unspent, unexpired, the same member's and bound to the same method, path and body (SHA-256 of `METHOD \n path \n body`); the run spends it. Anything else answers 428 again with a new confirmation.
+
+A confirmation lasts 10 minutes from the 428 and is used once. The table `fresh_confirmations` keeps the token's SHA-256 only. `accept`, `grant` and the reads need none, and the admin routes Synvya Server calls need none.
 
 **Admin routes**, on the owner hostname, full admin (Synvya Server signs with NIP-98). They act on the customer tenant.
 

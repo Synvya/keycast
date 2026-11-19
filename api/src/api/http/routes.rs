@@ -9,8 +9,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::api::http::{
-    admin, atproto, atproto_oauth, auth, buyer_teams, claim, headless, magic_link, metrics,
-    nostr_rpc, oauth, policies, teams,
+    admin, atproto, atproto_oauth, auth, buyer_teams, claim, confirmations, headless, magic_link,
+    metrics, nostr_rpc, oauth, policies, teams,
 };
 use crate::state::KeycastState;
 use axum::response::Json as AxumJson;
@@ -106,6 +106,11 @@ pub fn api_routes(
             post(buyer_teams::change_member_role),
         )
         .route("/customer/teams/remove", post(buyer_teams::remove_member))
+        // Synvya: the member confirms a team change that answered 428 (store API contract §14.5).
+        .route(
+            "/customer/confirmations/:token",
+            post(confirmations::confirm),
+        )
         .route(
             "/customer/teams/grant",
             post(buyer_teams::grant_on_team_key),

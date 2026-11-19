@@ -104,6 +104,10 @@ fn request_domain(parts: &Parts) -> Option<String> {
 
 /// The API routes that exist on the customer tenant's hostname.
 fn is_customer_route(path: &str) -> bool {
+    // Synvya: a fresh confirmation's link token, one path segment (store API contract §14.5).
+    if let Some(token) = path.strip_prefix("/customer/confirmations/") {
+        return !token.is_empty() && !token.contains('/');
+    }
     matches!(
         path,
         "/nostr"

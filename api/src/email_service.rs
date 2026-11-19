@@ -87,6 +87,15 @@ pub trait EmailSender: Send + Sync {
         merchant_name: &str,
     ) -> Result<(), String>;
 
+    /// Send a buyer team member the fresh confirmation link for a change they asked for.
+    /// `what` names the change in a few words, such as "invite a team member".
+    async fn send_confirmation_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        what: &str,
+    ) -> Result<(), String>;
+
     /// Get captured emails (only available in dev/test mode)
     fn get_captured_emails(&self) -> Vec<CapturedEmail> {
         vec![]
@@ -437,6 +446,32 @@ fn delete_account_text(link: &str, merchant_name: &str) -> String {
     )
 }
 
+const CONFIRMATION_SUBJECT: &str = "Confirm the change to your buyer account";
+
+fn confirmation_html(link: &str, what: &str) -> String {
+    let link = html_escape(link);
+    let what = html_escape(what);
+
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1a1a1a; max-width: 480px; margin: 0 auto; padding: 24px;">
+  <h1 style="font-size: 20px;">Confirm the change</h1>
+  <p>You asked to {what}. Confirm it to go on.</p>
+  <p><a href="{link}" style="display: inline-block; background: #1a1a1a; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px;">Confirm</a></p>
+  <p style="color: #666666; font-size: 14px;">This link works once and expires in 10 minutes.</p>
+  <p style="color: #666666; font-size: 14px;">If you did not ask for this, ignore this email and nothing will change.</p>
+</body>
+</html>"#
+    )
+}
+
+fn confirmation_text(link: &str, what: &str) -> String {
+    format!(
+        "Confirm the change\n\nYou asked to {what}. Confirm it to go on.\n\n{link}\n\nThis link works once and expires in 10 minutes.\n\nIf you did not ask for this, ignore this email and nothing will change.\n"
+    )
+}
+
 fn magic_link_subject(merchant_name: &str) -> String {
     format!("Sign in to {}", merchant_name)
 }
@@ -521,6 +556,29 @@ impl EmailSender for DevEmailSender {
             captured.push(CapturedEmail {
                 to: to_email.to_string(),
                 subject: delete_account_subject(merchant_name),
+                verification_url: Some(link.to_string()),
+                reset_url: None,
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn send_confirmation_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        what: &str,
+    ) -> Result<(), String> {
+        eprintln!(
+            "\n\x1b[35m[DEV EMAIL]\x1b[0m Confirmation link for {} to {}: \x1b[4m{}\x1b[0m\n",
+            to_email, what, link
+        );
+
+        if let Ok(mut captured) = self.captured.lock() {
+            captured.push(CapturedEmail {
+                to: to_email.to_string(),
+                subject: CONFIRMATION_SUBJECT.to_string(),
                 verification_url: Some(link.to_string()),
                 reset_url: None,
             });
@@ -913,6 +971,19 @@ impl EmailSender for SendGridEmailSender {
         self.send_email(to_email, &subject, &html, &text).await
     }
 
+    async fn send_confirmation_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        what: &str,
+    ) -> Result<(), String> {
+        let html = confirmation_html(link, what);
+        let text = confirmation_text(link, what);
+
+        self.send_email(to_email, CONFIRMATION_SUBJECT, &html, &text)
+            .await
+    }
+
     async fn send_verification_email(
         &self,
         to_email: &str,
@@ -1142,6 +1213,19 @@ impl EmailSender for SesEmailSender {
         let text = magic_link_text(link, merchant_name);
 
         self.send_email(to_email, &subject, &html, &text).await
+    }
+
+    async fn send_confirmation_email(
+        &self,
+        to_email: &str,
+        link: &str,
+        what: &str,
+    ) -> Result<(), String> {
+        let html = confirmation_html(link, what);
+        let text = confirmation_text(link, what);
+
+        self.send_email(to_email, CONFIRMATION_SUBJECT, &html, &text)
+            .await
     }
 
     async fn send_verification_email(
