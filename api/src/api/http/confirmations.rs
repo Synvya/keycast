@@ -322,8 +322,11 @@ async fn session_member(headers: &HeaderMap, tenant_id: i64) -> Option<String> {
 pub enum RenewRefusal {
     /// An unknown token, or another member's: 404 `not_found`.
     NotFound,
-    /// The link still works, or it was used: 409 `not_transitionable`.
-    NotTransitionable,
+    /// The link still works: 409 `confirmation_unexpired`. The member uses it instead.
+    Unexpired,
+    /// The link was used, expired or not: 409 `confirmation_used`. The change it confirmed is
+    /// spent; a new change asks for a new confirmation.
+    Used,
 }
 
 /// The new confirmation a renewal makes.
@@ -359,8 +362,12 @@ pub async fn renew_confirmation(
     if member.trim() != member_pubkey {
         return Ok(Err(RenewRefusal::NotFound));
     }
-    if confirmed_at.is_some() || expires_at > Utc::now() {
-        return Ok(Err(RenewRefusal::NotTransitionable));
+    // Used wins over expired: a used link is spent whatever its age.
+    if confirmed_at.is_some() {
+        return Ok(Err(RenewRefusal::Used));
+    }
+    if expires_at > Utc::now() {
+        return Ok(Err(RenewRefusal::Unexpired));
     }
 
     // Each renewal sends an email, so it counts as the other email routes do.
@@ -447,10 +454,15 @@ pub async fn renew(
         )
             .into_response(),
         Err(RenewRefusal::NotFound) => not_found(),
-        Err(RenewRefusal::NotTransitionable) => error_body(
+        Err(RenewRefusal::Unexpired) => error_body(
             StatusCode::CONFLICT,
-            "not_transitionable",
-            "This confirmation has not expired, or it was used",
+            "confirmation_unexpired",
+            "This confirmation has not expired; use the link already sent",
+        ),
+        Err(RenewRefusal::Used) => error_body(
+            StatusCode::CONFLICT,
+            "confirmation_used",
+            "This confirmation was already used",
         ),
     })
 }

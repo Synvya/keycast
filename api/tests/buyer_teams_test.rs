@@ -1664,7 +1664,7 @@ async fn test_renewal_is_404_for_another_member_and_409_before_expiry_or_after_u
     // While the link still works.
     let early = renew(&app, &token, &owner.session).await;
     assert_eq!(early.status, StatusCode::CONFLICT, "{}", early.raw);
-    assert_eq!(early.body["code"], "not_transitionable");
+    assert_eq!(early.body["code"], "confirmation_unexpired");
 
     expire(&app, &id).await;
     let by_stranger = renew(&app, &token, &stranger.session).await;
@@ -1714,7 +1714,7 @@ async fn test_renewal_is_404_for_another_member_and_409_before_expiry_or_after_u
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.raw);
     let used = renew(&app, &used_token, &owner.session).await;
     assert_eq!(used.status, StatusCode::CONFLICT, "{}", used.raw);
-    assert_eq!(used.body["code"], "not_transitionable");
+    assert_eq!(used.body["code"], "confirmation_used");
     expire(&app, &used_id).await;
     let used_and_expired = renew(&app, &used_token, &owner.session).await;
     assert_eq!(
@@ -1723,6 +1723,7 @@ async fn test_renewal_is_404_for_another_member_and_409_before_expiry_or_after_u
         "{}",
         used_and_expired.raw
     );
+    assert_eq!(used_and_expired.body["code"], "confirmation_used");
     assert_eq!(
         renew_confirmation(
             &app.pool,
@@ -1735,7 +1736,7 @@ async fn test_renewal_is_404_for_another_member_and_409_before_expiry_or_after_u
         .await
         .unwrap()
         .unwrap_err(),
-        RenewRefusal::NotTransitionable
+        RenewRefusal::Used
     );
 }
 
