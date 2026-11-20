@@ -2432,3 +2432,157 @@ async fn test_owner_team_changes_are_logged_and_read_in_order() {
 fn urlencode(value: &str) -> String {
     value.replace('+', "%2B").replace(':', "%3A")
 }
+
+/// An owner-tenant invitation to a new email is on the owner team change log as `invited`, and a
+/// withdrawal as `invitation_withdrawn`, each with the email, the role, the admin and the team's
+/// keys, and no member key. A resend is a withdrawal and a new invitation. A withdrawal that finds
+/// no pending invitation answers 404 and logs nothing.
+#[tokio::test]
+#[serial]
+async fn test_owner_team_invitations_and_withdrawals_are_logged() {
+    let app = setup().await;
+    let since = (Utc::now() - Duration::seconds(5)).to_rfc3339();
+    let suffix = Uuid::new_v4();
+    let (owner, owner_session) = owner_person(&app, &format!("owner-{suffix}@example.com")).await;
+    let owner_call = |method: Method, path: String, body: Value| {
+        let session = owner_session.clone();
+        let app = &app;
+        async move { request(app, method, OWNER_HOST, &path, Some(&session), body).await }
+    };
+
+    let created = owner_call(
+        Method::POST,
+        "/api/teams".into(),
+        json!({ "name": "Store" }),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.raw);
+    let team_id = created.body["team"]["id"].as_i64().unwrap() as i32;
+    let store_key = Keys::generate().public_key().to_hex();
+    sqlx::query(
+        "INSERT INTO stored_keys (name, team_id, pubkey, secret_key, tenant_id)
+         VALUES ('store', $1, $2, $3, $4)",
+    )
+    .bind(team_id)
+    .bind(&store_key)
+    .bind(vec![1u8; 32])
+    .bind(app.owner_tenant)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let invitee = format!("invitee-{suffix}@example.com");
+    let invite = || {
+        owner_call(
+            Method::POST,
+            format!("/api/teams/{team_id}/invite"),
+            json!({ "email": invitee, "role": "Member" }),
+        )
+    };
+    let withdraw = |id: i64| {
+        owner_call(
+            Method::DELETE,
+            format!("/api/teams/{team_id}/invitations/{id}"),
+            Value::Null,
+        )
+    };
+
+    // Invited, then resent: the resend withdraws the first and invites again.
+    let first = invite().await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.raw);
+    assert_eq!(first.body["status"], "invited");
+    let first_id = first.body["invitation"]["id"].as_i64().unwrap();
+    let withdrawn = withdraw(first_id).await;
+    assert_eq!(
+        withdrawn.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        withdrawn.raw
+    );
+    let second = invite().await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.raw);
+    let second_id = second.body["invitation"]["id"].as_i64().unwrap();
+
+    // Withdrawn for good.
+    let withdrawn = withdraw(second_id).await;
+    assert_eq!(
+        withdrawn.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        withdrawn.raw
+    );
+
+    // Nothing pending is left: 404, and no entry.
+    let again = withdraw(second_id).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.raw);
+
+    // A member added by key carries their email on the log too.
+    let (member, _) = owner_person(&app, &format!("member-{suffix}@example.com")).await;
+    let added = owner_call(
+        Method::POST,
+        format!("/api/teams/{team_id}/users"),
+        json!({ "user_pubkey": member, "role": "Member" }),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.raw);
+
+    let admin_session = admin_session(&app).await;
+    let read = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        &format!("/api/admin/owner-team-events?since={}", urlencode(&since)),
+        Some(&admin_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.raw);
+    let mine: Vec<&Value> = read.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["team_id"] == team_id)
+        .collect();
+    let summary: Vec<(Value, Value, Value, Value, Value)> = mine
+        .iter()
+        .map(|e| {
+            (
+                e["action"].clone(),
+                e["member_pubkey"].clone(),
+                e["member_email"].clone(),
+                e["role"].clone(),
+                e["actor_pubkey"].clone(),
+            )
+        })
+        .collect();
+    let invitation = |action: &str| {
+        (
+            json!(action),
+            Value::Null,
+            json!(invitee),
+            json!("member"),
+            json!(owner),
+        )
+    };
+    assert_eq!(
+        summary,
+        vec![
+            invitation("invited"),
+            invitation("invitation_withdrawn"),
+            invitation("invited"),
+            invitation("invitation_withdrawn"),
+            (
+                json!("added"),
+                json!(member),
+                json!(format!("member-{suffix}@example.com")),
+                json!("member"),
+                json!(owner),
+            ),
+        ],
+        "each invitation and withdrawal is logged in order; a 404 withdrawal is not"
+    );
+    for event in &mine {
+        assert_eq!(event["team_key_pubkeys"], json!([store_key]));
+        assert_eq!(event["by_support"], false);
+    }
+}

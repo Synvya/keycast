@@ -47,8 +47,9 @@ pub use oauth_code::{
     OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams,
 };
 pub use owner_team_events::{
-    add_member_logged, list_owner_team_events, record_owner_team_event, remove_member_logged,
-    OwnerTeamEvent, OwnerTeamEventRow,
+    add_member_logged, list_owner_team_events, record_owner_team_event,
+    record_owner_team_invitation, remove_member_logged, withdraw_invitation_logged, OwnerTeamEvent,
+    OwnerTeamEventRow, OwnerTeamInvitationEvent,
 };
 pub use personal_keys::PersonalKeysRepository;
 pub use policy::PolicyRepository;

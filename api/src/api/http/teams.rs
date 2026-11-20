@@ -16,7 +16,8 @@ use crate::api::extractors::UcanAuth;
 use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::custom_permissions::{allowed_kinds::AllowedKindsConfig, AVAILABLE_PERMISSIONS};
 use keycast_core::repositories::{
-    add_member_logged, remove_member_logged, AuthorizationRepository, OwnerTeamEvent,
+    add_member_logged, record_owner_team_invitation, remove_member_logged,
+    withdraw_invitation_logged, AuthorizationRepository, OwnerTeamEvent, OwnerTeamInvitationEvent,
     PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository,
 };
 use keycast_core::types::authorization::{Authorization, AuthorizationWithRelations};
@@ -777,6 +778,20 @@ pub async fn invite_user(
                     &user_pubkey_hex,
                 )
                 .await?;
+            // On the team change log (Synvya: owner_team_events). The invitation repository keeps
+            // its own connection, so the log entry follows it.
+            record_owner_team_invitation(
+                &pool,
+                &OwnerTeamInvitationEvent {
+                    tenant_id,
+                    team_id,
+                    action: "invited",
+                    email: &email,
+                    role: role_str,
+                    actor_pubkey: &user_pubkey_hex,
+                },
+            )
+            .await?;
 
             // Resolve inviter display name (used for the list response regardless of email outcome)
             let inviter_name = resolve_display_name(&pool, &user_pubkey_hex, tenant_id).await;
@@ -931,10 +946,14 @@ pub async fn revoke_invitation(
     let tenant_id = tenant.0.id;
     verify_admin(&pool, &user_pubkey_hex, team_id, tenant_id).await?;
 
-    let invite_repo = TeamInvitationRepository::new(pool.clone());
-    invite_repo
-        .revoke(invitation_id, team_id, tenant_id)
-        .await?;
+    // Withdraw it, on the team change log (Synvya: owner_team_events)
+    if !withdraw_invitation_logged(&pool, tenant_id, team_id, invitation_id, &user_pubkey_hex)
+        .await?
+    {
+        return Err(ApiError::not_found(
+            "Invitation not found or already resolved",
+        ));
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

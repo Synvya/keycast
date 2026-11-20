@@ -1,8 +1,9 @@
 // ABOUTME: Synvya: the team change log of an owner tenant (owner_team_events), and the member
 // ABOUTME: add and remove that write it in the same transaction as the membership change
 //
-// Key exports: `OwnerTeamEvent`, `OwnerTeamEventRow`, `record_owner_team_event`,
-// `add_member_logged`, `remove_member_logged`, `list_owner_team_events`.
+// Key exports: `OwnerTeamEvent`, `OwnerTeamInvitationEvent`, `OwnerTeamEventRow`,
+// `record_owner_team_event`, `record_owner_team_invitation`, `add_member_logged`,
+// `remove_member_logged`, `withdraw_invitation_logged`, `list_owner_team_events`.
 // Neighbours: `./buyer_team.rs` (`customer_team_events`, the customer tenant's log, which this
 // mirrors), `./team.rs` (the unlogged membership writes). Synvya Server reads the log through
 // `GET /api/admin/owner-team-events` and writes the store part's staff records
@@ -21,7 +22,7 @@ pub struct OwnerTeamEvent<'a> {
     pub tenant_id: i64,
     pub team_id: i32,
     /// `added`, `joined` or `removed`. An owner-tenant team has no route that changes a member's
-    /// role, so the log has no `role_set`.
+    /// role, so the log has no `role_set`. An invitation is an `OwnerTeamInvitationEvent`.
     pub action: &'a str,
     pub member_pubkey: &'a str,
     /// The role added or joined with. On a removal the row holds the role the member had.
@@ -43,12 +44,13 @@ where
 {
     sqlx::query(
         "INSERT INTO owner_team_events
-             (tenant_id, team_id, team_key_pubkeys, action, member_pubkey, role, actor_pubkey,
-              by_support)
+             (tenant_id, team_id, team_key_pubkeys, action, member_pubkey, member_email, role,
+              actor_pubkey, by_support)
          VALUES ($1, $2,
                  ARRAY(SELECT pubkey FROM stored_keys
                        WHERE tenant_id = $1 AND team_id = $2 ORDER BY id)::text[],
-                 $3, $4, $5, $6, $7)",
+                 $3, $4, (SELECT email FROM users WHERE pubkey = $4 AND tenant_id = $1),
+                 $5, $6, $7)",
     )
     .bind(event.tenant_id)
     .bind(event.team_id)
@@ -60,6 +62,92 @@ where
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// One invitation of an owner-tenant team to an email that has no account yet. The person has no
+/// key until they accept, so the entry names the email.
+#[derive(Debug, Clone)]
+pub struct OwnerTeamInvitationEvent<'a> {
+    pub tenant_id: i64,
+    pub team_id: i32,
+    /// `invited` (the customer tenant's spelling) or `invitation_withdrawn`. A resend is a
+    /// withdrawal and a new invitation, so it writes both.
+    pub action: &'a str,
+    pub email: &'a str,
+    /// The role the invitation offers.
+    pub role: &'a str,
+    /// The admin who invited or withdrew.
+    pub actor_pubkey: &'a str,
+}
+
+/// Append one invitation entry, in the caller's transaction when it has one.
+pub async fn record_owner_team_invitation<'e, E>(
+    executor: E,
+    event: &OwnerTeamInvitationEvent<'_>,
+) -> Result<(), RepositoryError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query(
+        "INSERT INTO owner_team_events
+             (tenant_id, team_id, team_key_pubkeys, action, member_pubkey, member_email, role,
+              actor_pubkey, by_support)
+         VALUES ($1, $2,
+                 ARRAY(SELECT pubkey FROM stored_keys
+                       WHERE tenant_id = $1 AND team_id = $2 ORDER BY id)::text[],
+                 $3, NULL, $4, $5, $6, FALSE)",
+    )
+    .bind(event.tenant_id)
+    .bind(event.team_id)
+    .bind(event.action)
+    .bind(event.email)
+    .bind(event.role)
+    .bind(event.actor_pubkey)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Withdraw a pending invitation and log `invitation_withdrawn` with its email and role, in one
+/// transaction. False, and no row, when no pending invitation has that id in that team.
+pub async fn withdraw_invitation_logged(
+    pool: &PgPool,
+    tenant_id: i64,
+    team_id: i32,
+    invitation_id: i32,
+    actor_pubkey: &str,
+) -> Result<bool, RepositoryError> {
+    let mut tx = pool.begin().await?;
+    let withdrawn: Option<(String, String)> = sqlx::query_as(
+        "UPDATE team_invitations
+         SET revoked_at = NOW()
+         WHERE id = $1 AND team_id = $2 AND tenant_id = $3
+           AND accepted_at IS NULL
+           AND revoked_at IS NULL
+         RETURNING email, role",
+    )
+    .bind(invitation_id)
+    .bind(team_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((email, role)) = withdrawn else {
+        return Ok(false);
+    };
+    record_owner_team_invitation(
+        &mut *tx,
+        &OwnerTeamInvitationEvent {
+            tenant_id,
+            team_id,
+            action: "invitation_withdrawn",
+            email: &email,
+            role: &role,
+            actor_pubkey,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Add a member and log it, in one transaction. `event.role` is the role added with.
@@ -125,7 +213,10 @@ pub struct OwnerTeamEventRow {
     pub team_id: i32,
     pub team_key_pubkeys: Vec<String>,
     pub action: String,
-    pub member_pubkey: String,
+    /// Null on an invitation: the person has no key until they accept.
+    pub member_pubkey: Option<String>,
+    /// The invited email, or the member's when the tenant knows it.
+    pub member_email: Option<String>,
     pub role: Option<String>,
     pub actor_pubkey: Option<String>,
     pub by_support: bool,
@@ -142,8 +233,8 @@ pub async fn list_owner_team_events(
     limit: i64,
 ) -> Result<Vec<OwnerTeamEventRow>, RepositoryError> {
     sqlx::query_as(
-        "SELECT id, team_id, team_key_pubkeys, action, member_pubkey, role, actor_pubkey,
-                by_support, created_at
+        "SELECT id, team_id, team_key_pubkeys, action, member_pubkey, member_email, role,
+                actor_pubkey, by_support, created_at
          FROM owner_team_events
          WHERE tenant_id = $1 AND id > $2 AND ($4::timestamptz IS NULL OR created_at >= $4)
          ORDER BY id LIMIT $3",
