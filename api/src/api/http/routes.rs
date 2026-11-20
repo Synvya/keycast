@@ -218,6 +218,15 @@ pub fn api_routes(
         .layer(auth_cors.clone())
         .with_state(auth_state.clone());
 
+    // Synvya: the person's own display name, shown to teammates (display_name.rs)
+    let display_name_route = Router::new()
+        .route(
+            "/user/display-name",
+            get(super::display_name::get_display_name).put(super::display_name::set_display_name),
+        )
+        .layer(auth_cors.clone())
+        .with_state(pool.clone());
+
     // Change key route (needs AuthState for key_manager and auth_tx)
     let change_key_route = Router::new()
         .route("/user/change-key", post(auth::change_key))
@@ -397,6 +406,7 @@ pub fn api_routes(
         .merge(key_export_routes) // Has auth_cors (authenticated, needs cookies)
         .merge(change_key_route) // Has auth_cors (authenticated, needs cookies)
         .merge(staff_challenge_route) // Has auth_cors (authenticated, needs cookies)
+        .merge(display_name_route) // Has auth_cors (authenticated, needs cookies)
         .merge(logout_route) // Has auth_cors (credentialed cookie logout)
         .merge(account_delete_route.layer(auth_cors.clone())) // Auth CORS - session cookie from the Synvya web apps; Bearer still accepted
         .merge(verify_email_route.layer(public_cors.clone())) // Public CORS - same-origin sets cookie, cross-origin uses Bearer

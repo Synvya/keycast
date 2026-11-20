@@ -1058,6 +1058,7 @@ mod tests {
             team_id: 1,
             role,
             email: None,
+            display_name: None,
             created_at: now,
             updated_at: now,
             is_support_member: false,

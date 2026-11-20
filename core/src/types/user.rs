@@ -49,6 +49,11 @@ pub struct TeamUser {
     /// The user's email, if any. Populated via LEFT JOIN on the `users` table.
     #[serde(default)]
     pub email: Option<String>,
+    /// The name the user chose to be shown to teammates, if any. Populated via
+    /// the same LEFT JOIN on `users` as `email`.
+    #[serde(default)]
+    #[sqlx(default)]
+    pub display_name: Option<String>,
     /// The date and time the user was created
     pub created_at: DateTime<chrono::Utc>,
     /// The date and time the user was last updated
@@ -141,7 +146,7 @@ impl User {
 
         // Batch fetch all team_users for all teams
         let all_team_users = sqlx::query_as::<_, TeamUser>(
-            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, tu.created_at, tu.updated_at
+            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, u.display_name, tu.created_at, tu.updated_at
              FROM team_users tu
              LEFT JOIN users u ON u.pubkey = tu.user_pubkey
              WHERE tu.team_id = ANY($1)",

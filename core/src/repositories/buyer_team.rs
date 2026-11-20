@@ -29,6 +29,8 @@ pub struct BuyerTeam {
 pub struct BuyerTeamMember {
     pub pubkey: String,
     pub email: Option<String>,
+    /// The name the member chose to be shown to teammates, if any.
+    pub display_name: Option<String>,
     pub role: String,
     pub joined_at: DateTime<Utc>,
 }
@@ -217,7 +219,7 @@ impl BuyerTeamRepository {
         team_id: i32,
     ) -> Result<Vec<BuyerTeamMember>, RepositoryError> {
         sqlx::query_as::<_, BuyerTeamMember>(
-            "SELECT tu.user_pubkey AS pubkey, u.email, tu.role, tu.created_at AS joined_at
+            "SELECT tu.user_pubkey AS pubkey, u.email, u.display_name, tu.role, tu.created_at AS joined_at
              FROM team_users tu
              LEFT JOIN users u ON u.pubkey = tu.user_pubkey AND u.tenant_id = $2
              WHERE tu.team_id = $1

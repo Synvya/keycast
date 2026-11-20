@@ -693,6 +693,41 @@ impl UserRepository {
             .map_err(Into::into)
     }
 
+    /// The user's display name. `None` if the user does not exist in the tenant,
+    /// `Some(None)` if the user has none.
+    pub async fn get_display_name(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+    ) -> Result<Option<Option<String>>, RepositoryError> {
+        sqlx::query_scalar("SELECT display_name FROM users WHERE pubkey = $1 AND tenant_id = $2")
+            .bind(pubkey)
+            .bind(tenant_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Set or clear (`None`) the user's display name. The caller validates the
+    /// value. Returns `false` if the user does not exist in the tenant.
+    pub async fn set_display_name(
+        &self,
+        pubkey: &str,
+        tenant_id: i64,
+        display_name: Option<&str>,
+    ) -> Result<bool, RepositoryError> {
+        let result = sqlx::query(
+            "UPDATE users SET display_name = $1, updated_at = $2 WHERE pubkey = $3 AND tenant_id = $4",
+        )
+        .bind(display_name)
+        .bind(Utc::now())
+        .bind(pubkey)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Get user's email and verified status.
     /// Returns None if user doesn't exist, Some with nullable email/verified if user exists.
     pub async fn get_account_status(

@@ -86,7 +86,7 @@ impl Team {
 
         // Get team_users for this team
         let team_users = sqlx::query_as::<_, TeamUser>(
-            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, tu.created_at, tu.updated_at
+            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, u.display_name, tu.created_at, tu.updated_at
              FROM team_users tu
              LEFT JOIN users u ON u.pubkey = tu.user_pubkey
              WHERE tu.team_id = $1",

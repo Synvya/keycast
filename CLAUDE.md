@@ -191,6 +191,7 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - `/api/user/oauth-authorizations/:id`: Revoke authorization
 - `/api/user/bunker`: Get personal NIP-46 bunker URL (legacy)
 - `/api/user/staff-challenge/sign`: Synvya. Signs the staff challenge with the person's key for a session whose origin is in `STAFF_CHALLENGE_ORIGINS` (`api/src/api/http/staff_challenge.rs`)
+- `/api/user/display-name`: Synvya. `GET` and `PUT` `{"display_name": string | null}`, the person's own display name (trimmed, 1 to 80 characters, no control characters; empty or `null` clears it). Every team-member list returns it as `display_name` beside `email` (`api/src/api/http/display_name.rs`)
 
 **Team Management (UCAN Auth Required)**:
 - `/api/teams/*`: Team CRUD, member management, key management, policies

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod buyer_teams;
 pub mod claim;
 pub mod confirmations;
+pub mod display_name;
 pub mod headless;
 pub mod magic_link;
 pub mod metrics;

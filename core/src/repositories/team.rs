@@ -128,7 +128,7 @@ impl TeamRepository {
 
         // Get team_users for this team
         let team_users = sqlx::query_as::<_, TeamUser>(
-            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, tu.created_at, tu.updated_at
+            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, u.display_name, tu.created_at, tu.updated_at
              FROM team_users tu
              LEFT JOIN users u ON u.pubkey = tu.user_pubkey
              WHERE tu.team_id = $1",
@@ -291,7 +291,7 @@ impl TeamRepository {
                  VALUES ($1, $2, $3, NOW(), NOW())
                  RETURNING user_pubkey, team_id, role, created_at, updated_at
              )
-             SELECT ins.user_pubkey, ins.team_id, ins.role, u.email, ins.created_at, ins.updated_at
+             SELECT ins.user_pubkey, ins.team_id, ins.role, u.email, u.display_name, ins.created_at, ins.updated_at
              FROM ins
              LEFT JOIN users u ON u.pubkey = ins.user_pubkey",
         )
@@ -323,7 +323,7 @@ impl TeamRepository {
         pubkey: &str,
     ) -> Result<TeamUser, RepositoryError> {
         sqlx::query_as::<_, TeamUser>(
-            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, tu.created_at, tu.updated_at
+            "SELECT tu.user_pubkey, tu.team_id, tu.role, u.email, u.display_name, tu.created_at, tu.updated_at
              FROM team_users tu
              LEFT JOIN users u ON u.pubkey = tu.user_pubkey
              WHERE tu.team_id = $1 AND tu.user_pubkey = $2",
@@ -479,7 +479,7 @@ impl TeamRepository {
                  VALUES ($1, $2, 'admin', $3, $4)
                  RETURNING user_pubkey, team_id, role, created_at, updated_at
              )
-             SELECT ins.user_pubkey, ins.team_id, ins.role, u.email, ins.created_at, ins.updated_at
+             SELECT ins.user_pubkey, ins.team_id, ins.role, u.email, u.display_name, ins.created_at, ins.updated_at
              FROM ins
              LEFT JOIN users u ON u.pubkey = ins.user_pubkey",
         )
@@ -909,5 +909,63 @@ mod tests {
             .await
             .unwrap();
         assert!(member.email.is_none());
+        assert!(member.display_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_team_members_carry_display_name() {
+        let pool = setup_pool().await;
+        let team_repo = TeamRepository::new(pool.clone());
+        let user_repo = UserRepository::new(pool.clone());
+        let suffix = test_suffix();
+
+        let keys = Keys::generate();
+        let pubkey = keys.public_key();
+        user_repo.find_or_create(1, &pubkey).await.unwrap();
+        let name = format!("Staff {}", suffix);
+        assert!(user_repo
+            .set_display_name(&pubkey.to_hex(), 1, Some(&name))
+            .await
+            .unwrap());
+
+        let team = team_repo
+            .create(1, &format!("DisplayName Test {}", suffix))
+            .await
+            .unwrap();
+        let member = team_repo
+            .add_member(team.id, &pubkey.to_hex(), "member")
+            .await
+            .unwrap();
+        assert_eq!(member.display_name.as_deref(), Some(name.as_str()));
+
+        let fetched = team_repo
+            .get_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap();
+        assert_eq!(fetched.display_name.as_deref(), Some(name.as_str()));
+
+        let with_relations = team_repo.find_with_relations(1, team.id).await.unwrap();
+        assert_eq!(
+            with_relations.team_users[0].display_name.as_deref(),
+            Some(name.as_str())
+        );
+
+        // Cleared, the member has none.
+        user_repo
+            .set_display_name(&pubkey.to_hex(), 1, None)
+            .await
+            .unwrap();
+        let cleared = team_repo
+            .get_member(team.id, &pubkey.to_hex())
+            .await
+            .unwrap();
+        assert!(cleared.display_name.is_none());
+        assert_eq!(
+            user_repo
+                .get_display_name(&pubkey.to_hex(), 1)
+                .await
+                .unwrap(),
+            Some(None)
+        );
     }
 }
