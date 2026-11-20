@@ -16,6 +16,7 @@ use crate::handlers::http_rpc_handler::invalidate_handlers_for_bunker;
 use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::metrics::METRICS;
+use keycast_core::repositories::{add_member_logged, remove_member_logged, OwnerTeamEvent};
 use keycast_core::repositories::{
     AuthorizationRepository, ClaimTokenRepository, OAuthAuthorizationRepository, PolicyRepository,
     RestaurantKeySummary, StoredKeyRepository, TeamRepository, TeamSearchResult, UserRepository,
@@ -1546,10 +1547,21 @@ pub async fn grant_team_support_access(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to check membership: {}", e)))?
     {
-        team_repo
-            .add_member(team_id, caller, "member")
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to add support member: {}", e)))?;
+        // Synvya: on the team change log, so the store sees that support joined.
+        add_member_logged(
+            pool,
+            &OwnerTeamEvent {
+                tenant_id,
+                team_id,
+                action: "added",
+                member_pubkey: caller,
+                role: Some("member"),
+                actor_pubkey: Some(caller),
+                by_support: true,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to add support member: {}", e)))?;
     }
 
     let secret_pool = get_secret_pool().map_err(|e| ApiError::internal(e.to_string()))?;
@@ -1716,10 +1728,21 @@ pub async fn release_team_support_access(
     let mut removed_membership = false;
     match team_repo.get_member(team_id, caller).await {
         Ok(member) if matches!(member.role, keycast_core::types::user::TeamUserRole::Member) => {
-            team_repo
-                .remove_member(team_id, caller)
-                .await
-                .map_err(|e| ApiError::internal(format!("Failed to remove member: {}", e)))?;
+            // Synvya: on the team change log, so the store sees that support left.
+            remove_member_logged(
+                pool,
+                &OwnerTeamEvent {
+                    tenant_id,
+                    team_id,
+                    action: "removed",
+                    member_pubkey: caller,
+                    role: None,
+                    actor_pubkey: Some(caller),
+                    by_support: true,
+                },
+            )
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to remove member: {}", e)))?;
             removed_membership = true;
         }
         Ok(_) => {
@@ -2079,7 +2102,9 @@ fn normalize_app_origin(origin: &str) -> ApiResult<String> {
     let deployment = node_env == "staging" || node_env == "production";
     let allow_localhost = std::env::var("ALLOW_LOCALHOST_ORIGINS").is_ok_and(|v| v == "true");
     let synvya_local = (!deployment || allow_localhost)
-        && url.host_str().is_some_and(|h| h.ends_with(".local.synvya.com"));
+        && url
+            .host_str()
+            .is_some_and(|h| h.ends_with(".local.synvya.com"));
     let is_local = matches!(url.host_str(), Some("localhost") | Some("127.0.0.1")) || synvya_local;
     let allowed_scheme = url.scheme() == "https" || (url.scheme() == "http" && is_local);
     let is_only_an_origin = url.path() == "/"

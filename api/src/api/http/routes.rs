@@ -338,6 +338,11 @@ pub fn api_routes(
             "/admin/customer-team-events",
             get(buyer_teams::admin_list_team_events),
         )
+        // Synvya: the owner tenant's team change log, for the store's staff records
+        .route(
+            "/admin/owner-team-events",
+            get(super::owner_team_events::list_events),
+        )
         .route(
             "/admin/customer-signing-activity/:event_id",
             get(buyer_teams::admin_get_signing_activity),

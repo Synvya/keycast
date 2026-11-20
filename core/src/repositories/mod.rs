@@ -11,6 +11,7 @@ mod error;
 mod magic_link_token;
 mod oauth_authorization;
 mod oauth_code;
+mod owner_team_events;
 mod personal_keys;
 mod policy;
 mod refresh_token;
@@ -44,6 +45,10 @@ pub use magic_link_token::{
 pub use oauth_authorization::{CreateOAuthAuthorizationParams, OAuthAuthorizationRepository};
 pub use oauth_code::{
     OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams,
+};
+pub use owner_team_events::{
+    add_member_logged, list_owner_team_events, record_owner_team_event, remove_member_logged,
+    OwnerTeamEvent, OwnerTeamEventRow,
 };
 pub use personal_keys::PersonalKeysRepository;
 pub use policy::PolicyRepository;

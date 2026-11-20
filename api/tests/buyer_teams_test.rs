@@ -1,7 +1,8 @@
 #![cfg(feature = "integration-tests")]
 
 // ABOUTME: Tests buyer teams on the customer tenant: the team key, roles, grants and sent_by
-// ABOUTME: Also proves the generic team routes stay closed on the customer hostname
+// ABOUTME: Also proves the generic team routes stay closed on the customer hostname, and covers
+// ABOUTME: the owner tenant's side: display names and the owner team change log
 
 mod common;
 
@@ -1968,4 +1969,236 @@ async fn test_display_name_on_both_tenants() {
         "{}",
         buyer_on_user_path.raw
     );
+}
+
+/// A session of an owner-tenant person, with an email on file.
+async fn owner_person(app: &TestApp, email: &str) -> (String, String) {
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, email, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())",
+    )
+    .bind(&pubkey)
+    .bind(app.owner_tenant)
+    .bind(email)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let session = generate_server_signed_ucan(
+        &keys.public_key(),
+        app.owner_tenant,
+        email,
+        "https://owners.example.com",
+        None,
+        &app.server_keys,
+        true,
+        None,
+    )
+    .await
+    .map_err(|_| "failed to mint token")
+    .unwrap();
+    (pubkey, session)
+}
+
+/// Each member change of an owner-tenant team is on the owner team change log, with the team's
+/// keys, the role and who made it, and the admin read answers it in order from a cursor.
+#[tokio::test]
+#[serial]
+async fn test_owner_team_changes_are_logged_and_read_in_order() {
+    let app = setup().await;
+    let since = (Utc::now() - Duration::seconds(5)).to_rfc3339();
+    let suffix = Uuid::new_v4();
+    let (owner, owner_session) = owner_person(&app, &format!("owner-{suffix}@example.com")).await;
+    let owner_call = |method: Method, path: String, body: Value| {
+        let session = owner_session.clone();
+        let app = &app;
+        async move { request(app, method, OWNER_HOST, &path, Some(&session), body).await }
+    };
+
+    let created = owner_call(
+        Method::POST,
+        "/api/teams".into(),
+        json!({ "name": "Store" }),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.raw);
+    let team_id = created.body["team"]["id"].as_i64().unwrap() as i32;
+    let store_key = Keys::generate().public_key().to_hex();
+    sqlx::query(
+        "INSERT INTO stored_keys (name, team_id, pubkey, secret_key, tenant_id)
+         VALUES ('store', $1, $2, $3, $4)",
+    )
+    .bind(team_id)
+    .bind(&store_key)
+    .bind(vec![1u8; 32])
+    .bind(app.owner_tenant)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    // Added by key.
+    let member = Keys::generate().public_key().to_hex();
+    let added = owner_call(
+        Method::POST,
+        format!("/api/teams/{team_id}/users"),
+        json!({ "user_pubkey": member, "role": "Member" }),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.raw);
+
+    // Added by the email of an existing account.
+    let existing_email = format!("existing-{suffix}@example.com");
+    let (existing, _) = owner_person(&app, &existing_email).await;
+    let invited = owner_call(
+        Method::POST,
+        format!("/api/teams/{team_id}/invite"),
+        json!({ "email": existing_email, "role": "Admin" }),
+    )
+    .await;
+    assert_eq!(invited.status, StatusCode::OK, "{}", invited.raw);
+    assert_eq!(invited.body["status"], "added");
+
+    // Joined by accepting an invitation.
+    let joiner_email = format!("joiner-{suffix}@example.com");
+    let (joiner, joiner_session) = owner_person(&app, &joiner_email).await;
+    let token = format!("invite-{suffix}");
+    TeamInvitationRepository::new(app.pool.clone())
+        .create(
+            team_id,
+            app.owner_tenant,
+            &joiner_email,
+            "member",
+            &token,
+            &owner,
+        )
+        .await
+        .unwrap();
+    let accepted = request(
+        &app,
+        Method::POST,
+        OWNER_HOST,
+        "/api/invitations/accept",
+        Some(&joiner_session),
+        json!({ "token": token }),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.raw);
+
+    // Removed.
+    let removed = owner_call(
+        Method::DELETE,
+        format!("/api/teams/{team_id}/users/{member}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.raw);
+
+    // Only an admin reads the log.
+    let refused = owner_call(
+        Method::GET,
+        format!("/api/admin/owner-team-events?since={}", urlencode(&since)),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.raw);
+
+    let admin_session = admin_session(&app).await;
+    let read = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        &format!("/api/admin/owner-team-events?since={}", urlencode(&since)),
+        Some(&admin_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.raw);
+    let mine: Vec<&Value> = read.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["team_id"] == team_id)
+        .collect();
+    let summary: Vec<(String, String, String, String)> = mine
+        .iter()
+        .map(|e| {
+            (
+                e["action"].as_str().unwrap().to_string(),
+                e["member_pubkey"].as_str().unwrap().to_string(),
+                e["role"].as_str().unwrap().to_string(),
+                e["actor_pubkey"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (
+                "added".into(),
+                member.clone(),
+                "member".into(),
+                owner.clone()
+            ),
+            (
+                "added".into(),
+                existing.clone(),
+                "admin".into(),
+                owner.clone()
+            ),
+            (
+                "joined".into(),
+                joiner.clone(),
+                "member".into(),
+                joiner.clone()
+            ),
+            (
+                "removed".into(),
+                member.clone(),
+                "member".into(),
+                owner.clone()
+            ),
+        ],
+        "the team's creation is not a change of its staff; each later change is, in order"
+    );
+    for event in &mine {
+        assert_eq!(event["team_key_pubkeys"], json!([store_key]));
+        assert_eq!(event["by_support"], false);
+    }
+
+    // The cursor: nothing after the last id.
+    let next_after = read.body["next_after"].as_i64().unwrap();
+    let after = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        &format!("/api/admin/owner-team-events?after={next_after}"),
+        Some(&admin_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(after.status, StatusCode::OK, "{}", after.raw);
+    assert_eq!(after.body["events"], json!([]));
+    assert_eq!(after.body["next_after"], next_after);
+
+    // The customer tenant has its own log; the owner log is not on its hostname.
+    let on_customer_host = request(
+        &app,
+        Method::GET,
+        CUSTOMER_HOST,
+        "/api/admin/owner-team-events",
+        Some(&admin_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        on_customer_host.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        on_customer_host.raw
+    );
+}
+
+fn urlencode(value: &str) -> String {
+    value.replace('+', "%2B").replace(':', "%3A")
 }

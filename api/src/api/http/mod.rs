@@ -12,6 +12,7 @@ pub mod magic_link;
 pub mod metrics;
 pub mod nostr_rpc;
 pub mod oauth;
+pub mod owner_team_events;
 pub mod policies;
 pub mod routes;
 pub mod staff_challenge;

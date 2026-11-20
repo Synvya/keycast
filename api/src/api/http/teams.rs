@@ -16,7 +16,8 @@ use crate::api::extractors::UcanAuth;
 use crate::state::{get_key_manager, get_secret_pool};
 use keycast_core::custom_permissions::{allowed_kinds::AllowedKindsConfig, AVAILABLE_PERMISSIONS};
 use keycast_core::repositories::{
-    AuthorizationRepository, PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository,
+    add_member_logged, remove_member_logged, AuthorizationRepository, OwnerTeamEvent,
+    PolicyRepository, StoredKeyRepository, TeamRepository, UserRepository,
 };
 use keycast_core::types::authorization::{Authorization, AuthorizationWithRelations};
 use keycast_core::types::policy::PolicyWithPermissions;
@@ -243,10 +244,21 @@ pub async fn add_user(
         .find_or_create(tenant_id, &new_user_pubkey)
         .await?;
 
-    // Add the team membership
-    let mut team_user = team_repo
-        .add_member(team_id, &new_user_pubkey.to_hex(), request.role.as_str())
-        .await?;
+    // Add the team membership, on the team change log (Synvya: owner_team_events)
+    let member_hex = new_user_pubkey.to_hex();
+    let mut team_user = add_member_logged(
+        &pool,
+        &OwnerTeamEvent {
+            tenant_id,
+            team_id,
+            action: "added",
+            member_pubkey: &member_hex,
+            role: Some(request.role.as_str()),
+            actor_pubkey: Some(&user_pubkey_hex),
+            by_support: false,
+        },
+    )
+    .await?;
 
     if let Some(set) = fetch_support_admin_set().await {
         mark_support_members(std::slice::from_mut(&mut team_user), &set);
@@ -286,10 +298,21 @@ pub async fn remove_user(
         }
     }
 
-    // Remove the team membership
-    team_repo
-        .remove_member(team_id, &removed_user_pubkey.to_hex())
-        .await?;
+    // Remove the team membership, on the team change log (Synvya: owner_team_events)
+    let member_hex = removed_user_pubkey.to_hex();
+    remove_member_logged(
+        &pool,
+        &OwnerTeamEvent {
+            tenant_id,
+            team_id,
+            action: "removed",
+            member_pubkey: &member_hex,
+            role: None,
+            actor_pubkey: Some(&user_pubkey_hex),
+            by_support: false,
+        },
+    )
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -715,7 +738,19 @@ pub async fn invite_user(
                 .map_err(|_| ApiError::internal("Invalid stored pubkey"))?;
             user_repo.find_or_create(tenant_id, &pk).await?;
 
-            let team_user = team_repo.add_member(team_id, &pubkey, role_str).await?;
+            let team_user = add_member_logged(
+                &pool,
+                &OwnerTeamEvent {
+                    tenant_id,
+                    team_id,
+                    action: "added",
+                    member_pubkey: &pubkey,
+                    role: Some(role_str),
+                    actor_pubkey: Some(&user_pubkey_hex),
+                    by_support: false,
+                },
+            )
+            .await?;
             Ok(Json(InviteResponse::Added { member: team_user }))
         }
         None => {
@@ -1010,10 +1045,20 @@ pub async fn accept_invitation(
         return Err(ApiError::conflict("You are already a member of this team"));
     }
 
-    // Add to team
-    team_repo
-        .add_member(invitation.team_id, &user_pubkey_hex, &invitation.role)
-        .await?;
+    // Add to team, on the team change log (Synvya: owner_team_events)
+    add_member_logged(
+        &pool,
+        &OwnerTeamEvent {
+            tenant_id,
+            team_id: invitation.team_id,
+            action: "joined",
+            member_pubkey: &user_pubkey_hex,
+            role: Some(&invitation.role),
+            actor_pubkey: Some(&user_pubkey_hex),
+            by_support: false,
+        },
+    )
+    .await?;
 
     // Mark invitation as accepted
     invite_repo
