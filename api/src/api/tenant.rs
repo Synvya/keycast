@@ -127,6 +127,8 @@ fn is_customer_route(path: &str) -> bool {
             | "/customer/teams/role"
             | "/customer/teams/remove"
             | "/customer/teams/grant"
+            // Synvya: the buyer's own display name (display_name.rs).
+            | "/customer/display-name"
     )
 }
 

@@ -115,6 +115,12 @@ pub fn api_routes(
             "/customer/teams/grant",
             post(buyer_teams::grant_on_team_key),
         )
+        // Synvya: the buyer's own display name, shown to teammates (display_name.rs)
+        .route(
+            "/customer/display-name",
+            get(super::display_name::get_customer_display_name)
+                .put(super::display_name::set_customer_display_name),
+        )
         .layer(public_cors.clone())
         .with_state(auth_state.clone());
 

@@ -1810,3 +1810,162 @@ async fn test_signing_log_names_the_member_behind_a_signed_event() {
     .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.raw);
 }
+
+/// A buyer sets their own display name on the customer hostname, and the team's member list
+/// returns it. A staff session on another tenant keeps its own route; neither path answers on
+/// the other's hostname.
+#[tokio::test]
+#[serial]
+async fn test_display_name_on_both_tenants() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let member = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    add_to_team(&app, &team, &owner, &member, "orderer").await;
+
+    let path = "/api/customer/display-name";
+    let unset = customer(&app, Method::GET, path, &member.session, Value::Null).await;
+    assert_eq!(unset.status, StatusCode::OK, "{}", unset.raw);
+    assert_eq!(unset.body, json!({ "display_name": null }));
+
+    let set = customer(
+        &app,
+        Method::PUT,
+        path,
+        &member.session,
+        json!({ "display_name": "  Ana López " }),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.raw);
+    assert_eq!(set.body, json!({ "display_name": "Ana López" }));
+    let read = customer(&app, Method::GET, path, &member.session, Value::Null).await;
+    assert_eq!(read.body, json!({ "display_name": "Ana López" }));
+
+    let too_long = customer(
+        &app,
+        Method::PUT,
+        path,
+        &member.session,
+        json!({ "display_name": "a".repeat(81) }),
+    )
+    .await;
+    assert_eq!(too_long.status, StatusCode::BAD_REQUEST, "{}", too_long.raw);
+    let missing = customer(&app, Method::PUT, path, &member.session, json!({})).await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST, "{}", missing.raw);
+    let no_session = request(&app, Method::GET, CUSTOMER_HOST, path, None, Value::Null).await;
+    assert_eq!(
+        no_session.status,
+        StatusCode::UNAUTHORIZED,
+        "{}",
+        no_session.raw
+    );
+
+    // The owner sees the member's name on the member list; the owner's own row has none.
+    let listed = customer(
+        &app,
+        Method::GET,
+        &format!("/api/customer/teams/members?team_pubkey={team}"),
+        &owner.session,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.raw);
+    let members = listed.body["members"].as_array().unwrap();
+    let row = |pubkey: &str| {
+        members
+            .iter()
+            .find(|m| m["pubkey"] == pubkey)
+            .unwrap_or_else(|| panic!("{pubkey} is listed"))
+            .clone()
+    };
+    assert_eq!(row(&member.pubkey)["display_name"], "Ana López");
+    assert_eq!(row(&owner.pubkey)["display_name"], Value::Null);
+
+    // Cleared, the member list says null again.
+    let cleared = customer(
+        &app,
+        Method::PUT,
+        path,
+        &member.session,
+        json!({ "display_name": "" }),
+    )
+    .await;
+    assert_eq!(cleared.body, json!({ "display_name": null }));
+
+    // A staff session on the owner tenant uses /api/user/display-name.
+    let staff = Keys::generate().public_key();
+    sqlx::query(
+        "INSERT INTO users (pubkey, tenant_id, created_at, updated_at) VALUES ($1, $2, NOW(), NOW())",
+    )
+    .bind(staff.to_hex())
+    .bind(app.owner_tenant)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let staff_session = generate_server_signed_ucan(
+        &staff,
+        app.owner_tenant,
+        "staff@example.com",
+        "https://account.example.com",
+        None,
+        &app.server_keys,
+        false,
+        None,
+    )
+    .await
+    .map_err(|_| "failed to mint token")
+    .unwrap();
+    let staff_set = request(
+        &app,
+        Method::PUT,
+        OWNER_HOST,
+        "/api/user/display-name",
+        Some(&staff_session),
+        json!({ "display_name": "Sam Staff" }),
+    )
+    .await;
+    assert_eq!(staff_set.status, StatusCode::OK, "{}", staff_set.raw);
+    assert_eq!(staff_set.body, json!({ "display_name": "Sam Staff" }));
+    let staff_read = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        "/api/user/display-name",
+        Some(&staff_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(staff_read.body, json!({ "display_name": "Sam Staff" }));
+
+    // Each path stays on its own hostname.
+    let staff_on_customer_path = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        path,
+        Some(&staff_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        staff_on_customer_path.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        staff_on_customer_path.raw
+    );
+    let buyer_on_user_path = customer(
+        &app,
+        Method::GET,
+        "/api/user/display-name",
+        &member.session,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        buyer_on_user_path.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        buyer_on_user_path.raw
+    );
+}

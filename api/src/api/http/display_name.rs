@@ -10,14 +10,27 @@
 //! returns beside `email` (`TeamUser`, `BuyerTeamMember`), so a teammate can be
 //! shown by name instead of by email.
 //!
+//! A buyer uses `GET` and `PUT /api/customer/display-name` on the customer
+//! hostname instead, with the same body, answer and rules. It is a separate
+//! path because the customer routes have public CORS and a Bearer session,
+//! while `/api/user/*` has credentialed CORS limited to `ALLOWED_ORIGINS`.
+//! The customer path answers 404 on any other tenant and refuses a request
+//! without an `Authorization` header.
+//!
 //! This file is Synvya-only and stays out of upstream code, so an upstream
 //! merge does not touch it.
 
-use axum::{extract::State, http::HeaderMap, Json};
+use axum::{
+    extract::State,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::PgPool;
 
 use super::auth::{extract_user_from_token, AuthError};
+use super::routes::AuthState;
 use crate::api::tenant::TenantExtractor;
 use keycast_core::repositories::UserRepository;
 
@@ -69,30 +82,26 @@ pub fn normalize_display_name(raw: Option<&str>) -> Result<Option<String>, Strin
     Ok(Some(trimmed.to_string()))
 }
 
-/// `GET /api/user/display-name`
-pub async fn get_display_name(
-    tenant: TenantExtractor,
-    State(pool): State<PgPool>,
-    headers: HeaderMap,
-) -> Result<Json<DisplayNameResponse>, AuthError> {
-    let tenant_id = tenant.0.id;
-    let pubkey = extract_user_from_token(&headers, tenant_id).await?;
+async fn read(
+    pool: PgPool,
+    tenant_id: i64,
+    headers: &HeaderMap,
+) -> Result<DisplayNameResponse, AuthError> {
+    let pubkey = extract_user_from_token(headers, tenant_id).await?;
     let display_name = UserRepository::new(pool)
         .get_display_name(&pubkey, tenant_id)
         .await?
         .ok_or(AuthError::UserNotFound)?;
-    Ok(Json(DisplayNameResponse { display_name }))
+    Ok(DisplayNameResponse { display_name })
 }
 
-/// `PUT /api/user/display-name`
-pub async fn set_display_name(
-    tenant: TenantExtractor,
-    State(pool): State<PgPool>,
-    headers: HeaderMap,
-    Json(req): Json<SetDisplayNameRequest>,
-) -> Result<Json<DisplayNameResponse>, AuthError> {
-    let tenant_id = tenant.0.id;
-    let pubkey = extract_user_from_token(&headers, tenant_id).await?;
+async fn write(
+    pool: PgPool,
+    tenant_id: i64,
+    headers: &HeaderMap,
+    req: SetDisplayNameRequest,
+) -> Result<DisplayNameResponse, AuthError> {
+    let pubkey = extract_user_from_token(headers, tenant_id).await?;
     let raw = req
         .display_name
         .ok_or_else(|| AuthError::BadRequest("display_name is required".to_string()))?;
@@ -104,7 +113,70 @@ pub async fn set_display_name(
     if !updated {
         return Err(AuthError::UserNotFound);
     }
-    Ok(Json(DisplayNameResponse { display_name }))
+    Ok(DisplayNameResponse { display_name })
+}
+
+/// `GET /api/user/display-name`
+pub async fn get_display_name(
+    tenant: TenantExtractor,
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+) -> Result<Json<DisplayNameResponse>, AuthError> {
+    read(pool, tenant.0.id, &headers).await.map(Json)
+}
+
+/// `PUT /api/user/display-name`
+pub async fn set_display_name(
+    tenant: TenantExtractor,
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Json(req): Json<SetDisplayNameRequest>,
+) -> Result<Json<DisplayNameResponse>, AuthError> {
+    write(pool, tenant.0.id, &headers, req).await.map(Json)
+}
+
+/// A customer route answers only on the customer tenant and only to a Bearer
+/// session: the customer routes have public CORS, so a cookie must never work.
+/// Answers the refusal, or `None` when the request may go on.
+fn refuse_customer_request(tenant: &TenantExtractor, headers: &HeaderMap) -> Option<Response> {
+    if !tenant.0.is_customer_tenant() {
+        return Some(StatusCode::NOT_FOUND.into_response());
+    }
+    if !headers.contains_key(header::AUTHORIZATION) {
+        return Some(AuthError::MissingToken.into_response());
+    }
+    None
+}
+
+/// `GET /api/customer/display-name`
+pub async fn get_customer_display_name(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(refused) = refuse_customer_request(&tenant, &headers) {
+        return refused;
+    }
+    match read(auth_state.state.db.clone(), tenant.0.id, &headers).await {
+        Ok(answer) => Json(answer).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// `PUT /api/customer/display-name`
+pub async fn set_customer_display_name(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+    Json(req): Json<SetDisplayNameRequest>,
+) -> Response {
+    if let Some(refused) = refuse_customer_request(&tenant, &headers) {
+        return refused;
+    }
+    match write(auth_state.state.db.clone(), tenant.0.id, &headers, req).await {
+        Ok(answer) => Json(answer).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 #[cfg(test)]

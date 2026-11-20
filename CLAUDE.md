@@ -177,6 +177,7 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - `/api/customer/session`: The session's personal key and email. Synvya Server calls it once with the buyer's Bearer token to make its own buyer session
 - `/api/customer/teams` and `/api/customer/teams/{members,invite,accept,role,remove,grant}`: Buyer teams, each with its own key; the grant is on the team key. Server-side counterparts are `/api/admin/customer-teams*`. See `docs/synvya/customer-accounts.md` §15
 - `/api/customer/confirmations/:token`: Synvya. `invite`, `role` and `remove` answer 428 `confirmation_required` until the member confirms through an emailed link and sends the request again with `X-Synvya-Confirmation` (`api/src/api/http/confirmations.rs`, customer-accounts.md §15)
+- `/api/customer/display-name`: Synvya. `GET` and `PUT`, the buyer's own display name, with the body, answer and rules of `/api/user/display-name`. Bearer session only; 404 on any other tenant. Buyer-team member rows return it as `display_name`
 - CORS: Permissive (each merchant's orders app is its own origin)
 - Allowed app origins are rows in `customer_app_origins`, each with its merchant list in `customer_app_origin_merchants` (a grant may name only a listed merchant), managed with `/api/admin/customer-origins` on another hostname. Adding a merchant needs no deploy
 
@@ -191,7 +192,7 @@ Key endpoints (see `api/src/api/http/routes.rs`):
 - `/api/user/oauth-authorizations/:id`: Revoke authorization
 - `/api/user/bunker`: Get personal NIP-46 bunker URL (legacy)
 - `/api/user/staff-challenge/sign`: Synvya. Signs the staff challenge with the person's key for a session whose origin is in `STAFF_CHALLENGE_ORIGINS` (`api/src/api/http/staff_challenge.rs`)
-- `/api/user/display-name`: Synvya. `GET` and `PUT` `{"display_name": string | null}`, the person's own display name (trimmed, 1 to 80 characters, no control characters; empty or `null` clears it). Every team-member list returns it as `display_name` beside `email` (`api/src/api/http/display_name.rs`)
+- `/api/user/display-name`: Synvya. `GET` and `PUT` `{"display_name": string | null}`, the person's own display name (trimmed, 1 to 80 characters, no control characters; empty or `null` clears it). Every team-member list returns it as `display_name` beside `email` (`api/src/api/http/display_name.rs`). Not on the customer hostname: a buyer uses `/api/customer/display-name`
 
 **Team Management (UCAN Auth Required)**:
 - `/api/teams/*`: Team CRUD, member management, key management, policies
