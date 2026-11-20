@@ -12,10 +12,11 @@ use axum::Router;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
 use keycast_api::api::http::auth::generate_server_signed_ucan;
-use keycast_api::api::http::confirmations::token_hash;
+use keycast_api::api::http::confirmations::{renew_confirmation, token_hash, RenewRefusal};
 use keycast_api::api::http::routes::api_routes;
 use keycast_api::api::tenant::Tenant;
 use keycast_api::bcrypt_queue::BcryptQueue;
+use keycast_api::email_service::{DevEmailSender, EmailSender};
 use keycast_api::handlers::http_rpc_handler::new_http_handler_cache;
 use keycast_api::state::{get_tenant_cache, KeycastState, KEYCAST_STATE};
 use keycast_core::encryption::{KeyManager, KeyManagerError};
@@ -1507,6 +1508,235 @@ async fn test_a_confirmation_expires_after_ten_minutes() {
         after.raw
     );
     assert_eq!(invitations_of(&app, &team).await, 0);
+}
+
+// A new link for an expired confirmation (store API contract §14.5)
+
+async fn expire(app: &TestApp, confirmation_id: &str) {
+    sqlx::query(
+        "UPDATE fresh_confirmations SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(confirmation_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+}
+
+async fn renew(app: &TestApp, token: &str, session: &str) -> Answer {
+    customer(
+        app,
+        Method::POST,
+        &format!("/api/customer/confirmations/{token}/renew"),
+        session,
+        json!({}),
+    )
+    .await
+}
+
+/// An invite that answered 428, with its confirmation id and a known link token.
+async fn asked(app: &TestApp, team: &str, by: &Buyer, body: &Value) -> (String, String) {
+    let first = customer(
+        app,
+        Method::POST,
+        "/api/customer/teams/invite",
+        &by.session,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(
+        first.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        first.raw
+    );
+    let id = first.body["confirmation_id"].as_str().unwrap().to_string();
+    assert_eq!(invitations_of(app, team).await, 0);
+    let token = link_token(app, &id).await;
+    (id, token)
+}
+
+#[tokio::test]
+#[serial]
+async fn test_an_expired_link_renews_and_the_new_link_spends_on_the_retried_change() {
+    let app = setup().await;
+    let origin = "https://buyers.renew.example.com";
+    std::env::set_var("ALLOWED_ORIGINS", origin);
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let path = "/api/customer/teams/invite";
+    let body = invite_body(&team, &merchant);
+    let (old_id, old_token) = asked(&app, &team, &owner, &body).await;
+    expire(&app, &old_id).await;
+
+    // The route answers 201 with a new confirmation that lasts 10 minutes.
+    let renewed = renew(&app, &old_token, &owner.session).await;
+    assert_eq!(renewed.status, StatusCode::CREATED, "{}", renewed.raw);
+    let routed_id = renewed.body["confirmation_id"].as_str().unwrap();
+    assert_eq!(routed_id.len(), 32);
+    assert_ne!(routed_id, old_id);
+    let expires_at =
+        chrono::DateTime::parse_from_rfc3339(renewed.body["expires_at"].as_str().unwrap()).unwrap();
+    let lifetime = expires_at.with_timezone(&Utc) - Utc::now();
+    assert!(lifetime > Duration::minutes(9) && lifetime <= Duration::minutes(10));
+
+    // The new link is mailed as the first was: <origin>/confirm/keycast/<token>.
+    let sender = DevEmailSender::new();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("origin", origin.parse().unwrap());
+    let made = renew_confirmation(
+        &app.pool,
+        &sender,
+        &headers,
+        app.customer_tenant,
+        &owner.pubkey,
+        &old_token,
+    )
+    .await
+    .unwrap()
+    .expect("an expired link renews");
+    let mailed = sender.get_captured_emails();
+    assert_eq!(mailed.len(), 1);
+    assert_eq!(mailed[0].to, owner.email);
+    let link = mailed[0].verification_url.clone().unwrap();
+    let prefix = format!("{origin}/confirm/keycast/");
+    assert!(link.starts_with(&prefix), "{link}");
+    let new_token = link[prefix.len()..].to_string();
+    assert_eq!(new_token.len(), 64);
+
+    // The new row is bound to the same change; the expired row is left as it is.
+    let (old_action, old_digest, old_confirmed): (String, String, Option<chrono::DateTime<Utc>>) =
+        sqlx::query_as(
+            "SELECT action, digest, confirmed_at FROM fresh_confirmations WHERE id = $1",
+        )
+        .bind(&old_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert!(old_confirmed.is_none());
+    let (action, digest): (String, String) =
+        sqlx::query_as("SELECT action, digest FROM fresh_confirmations WHERE id = $1")
+            .bind(&made.confirmation_id)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!((action, digest), (old_action, old_digest));
+    let late = confirm(&app, &old_token, &owner.session).await;
+    assert_eq!(late.status, StatusCode::GONE, "{}", late.raw);
+
+    // The member opens the mailed link, and the change sent again spends the new confirmation.
+    let confirmed = confirm(&app, &new_token, &owner.session).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.raw);
+    assert_eq!(
+        confirmed.body["confirmation_id"],
+        made.confirmation_id.as_str()
+    );
+    assert_eq!(confirmed.body["action"], "team_invite");
+    let stale = with_confirmation(&app, path, &owner.session, &old_id, body.clone()).await;
+    assert_eq!(
+        stale.status,
+        StatusCode::PRECONDITION_REQUIRED,
+        "{}",
+        stale.raw
+    );
+    let done = with_confirmation(
+        &app,
+        path,
+        &owner.session,
+        &made.confirmation_id,
+        body.clone(),
+    )
+    .await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.raw);
+    assert_eq!(invitations_of(&app, &team).await, 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_renewal_is_404_for_another_member_and_409_before_expiry_or_after_use() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let stranger = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let (id, token) = asked(&app, &team, &owner, &invite_body(&team, &merchant)).await;
+
+    // While the link still works.
+    let early = renew(&app, &token, &owner.session).await;
+    assert_eq!(early.status, StatusCode::CONFLICT, "{}", early.raw);
+    assert_eq!(early.body["code"], "not_transitionable");
+
+    expire(&app, &id).await;
+    let by_stranger = renew(&app, &token, &stranger.session).await;
+    assert_eq!(
+        by_stranger.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        by_stranger.raw
+    );
+    assert_eq!(by_stranger.body["code"], "not_found");
+    let unknown = renew(&app, "no-such-token", &owner.session).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.raw);
+    let no_session = request(
+        &app,
+        Method::POST,
+        CUSTOMER_HOST,
+        &format!("/api/customer/confirmations/{token}/renew"),
+        None,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        no_session.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        no_session.raw
+    );
+    let on_owner_host = request(
+        &app,
+        Method::POST,
+        OWNER_HOST,
+        &format!("/api/customer/confirmations/{token}/renew"),
+        Some(&owner.session),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        on_owner_host.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        on_owner_host.raw
+    );
+
+    // Once the link was used, even after it expired.
+    let (used_id, used_token) = asked(&app, &team, &owner, &invite_body(&team, &merchant)).await;
+    let confirmed = confirm(&app, &used_token, &owner.session).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.raw);
+    let used = renew(&app, &used_token, &owner.session).await;
+    assert_eq!(used.status, StatusCode::CONFLICT, "{}", used.raw);
+    assert_eq!(used.body["code"], "not_transitionable");
+    expire(&app, &used_id).await;
+    let used_and_expired = renew(&app, &used_token, &owner.session).await;
+    assert_eq!(
+        used_and_expired.status,
+        StatusCode::CONFLICT,
+        "{}",
+        used_and_expired.raw
+    );
+    assert_eq!(
+        renew_confirmation(
+            &app.pool,
+            &DevEmailSender::new(),
+            &axum::http::HeaderMap::new(),
+            app.customer_tenant,
+            &owner.pubkey,
+            &used_token,
+        )
+        .await
+        .unwrap()
+        .unwrap_err(),
+        RenewRefusal::NotTransitionable
+    );
 }
 
 /// The team change log, read through the admin API from after `after`.

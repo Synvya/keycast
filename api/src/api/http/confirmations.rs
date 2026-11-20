@@ -1,5 +1,6 @@
 // ABOUTME: Fresh confirmations for the buyer team routes that change members or roles (BSP-14)
-// ABOUTME: A 428 with an emailed link, the confirm route, and the check of the request sent again
+// ABOUTME: A 428 with an emailed link, the confirm and renew routes, and the check of the
+// ABOUTME: request sent again
 
 //! Synvya. Store API contract §14.2, §14.3 and §14.5 in the Synvya docs repo.
 //!
@@ -8,13 +9,14 @@
 //! `confirmation_required` and emails the acting member a link. The member opens the link in the
 //! buyer app, which calls [`confirm`] with the member's session, then sends the same request again
 //! with `X-Synvya-Confirmation: <confirmation_id>`. The confirmation is bound to the method, path
-//! and body of that one request, expires 10 minutes after it is made, and is used once.
+//! and body of that one request, expires 10 minutes after it is made, and is used once. A member
+//! whose link expired asks [`renew`] for a new one bound to the same change.
 
 use super::auth::app_url_is_allowed;
 use super::routes::AuthState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::tenant::TenantExtractor;
-use crate::email_service::EmailService;
+use crate::email_service::{EmailSender, EmailService};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -37,10 +39,8 @@ const MAX_ID_LENGTH: usize = 128;
 pub struct ConfirmedChange<'a> {
     pub tenant_id: i64,
     pub member_pubkey: &'a str,
-    /// The stored action name, such as `team_invite`.
+    /// The stored action name, such as `team_invite`. The email names it with [`what_for`].
     pub action: &'static str,
-    /// The change in a few words for the email, such as "invite a team member".
-    pub what: &'static str,
     pub method: &'a str,
     /// The path without its query.
     pub path: &'a str,
@@ -56,6 +56,17 @@ pub fn request_digest(method: &str, path: &str, body: &[u8]) -> String {
     hasher.update(b"\n");
     hasher.update(body);
     hex::encode(hasher.finalize())
+}
+
+/// The change in a few words for the email, from its stored action. A renewed link uses the
+/// same words as the first.
+pub fn what_for(action: &str) -> &'static str {
+    match action {
+        "team_invite" => "invite a team member",
+        "team_role" => "change a team member's role",
+        "team_remove" => "remove a team member",
+        _ => "make a change to your buyer account",
+    }
 }
 
 /// SHA-256 of a link token, in hex. The table keeps only this.
@@ -123,22 +134,13 @@ pub async fn require_confirmation(
         }
     }
 
-    let id = random_hex(16);
-    let token = random_hex(32);
-    let expires_at = Utc::now() + Duration::minutes(LIFETIME_MINUTES);
-    sqlx::query(
-        "INSERT INTO fresh_confirmations
-           (id, tenant_id, member_pubkey, action, digest, token_hash, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    let (id, token, expires_at) = insert_confirmation(
+        pool,
+        change.tenant_id,
+        change.member_pubkey,
+        change.action,
+        &digest,
     )
-    .bind(&id)
-    .bind(change.tenant_id)
-    .bind(change.member_pubkey)
-    .bind(change.action)
-    .bind(&digest)
-    .bind(token_hash(&token))
-    .bind(expires_at)
-    .execute(pool)
     .await?;
 
     send_link(pool, headers, change, &token).await;
@@ -164,11 +166,47 @@ pub async fn require_confirmation(
     ))
 }
 
+/// A new confirmation row with a fresh id and link token: `(id, token, expires_at)`.
+async fn insert_confirmation(
+    pool: &PgPool,
+    tenant_id: i64,
+    member_pubkey: &str,
+    action: &str,
+    digest: &str,
+) -> ApiResult<(String, String, DateTime<Utc>)> {
+    let id = random_hex(16);
+    let token = random_hex(32);
+    let expires_at = Utc::now() + Duration::minutes(LIFETIME_MINUTES);
+    sqlx::query(
+        "INSERT INTO fresh_confirmations
+           (id, tenant_id, member_pubkey, action, digest, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(&id)
+    .bind(tenant_id)
+    .bind(member_pubkey)
+    .bind(action)
+    .bind(digest)
+    .bind(token_hash(&token))
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok((id, token, expires_at))
+}
+
+/// The link the member opens: `<origin>/confirm/keycast/<token>`, or `None` with no origin.
+fn confirmation_link(headers: &HeaderMap, token: &str) -> Option<String> {
+    let link = link_origin(headers).map(|origin| format!("{origin}/confirm/keycast/{token}"));
+    if link.is_none() {
+        tracing::error!("Fresh confirmation: no allowed origin to build the link on");
+    }
+    link
+}
+
 /// Email the link to the acting member, in the background. A failure is logged: the member can
 /// send the request again for a new link.
 async fn send_link(pool: &PgPool, headers: &HeaderMap, change: &ConfirmedChange<'_>, token: &str) {
-    let Some(origin) = link_origin(headers) else {
-        tracing::error!("Fresh confirmation: no allowed origin to build the link on");
+    let Some(link) = confirmation_link(headers, token) else {
         return;
     };
     let email = match UserRepository::new(pool.clone())
@@ -184,8 +222,7 @@ async fn send_link(pool: &PgPool, headers: &HeaderMap, change: &ConfirmedChange<
             return;
         }
     };
-    let link = format!("{origin}/confirm/keycast/{token}");
-    let what = change.what;
+    let what = what_for(change.action);
     tokio::spawn(async move {
         match EmailService::new().await {
             Ok(service) => {
@@ -225,14 +262,7 @@ pub async fn confirm(
         )
     };
 
-    let session = headers
-        .get("Authorization")
-        .and_then(|value| value.to_str().ok());
-    let Some(session) = session else {
-        return Ok(not_found());
-    };
-    let Ok((pubkey, _, _, _)) = crate::ucan_auth::validate_ucan_token(session, tenant_id).await
-    else {
+    let Some(pubkey) = session_member(&headers, tenant_id).await else {
         return Ok(not_found());
     };
     if token.is_empty() || token.len() > MAX_ID_LENGTH {
@@ -276,6 +306,153 @@ pub async fn confirm(
         "confirmed_at": confirmed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     }))
     .into_response())
+}
+
+/// The pubkey of the request's Bearer session on this tenant, or `None`.
+async fn session_member(headers: &HeaderMap, tenant_id: i64) -> Option<String> {
+    let session = headers.get("Authorization")?.to_str().ok()?;
+    let (pubkey, _, _, _) = crate::ucan_auth::validate_ucan_token(session, tenant_id)
+        .await
+        .ok()?;
+    Some(pubkey)
+}
+
+/// Why a renewal is refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RenewRefusal {
+    /// An unknown token, or another member's: 404 `not_found`.
+    NotFound,
+    /// The link still works, or it was used: 409 `not_transitionable`.
+    NotTransitionable,
+}
+
+/// The new confirmation a renewal makes.
+#[derive(Debug)]
+pub struct Renewed {
+    pub confirmation_id: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// A new confirmation for the expired link `token`, bound to the same change: the same tenant,
+/// member, action and request digest. Its link is mailed with `sender`, as the first was. The
+/// expired row is left as it is, so only the new confirmation can be used.
+pub async fn renew_confirmation(
+    pool: &PgPool,
+    sender: &dyn EmailSender,
+    headers: &HeaderMap,
+    tenant_id: i64,
+    member_pubkey: &str,
+    token: &str,
+) -> ApiResult<Result<Renewed, RenewRefusal>> {
+    type Row = (String, String, String, DateTime<Utc>, Option<DateTime<Utc>>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT member_pubkey, action, digest, expires_at, confirmed_at
+         FROM fresh_confirmations WHERE token_hash = $1 AND tenant_id = $2",
+    )
+    .bind(token_hash(token))
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((member, action, digest, expires_at, confirmed_at)) = row else {
+        return Ok(Err(RenewRefusal::NotFound));
+    };
+    if member.trim() != member_pubkey {
+        return Ok(Err(RenewRefusal::NotFound));
+    }
+    if confirmed_at.is_some() || expires_at > Utc::now() {
+        return Ok(Err(RenewRefusal::NotTransitionable));
+    }
+
+    // Each renewal sends an email, so it counts as the other email routes do.
+    let email = UserRepository::new(pool.clone())
+        .get_email(member_pubkey, tenant_id)
+        .await?;
+    let redis = crate::rate_limit::shared_redis();
+    if !crate::rate_limit::allow_request(
+        redis,
+        "confirmation_renew",
+        tenant_id,
+        headers,
+        Some(&email),
+    )
+    .await
+    {
+        return Err(ApiError::TooManyRequests);
+    }
+
+    let (id, new_token, expires_at) =
+        insert_confirmation(pool, tenant_id, member_pubkey, &action, digest.trim()).await?;
+    if let Some(link) = confirmation_link(headers, &new_token) {
+        if let Err(e) = sender
+            .send_confirmation_email(&email, &link, what_for(&action))
+            .await
+        {
+            tracing::error!("Fresh confirmation email failed: {}", e);
+        }
+    }
+    tracing::info!(
+        event = "fresh_confirmation_renewed",
+        tenant_id,
+        action = %action,
+        confirmation_id = %id,
+        "Fresh confirmation renewed"
+    );
+
+    Ok(Ok(Renewed {
+        confirmation_id: id,
+        expires_at,
+    }))
+}
+
+/// POST /api/customer/confirmations/{token}/renew - the member whose link expired asks for a new
+/// one with their own session. 201 with the new confirmation, 404 as [`confirm`] answers it, 409
+/// while the link still works or once it was used.
+pub async fn renew(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> ApiResult<Response> {
+    if !tenant.0.is_customer_tenant() {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    }
+    let tenant_id = tenant.0.id;
+    let not_found = || error_body(StatusCode::NOT_FOUND, "not_found", "Confirmation not found");
+    let Some(pubkey) = session_member(&headers, tenant_id).await else {
+        return Ok(not_found());
+    };
+    if token.is_empty() || token.len() > MAX_ID_LENGTH {
+        return Ok(not_found());
+    }
+
+    let service = EmailService::new().await.map_err(ApiError::internal)?;
+    let renewed = renew_confirmation(
+        &auth_state.state.db,
+        service.sender(),
+        &headers,
+        tenant_id,
+        &pubkey,
+        &token,
+    )
+    .await?;
+    Ok(match renewed {
+        Ok(renewed) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "confirmation_id": renewed.confirmation_id,
+                "expires_at": renewed
+                    .expires_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            })),
+        )
+            .into_response(),
+        Err(RenewRefusal::NotFound) => not_found(),
+        Err(RenewRefusal::NotTransitionable) => error_body(
+            StatusCode::CONFLICT,
+            "not_transitionable",
+            "This confirmation has not expired, or it was used",
+        ),
+    })
 }
 
 /// Shorthand for the routes: the request's body parsed as JSON, or a 400.

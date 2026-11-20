@@ -165,7 +165,6 @@ async fn forget_grants(auth_state: &AuthState, bunker_pubkeys: &[String]) {
 
 /// The fresh confirmation of a member or role change (store API contract §14.5): `Some(428)`
 /// until the request carries a confirmation bound to exactly this method, path and body.
-#[allow(clippy::too_many_arguments)]
 async fn confirmation_for(
     pool: &PgPool,
     headers: &HeaderMap,
@@ -174,7 +173,6 @@ async fn confirmation_for(
     tenant_id: i64,
     pubkey: &str,
     action: &'static str,
-    what: &'static str,
 ) -> ApiResult<Option<Response>> {
     require_confirmation(
         pool,
@@ -183,7 +181,6 @@ async fn confirmation_for(
             tenant_id,
             member_pubkey: pubkey,
             action,
-            what,
             method: "POST",
             path: uri.0.path(),
             body,
@@ -567,7 +564,6 @@ pub async fn invite_member(
         tenant_id,
         &pubkey,
         "team_invite",
-        "invite a team member",
     )
     .await?
     {
@@ -753,17 +749,8 @@ pub async fn change_member_role(
     require_admin(pool, &team, &pubkey).await?;
     let member = parse_pubkey(&req.member_pubkey, "member_pubkey")?;
     let role = parse_buyer_role(&req.role)?;
-    if let Some(required) = confirmation_for(
-        pool,
-        &headers,
-        &uri,
-        &body,
-        tenant_id,
-        &pubkey,
-        "team_role",
-        "change a team member's role",
-    )
-    .await?
+    if let Some(required) =
+        confirmation_for(pool, &headers, &uri, &body, tenant_id, &pubkey, "team_role").await?
     {
         return Ok(required);
     }
@@ -834,7 +821,6 @@ pub async fn remove_member(
         tenant_id,
         &pubkey,
         "team_remove",
-        "remove a team member",
     )
     .await?
     {

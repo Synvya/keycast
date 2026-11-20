@@ -111,6 +111,11 @@ pub fn api_routes(
             "/customer/confirmations/:token",
             post(confirmations::confirm),
         )
+        // Synvya: a new link for an expired confirmation (store API contract §14.5).
+        .route(
+            "/customer/confirmations/:token/renew",
+            post(confirmations::renew),
+        )
         .route(
             "/customer/teams/grant",
             post(buyer_teams::grant_on_team_key),
