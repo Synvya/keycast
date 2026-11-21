@@ -318,7 +318,16 @@ struct Buyer {
 }
 
 async fn sign_in(app: &TestApp, merchant: &Merchant) -> Buyer {
-    let email = format!("buyer-{}@example.com", Uuid::new_v4());
+    sign_in_as(
+        app,
+        merchant,
+        &format!("buyer-{}@example.com", Uuid::new_v4()),
+    )
+    .await
+}
+
+async fn sign_in_as(app: &TestApp, merchant: &Merchant, email: &str) -> Buyer {
+    let email = email.to_string();
     let page = format!("{}/signin", merchant.origin);
     let token = new_link(app, &email, PURPOSE_SIGN_IN, &page).await;
     let answer = request(
@@ -2586,4 +2595,313 @@ async fn test_owner_team_invitations_and_withdrawals_are_logged() {
         assert_eq!(event["team_key_pubkeys"], json!([store_key]));
         assert_eq!(event["by_support"], false);
     }
+}
+
+/// Invite an email to a team, confirmed, and answer the invitation's id and link token.
+async fn invite_email(
+    app: &TestApp,
+    team: &str,
+    by: &Buyer,
+    merchant: &Merchant,
+    email: &str,
+) -> (i64, String) {
+    let invited = confirmed_change(
+        app,
+        "/api/customer/teams/invite",
+        &by.session,
+        json!({
+            "team_pubkey": team,
+            "email": email,
+            "role": "orderer",
+            "app_url": format!("{}/team", merchant.origin),
+        }),
+    )
+    .await;
+    assert_eq!(invited.status, StatusCode::OK, "{}", invited.raw);
+    let (id, token): (i32, String) =
+        sqlx::query_as("SELECT id, token FROM team_invitations WHERE email = $1")
+            .bind(email)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    (i64::from(id), token)
+}
+
+async fn pending_invitations(app: &TestApp, team: &str, by: &Buyer) -> Answer {
+    customer(
+        app,
+        Method::GET,
+        &format!("/api/customer/teams/invitations?team_pubkey={team}"),
+        &by.session,
+        Value::Null,
+    )
+    .await
+}
+
+async fn withdraw(app: &TestApp, host: &str, team: &str, by: &Buyer, id: i64) -> Answer {
+    request(
+        app,
+        Method::POST,
+        host,
+        "/api/customer/teams/invitations/withdraw",
+        Some(&by.session),
+        json!({ "team_pubkey": team, "invitation_id": id }),
+    )
+    .await
+}
+
+async fn accept(app: &TestApp, by: &Buyer, token: &str) -> Answer {
+    customer(
+        app,
+        Method::POST,
+        "/api/customer/teams/accept",
+        &by.session,
+        json!({ "token": token }),
+    )
+    .await
+}
+
+fn new_email() -> String {
+    format!("buyer-{}@example.com", Uuid::new_v4())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_admin_lists_only_pending_invitations_newest_first() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+
+    let (pending_email, accepted_email, withdrawn_email, expired_email, newest_email) = (
+        new_email(),
+        new_email(),
+        new_email(),
+        new_email(),
+        new_email(),
+    );
+    let (pending_id, _) = invite_email(&app, &team, &owner, &merchant, &pending_email).await;
+    let (_, accepted_token) = invite_email(&app, &team, &owner, &merchant, &accepted_email).await;
+    let (withdrawn_id, _) = invite_email(&app, &team, &owner, &merchant, &withdrawn_email).await;
+    let (expired_id, _) = invite_email(&app, &team, &owner, &merchant, &expired_email).await;
+    let (newest_id, _) = invite_email(&app, &team, &owner, &merchant, &newest_email).await;
+    // The newest invitation is the latest made; spread the times so the order is certain.
+    sqlx::query("UPDATE team_invitations SET created_at = NOW() - INTERVAL '1 hour' WHERE id = $1")
+        .bind(pending_id as i32)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let invitee = sign_in_as(&app, &merchant, &accepted_email).await;
+    let accepted = accept(&app, &invitee, &accepted_token).await;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.raw);
+    let withdrawn = withdraw(&app, CUSTOMER_HOST, &team, &owner, withdrawn_id).await;
+    assert_eq!(withdrawn.status, StatusCode::OK, "{}", withdrawn.raw);
+    sqlx::query(
+        "UPDATE team_invitations SET expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1",
+    )
+    .bind(expired_id as i32)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let listed = pending_invitations(&app, &team, &owner).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.raw);
+    let invitations = listed.body["invitations"].as_array().unwrap();
+    let ids: Vec<i64> = invitations
+        .iter()
+        .map(|i| i["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![newest_id, pending_id],
+        "accepted, withdrawn and expired invitations are left out; newest first"
+    );
+    let first = &invitations[0];
+    assert_eq!(first["email"], newest_email.as_str());
+    assert_eq!(first["role"], "orderer");
+    assert_eq!(first["invited_by_email"], owner.email.as_str());
+    assert!(first["created_at"].is_string(), "{}", listed.raw);
+    assert!(first["expires_at"].is_string(), "{}", listed.raw);
+    let keys: Vec<&str> = first
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys.len(),
+        6,
+        "only id, email, role, invited_by_email, created_at, expires_at: {keys:?}"
+    );
+
+    // A member who is not an admin: 403. Someone not on the team: 404. Each with its code.
+    let by_orderer = pending_invitations(&app, &team, &invitee).await;
+    assert_eq!(
+        by_orderer.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        by_orderer.raw
+    );
+    assert_eq!(by_orderer.body["code"], "forbidden");
+    let stranger = sign_in(&app, &merchant).await;
+    let by_stranger = pending_invitations(&app, &team, &stranger).await;
+    assert_eq!(
+        by_stranger.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        by_stranger.raw
+    );
+    assert_eq!(by_stranger.body["code"], "not_found");
+    let missing = customer(
+        &app,
+        Method::GET,
+        "/api/customer/teams/invitations",
+        &owner.session,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST, "{}", missing.raw);
+    assert_eq!(missing.body["code"], "validation_error");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_a_withdrawn_invitation_no_longer_accepts_and_is_logged() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let email = new_email();
+    let (id, token) = invite_email(&app, &team, &owner, &merchant, &email).await;
+
+    // A member who is not an admin cannot withdraw, and the invitation stays
+    let orderer = sign_in(&app, &merchant).await;
+    add_to_team(&app, &team, &owner, &orderer, "orderer").await;
+    let start = last_team_event_id(&app).await;
+    let by_orderer = withdraw(&app, CUSTOMER_HOST, &team, &orderer, id).await;
+    assert_eq!(
+        by_orderer.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        by_orderer.raw
+    );
+    assert_eq!(by_orderer.body["code"], "forbidden");
+    let stranger = sign_in(&app, &merchant).await;
+    let by_stranger = withdraw(&app, CUSTOMER_HOST, &team, &stranger, id).await;
+    assert_eq!(
+        by_stranger.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        by_stranger.raw
+    );
+
+    // No fresh confirmation: the first request withdraws
+    let withdrawn = withdraw(&app, CUSTOMER_HOST, &team, &owner, id).await;
+    assert_eq!(withdrawn.status, StatusCode::OK, "{}", withdrawn.raw);
+    assert_eq!(withdrawn.body, json!({ "withdrawn": true }));
+
+    let invitee = sign_in_as(&app, &merchant, &email).await;
+    let accepted = accept(&app, &invitee, &token).await;
+    assert_eq!(accepted.status, StatusCode::NOT_FOUND, "{}", accepted.raw);
+
+    let mine: Vec<Value> = team_events_after(&app, start)
+        .await
+        .into_iter()
+        .filter(|e| e["team_pubkey"] == team.as_str())
+        .collect();
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    assert_eq!(mine[0]["action"], "invitation_withdrawn");
+    assert_eq!(mine[0]["member_email"], email.as_str());
+    assert_eq!(mine[0]["member_pubkey"], Value::Null);
+    assert_eq!(mine[0]["role"], "orderer");
+    assert_eq!(mine[0]["actor_pubkey"], owner.pubkey.as_str());
+
+    // Withdrawn twice, unknown, accepted, or another team's: 404, and nothing more is logged
+    let again = withdraw(&app, CUSTOMER_HOST, &team, &owner, id).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.raw);
+    assert_eq!(again.body["code"], "not_found");
+    let unknown = withdraw(&app, CUSTOMER_HOST, &team, &owner, i64::from(i32::MAX)).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.raw);
+
+    let accepted_email = new_email();
+    let (accepted_id, accepted_token) =
+        invite_email(&app, &team, &owner, &merchant, &accepted_email).await;
+    let joiner = sign_in_as(&app, &merchant, &accepted_email).await;
+    let joined = accept(&app, &joiner, &accepted_token).await;
+    assert_eq!(joined.status, StatusCode::OK, "{}", joined.raw);
+    let after_accept = withdraw(&app, CUSTOMER_HOST, &team, &owner, accepted_id).await;
+    assert_eq!(
+        after_accept.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        after_accept.raw
+    );
+
+    let other_team = create_team(&app, &owner).await;
+    let other_email = new_email();
+    let (other_id, _) = invite_email(&app, &other_team, &owner, &merchant, &other_email).await;
+    let wrong_team = withdraw(&app, CUSTOMER_HOST, &team, &owner, other_id).await;
+    assert_eq!(
+        wrong_team.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        wrong_team.raw
+    );
+
+    let withdrawals = team_events_after(&app, start)
+        .await
+        .into_iter()
+        .filter(|e| e["action"] == "invitation_withdrawn")
+        .count();
+    assert_eq!(withdrawals, 1, "only the one withdrawal is logged");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_invitation_routes_answer_on_the_customer_hostname_only() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let (id, _) = invite_email(&app, &team, &owner, &merchant, &new_email()).await;
+
+    // The owner hostname has no such route, even with a valid customer session
+    let listed = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        &format!("/api/customer/teams/invitations?team_pubkey={team}"),
+        Some(&owner.session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::NOT_FOUND, "{}", listed.raw);
+    let withdrawn = withdraw(&app, OWNER_HOST, &team, &owner, id).await;
+    assert_eq!(withdrawn.status, StatusCode::NOT_FOUND, "{}", withdrawn.raw);
+
+    // The customer hostname guard lets both paths through
+    let listed = pending_invitations(&app, &team, &owner).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.raw);
+    assert_eq!(listed.body["invitations"].as_array().unwrap().len(), 1);
+    let withdrawn = withdraw(&app, CUSTOMER_HOST, &team, &owner, id).await;
+    assert_eq!(withdrawn.status, StatusCode::OK, "{}", withdrawn.raw);
+
+    // No session on the customer hostname reaches the route and is refused with its code
+    let no_session = request(
+        &app,
+        Method::GET,
+        CUSTOMER_HOST,
+        &format!("/api/customer/teams/invitations?team_pubkey={team}"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        no_session.status,
+        StatusCode::UNAUTHORIZED,
+        "{}",
+        no_session.raw
+    );
+    assert_eq!(no_session.body["code"], "unauthorized");
 }

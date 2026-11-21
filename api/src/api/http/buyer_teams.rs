@@ -20,9 +20,9 @@ use chrono::{DateTime, Utc};
 use keycast_core::authorization_channel::AuthorizationCommand;
 use keycast_core::bunker_key::derive_bunker_keys;
 use keycast_core::repositories::{
-    find_team_signing, list_team_events, record_team_event, BuyerTeam, BuyerTeamMember,
-    BuyerTeamMembership, BuyerTeamRepository, LastAdmin, MemberChange, TeamDeletion, TeamEvent,
-    TeamEventRow, TeamInvitationRepository, TeamSigning, UserRepository,
+    find_team_signing, list_team_events, record_team_event, BuyerTeam, BuyerTeamInvitation,
+    BuyerTeamMember, BuyerTeamMembership, BuyerTeamRepository, LastAdmin, MemberChange,
+    TeamDeletion, TeamEvent, TeamEventRow, TeamInvitationRepository, TeamSigning, UserRepository,
 };
 use keycast_core::types::authorization::Authorization;
 use keycast_core::types::user::BUYER_TEAM_ROLES;
@@ -713,6 +713,120 @@ pub async fn accept_team_invitation(
         role: invitation.role,
     })
     .into_response())
+}
+
+/// A refusal in Keycast's flat body, `{ "error", "code" }`, so the client reads the cause from
+/// the code and not from the message.
+fn coded_refusal(error: ApiError) -> Response {
+    let (status, code, message) = match error {
+        ApiError::Auth(message) => (StatusCode::UNAUTHORIZED, "unauthorized", message),
+        ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, "validation_error", message),
+        ApiError::Forbidden(message) => (StatusCode::FORBIDDEN, "forbidden", message),
+        ApiError::NotFound(message) => (StatusCode::NOT_FOUND, "not_found", message),
+        other => {
+            tracing::error!("Buyer team invitation route failed: {}", other);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Something went wrong. Please try again.".to_string(),
+            )
+        }
+    };
+    (
+        status,
+        Json(serde_json::json!({ "error": message, "code": code })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TeamInvitationsQuery {
+    pub team_pubkey: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TeamInvitationsResponse {
+    pub invitations: Vec<BuyerTeamInvitation>,
+}
+
+/// GET /api/customer/teams/invitations?team_pubkey= - a team admin reads the team's pending
+/// member invitations, newest first. 403 for a member who is not an admin, 404 for a team the
+/// caller is not on.
+pub async fn list_team_invitations(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+    Query(query): Query<TeamInvitationsQuery>,
+) -> Response {
+    if !tenant.0.is_customer_tenant() {
+        return coded_refusal(ApiError::not_found("Not found"));
+    }
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+    let answer: ApiResult<Response> = async {
+        let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
+        let team_pubkey = query
+            .team_pubkey
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("team_pubkey is required"))?;
+        let team = find_team(pool, tenant_id, team_pubkey).await?;
+        require_admin(pool, &team, &pubkey).await?;
+        let invitations = BuyerTeamRepository::new(pool.clone())
+            .list_pending_invitations(tenant_id, team.team_id)
+            .await?;
+        Ok(Json(TeamInvitationsResponse { invitations }).into_response())
+    }
+    .await;
+    answer.unwrap_or_else(coded_refusal)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WithdrawInvitationRequest {
+    pub team_pubkey: String,
+    pub invitation_id: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WithdrawInvitationResponse {
+    pub withdrawn: bool,
+}
+
+/// POST /api/customer/teams/invitations/withdraw - a team admin withdraws a pending invitation.
+/// Its link then answers 404 at accept, and the team change log gets `invitation_withdrawn`.
+/// No fresh confirmation: a withdrawal admits no one.
+pub async fn withdraw_team_invitation(
+    tenant: TenantExtractor,
+    State(auth_state): State<AuthState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !tenant.0.is_customer_tenant() {
+        return coded_refusal(ApiError::not_found("Not found"));
+    }
+    let tenant_id = tenant.0.id;
+    let pool = &auth_state.state.db;
+    let answer: ApiResult<Response> = async {
+        let (pubkey, _) = signed_in_buyer(&headers, tenant_id).await?;
+        let req: WithdrawInvitationRequest = parse_body(&body)?;
+        let team = find_team(pool, tenant_id, &req.team_pubkey).await?;
+        require_admin(pool, &team, &pubkey).await?;
+        if !BuyerTeamRepository::new(pool.clone())
+            .withdraw_invitation(tenant_id, &team, req.invitation_id, &pubkey)
+            .await?
+        {
+            return Err(ApiError::not_found("Invitation not found or not pending"));
+        }
+        tracing::info!(
+            event = "buyer_team_invitation_withdrawn",
+            tenant_id = tenant_id,
+            team_id = team.team_id,
+            invitation_id = req.invitation_id,
+            "Buyer team invitation withdrawn"
+        );
+        Ok(Json(WithdrawInvitationResponse { withdrawn: true }).into_response())
+    }
+    .await;
+    answer.unwrap_or_else(coded_refusal)
 }
 
 #[derive(Debug, Deserialize)]

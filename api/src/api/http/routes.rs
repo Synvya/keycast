@@ -106,6 +106,14 @@ pub fn api_routes(
             post(buyer_teams::change_member_role),
         )
         .route("/customer/teams/remove", post(buyer_teams::remove_member))
+        .route(
+            "/customer/teams/invitations",
+            get(buyer_teams::list_team_invitations),
+        )
+        .route(
+            "/customer/teams/invitations/withdraw",
+            post(buyer_teams::withdraw_team_invitation),
+        )
         // Synvya: the member confirms a team change that answered 428 (store API contract §14.5).
         .route(
             "/customer/confirmations/:token",

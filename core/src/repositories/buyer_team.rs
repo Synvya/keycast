@@ -44,6 +44,18 @@ pub struct BuyerTeamMembership {
     pub joined_at: DateTime<Utc>,
 }
 
+/// One pending member invitation of a buyer team: not accepted, not withdrawn, not expired.
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct BuyerTeamInvitation {
+    pub id: i32,
+    pub email: String,
+    pub role: String,
+    /// The inviting admin's email. None when their account is gone.
+    pub invited_by_email: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// A grant on a team key that names its member, as the HTTP RPC loads it.
 #[derive(Debug, Clone, FromRow)]
 pub struct MemberGrant {
@@ -253,6 +265,76 @@ impl BuyerTeamRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(Into::into)
+    }
+
+    /// The pending member invitations of a team, newest first.
+    pub async fn list_pending_invitations(
+        &self,
+        tenant_id: i64,
+        team_id: i32,
+    ) -> Result<Vec<BuyerTeamInvitation>, RepositoryError> {
+        sqlx::query_as::<_, BuyerTeamInvitation>(
+            "SELECT ti.id, ti.email, ti.role, u.email AS invited_by_email,
+                    ti.created_at, ti.expires_at
+             FROM team_invitations ti
+             LEFT JOIN users u ON u.pubkey = ti.invited_by AND u.tenant_id = ti.tenant_id
+             WHERE ti.team_id = $1 AND ti.tenant_id = $2
+               AND ti.accepted_at IS NULL
+               AND ti.revoked_at IS NULL
+               AND ti.expires_at > NOW()
+             ORDER BY ti.created_at DESC, ti.id DESC",
+        )
+        .bind(team_id)
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Withdraw a pending invitation of the team and log `invitation_withdrawn`, in one
+    /// transaction. A withdrawn invitation keeps its row with `revoked_at` set, so its token no
+    /// longer accepts. Returns false, and changes nothing, when the invitation is not pending on
+    /// this team.
+    pub async fn withdraw_invitation(
+        &self,
+        tenant_id: i64,
+        team: &BuyerTeam,
+        invitation_id: i32,
+        actor_pubkey: &str,
+    ) -> Result<bool, RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let withdrawn: Option<(String, String)> = sqlx::query_as(
+            "UPDATE team_invitations
+             SET revoked_at = NOW()
+             WHERE id = $1 AND team_id = $2 AND tenant_id = $3
+               AND accepted_at IS NULL
+               AND revoked_at IS NULL
+               AND expires_at > NOW()
+             RETURNING email, role",
+        )
+        .bind(invitation_id)
+        .bind(team.team_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((email, role)) = withdrawn else {
+            return Ok(false);
+        };
+        record_team_event(
+            &mut *tx,
+            &TeamEvent {
+                tenant_id,
+                team_pubkey: &team.team_pubkey,
+                action: "invitation_withdrawn",
+                member_email: Some(&email),
+                member_pubkey: None,
+                role: Some(&role),
+                actor_pubkey: Some(actor_pubkey),
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Add a person to a team. Returns false, and changes nothing, if they are already a member.
@@ -773,7 +855,7 @@ pub async fn find_team_signing(
 pub struct TeamEvent<'a> {
     pub tenant_id: i64,
     pub team_pubkey: &'a str,
-    /// `invited`, `joined`, `role_set` or `removed`.
+    /// `invited`, `invitation_withdrawn`, `joined`, `role_set` or `removed`.
     pub action: &'a str,
     /// The invited email. None: the member's own, read from the tenant's users.
     pub member_email: Option<&'a str>,
