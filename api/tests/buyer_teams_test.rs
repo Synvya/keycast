@@ -596,8 +596,10 @@ async fn test_team_grant_follows_the_origins_merchant_list() {
     let unlisted = Keys::generate().public_key();
     let refused = grant_for(&app, &team, &owner, &merchant.origin, Some(&unlisted)).await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.raw);
+    assert_eq!(refused.body["code"], "validation_error");
     let omitted = grant_for(&app, &team, &owner, &merchant.origin, None).await;
     assert_eq!(omitted.status, StatusCode::BAD_REQUEST, "{}", omitted.raw);
+    assert_eq!(omitted.body["code"], "validation_error");
 
     let policies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM policies WHERE name LIKE $1")
         .bind(format!("commerce_envelope:{}:%", unlisted.to_hex()))
@@ -641,6 +643,7 @@ async fn test_grants_follow_the_role() {
 
     let refused = grant(&app, &team, &outsider, &merchant).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.raw);
+    assert_eq!(refused.body["code"], "not_member");
     let grants: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM authorizations WHERE member_pubkey = $1")
             .bind(&outsider.pubkey)
@@ -819,6 +822,13 @@ async fn test_last_admin_cannot_leave_or_be_demoted() {
     assert_eq!(demoted.status, StatusCode::CONFLICT, "{}", demoted.raw);
     let left = remove(&app, &team, &owner, &owner.pubkey).await;
     assert_eq!(left.status, StatusCode::CONFLICT, "{}", left.raw);
+    // The code, and the message older readers match on
+    for refused in [&demoted, &left] {
+        assert_eq!(
+            refused.body,
+            json!({ "error": "last_admin", "code": "last_admin" })
+        );
+    }
     assert_eq!(admin_count(&app, &team).await, 1);
 
     // An orderer cannot change roles
@@ -829,6 +839,7 @@ async fn test_last_admin_cannot_leave_or_be_demoted() {
         "{}",
         by_orderer.raw
     );
+    assert_eq!(by_orderer.body["code"], "forbidden");
 
     // With a second admin, the first may leave
     let promoted = change_role(&app, &team, &owner, &orderer.pubkey, "admin").await;
@@ -870,6 +881,7 @@ async fn test_removing_a_member_revokes_their_grants_on_the_team_key() {
     );
     let again = grant(&app, &team, &orderer, &merchant).await;
     assert_eq!(again.status, StatusCode::FORBIDDEN, "{}", again.raw);
+    assert_eq!(again.body["code"], "not_member");
 }
 
 #[tokio::test]
@@ -1118,6 +1130,7 @@ async fn test_admin_invites_by_email_and_the_invitee_accepts() {
     )
     .await;
     assert_eq!(wrong.status, StatusCode::FORBIDDEN, "{}", wrong.raw);
+    assert_eq!(wrong.body["code"], "wrong_email");
 
     // The invitee signs in with the invited email and accepts
     let page = format!("{}/signin", merchant.origin);
@@ -1164,6 +1177,7 @@ async fn test_admin_invites_by_email_and_the_invitee_accepts() {
         "{}",
         by_orderer.raw
     );
+    assert_eq!(by_orderer.body["code"], "forbidden");
 }
 
 #[tokio::test]
@@ -2795,6 +2809,7 @@ async fn test_a_withdrawn_invitation_no_longer_accepts_and_is_logged() {
         "{}",
         by_stranger.raw
     );
+    assert_eq!(by_stranger.body["code"], "not_found");
 
     // No fresh confirmation: the first request withdraws
     let withdrawn = withdraw(&app, CUSTOMER_HOST, &team, &owner, id).await;
@@ -2804,6 +2819,7 @@ async fn test_a_withdrawn_invitation_no_longer_accepts_and_is_logged() {
     let invitee = sign_in_as(&app, &merchant, &email).await;
     let accepted = accept(&app, &invitee, &token).await;
     assert_eq!(accepted.status, StatusCode::NOT_FOUND, "{}", accepted.raw);
+    assert_eq!(accepted.body["code"], "invitation_not_found");
 
     let mine: Vec<Value> = team_events_after(&app, start)
         .await
@@ -2820,9 +2836,10 @@ async fn test_a_withdrawn_invitation_no_longer_accepts_and_is_logged() {
     // Withdrawn twice, unknown, accepted, or another team's: 404, and nothing more is logged
     let again = withdraw(&app, CUSTOMER_HOST, &team, &owner, id).await;
     assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.raw);
-    assert_eq!(again.body["code"], "not_found");
+    assert_eq!(again.body["code"], "invitation_not_found");
     let unknown = withdraw(&app, CUSTOMER_HOST, &team, &owner, i64::from(i32::MAX)).await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.raw);
+    assert_eq!(unknown.body["code"], "invitation_not_found");
 
     let accepted_email = new_email();
     let (accepted_id, accepted_token) =
@@ -2904,4 +2921,204 @@ async fn test_invitation_routes_answer_on_the_customer_hostname_only() {
         no_session.raw
     );
     assert_eq!(no_session.body["code"], "unauthorized");
+}
+
+// ============================================================================
+// The codes of the buyer app's team routes (store-api-contract.md)
+// ============================================================================
+
+/// Assert a refusal's status and its code.
+fn refused(answer: &Answer, status: StatusCode, code: &str) {
+    assert_eq!(answer.status, status, "{}", answer.raw);
+    assert_eq!(answer.body["code"], code, "{}", answer.raw);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_team_routes_refuse_a_missing_or_invalid_session_with_its_code() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let members = format!("/api/customer/teams/members?team_pubkey={team}");
+
+    let routes = [
+        (Method::GET, "/api/customer/teams"),
+        (Method::POST, "/api/customer/teams"),
+        (Method::GET, members.as_str()),
+        (Method::POST, "/api/customer/teams/invite"),
+        (Method::POST, "/api/customer/teams/accept"),
+        (Method::POST, "/api/customer/teams/role"),
+        (Method::POST, "/api/customer/teams/remove"),
+        (Method::POST, "/api/customer/teams/grant"),
+    ];
+    for (method, path) in routes {
+        let body = json!({
+            "team_pubkey": team,
+            "member_pubkey": owner.pubkey,
+            "email": new_email(),
+            "role": "viewer",
+            "app_url": format!("{}/team", merchant.origin),
+            "token": "unknown",
+            "client_id": merchant.origin,
+            "redirect_uri": format!("{}/signin", merchant.origin),
+            "scope": "policy:commerce_envelope",
+        });
+        for bearer in [None, Some("not-a-session")] {
+            let answer = request(
+                &app,
+                method.clone(),
+                CUSTOMER_HOST,
+                path,
+                bearer,
+                body.clone(),
+            )
+            .await;
+            refused(&answer, StatusCode::UNAUTHORIZED, "unauthorized");
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_team_routes_refuse_a_malformed_field_with_validation_error() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    let post = |path: &'static str, body: Value| {
+        let session = owner.session.clone();
+        let app = &app;
+        async move { customer(app, Method::POST, path, &session, body).await }
+    };
+
+    let long_name = post("/api/customer/teams", json!({ "name": "x".repeat(201) })).await;
+    refused(&long_name, StatusCode::BAD_REQUEST, "validation_error");
+    let no_key = customer(
+        &app,
+        Method::GET,
+        "/api/customer/teams/members",
+        &owner.session,
+        Value::Null,
+    )
+    .await;
+    refused(&no_key, StatusCode::BAD_REQUEST, "validation_error");
+    let bad_key = post(
+        "/api/customer/teams/role",
+        json!({ "team_pubkey": "nope", "member_pubkey": owner.pubkey, "role": "viewer" }),
+    )
+    .await;
+    refused(&bad_key, StatusCode::BAD_REQUEST, "validation_error");
+    let mut bad_role = invite_body(&team, &merchant);
+    bad_role["role"] = json!("owner");
+    let bad_role = post("/api/customer/teams/invite", bad_role).await;
+    refused(&bad_role, StatusCode::BAD_REQUEST, "validation_error");
+    let mut bad_email = invite_body(&team, &merchant);
+    bad_email["email"] = json!("not an email");
+    let bad_email = post("/api/customer/teams/invite", bad_email).await;
+    refused(&bad_email, StatusCode::BAD_REQUEST, "validation_error");
+    let mut bad_page = invite_body(&team, &merchant);
+    bad_page["app_url"] = json!("https://elsewhere.example.com/team");
+    let bad_page = post("/api/customer/teams/invite", bad_page).await;
+    refused(&bad_page, StatusCode::BAD_REQUEST, "validation_error");
+    let no_token = post("/api/customer/teams/accept", json!({})).await;
+    refused(&no_token, StatusCode::BAD_REQUEST, "validation_error");
+    let no_client = post(
+        "/api/customer/teams/grant",
+        json!({ "team_pubkey": team, "scope": "policy:commerce_envelope" }),
+    )
+    .await;
+    refused(&no_client, StatusCode::BAD_REQUEST, "validation_error");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_team_routes_refuse_teams_and_members_with_their_codes() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let stranger = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+
+    // A team the caller is not on: not_found, on every route that names a team but grant
+    let members = customer(
+        &app,
+        Method::GET,
+        &format!("/api/customer/teams/members?team_pubkey={team}"),
+        &stranger.session,
+        Value::Null,
+    )
+    .await;
+    refused(&members, StatusCode::NOT_FOUND, "not_found");
+    let invite = customer(
+        &app,
+        Method::POST,
+        "/api/customer/teams/invite",
+        &stranger.session,
+        invite_body(&team, &merchant),
+    )
+    .await;
+    refused(&invite, StatusCode::NOT_FOUND, "not_found");
+    let role = change_role(&app, &team, &stranger, &owner.pubkey, "viewer").await;
+    refused(&role, StatusCode::NOT_FOUND, "not_found");
+    let unknown_team = Keys::generate().public_key().to_hex();
+    let remove_unknown = remove(&app, &unknown_team, &owner, &owner.pubkey).await;
+    refused(&remove_unknown, StatusCode::NOT_FOUND, "not_found");
+
+    // The member named is not on the team: not_member on role and remove (404), and on grant (403)
+    let role = change_role(&app, &team, &owner, &stranger.pubkey, "viewer").await;
+    refused(&role, StatusCode::NOT_FOUND, "not_member");
+    let removed = remove(&app, &team, &owner, &stranger.pubkey).await;
+    refused(&removed, StatusCode::NOT_FOUND, "not_member");
+    let granted = grant(&app, &unknown_team, &owner, &merchant).await;
+    refused(&granted, StatusCode::FORBIDDEN, "not_member");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_invite_and_accept_refuse_with_their_codes() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let owner = sign_in(&app, &merchant).await;
+    let member = sign_in(&app, &merchant).await;
+    let team = create_team(&app, &owner).await;
+    add_to_team(&app, &team, &owner, &member, "orderer").await;
+
+    // Inviting someone already on the team
+    let mut body = invite_body(&team, &merchant);
+    body["email"] = json!(member.email);
+    let invited = customer(
+        &app,
+        Method::POST,
+        "/api/customer/teams/invite",
+        &owner.session,
+        body,
+    )
+    .await;
+    refused(&invited, StatusCode::CONFLICT, "already_member");
+
+    // Inviting an email twice: the second is refused while the first is pending
+    let email = new_email();
+    let (_, token) = invite_email(&app, &team, &owner, &merchant, &email).await;
+    let mut body = invite_body(&team, &merchant);
+    body["email"] = json!(email);
+    let twice = customer(
+        &app,
+        Method::POST,
+        "/api/customer/teams/invite",
+        &owner.session,
+        body,
+    )
+    .await;
+    refused(&twice, StatusCode::CONFLICT, "invitation_pending");
+
+    // Accepting: an unknown link, another person's link, and a link of a team already joined
+    let unknown = accept(&app, &owner, "no-such-token").await;
+    refused(&unknown, StatusCode::NOT_FOUND, "invitation_not_found");
+    let wrong = accept(&app, &member, &token).await;
+    refused(&wrong, StatusCode::FORBIDDEN, "wrong_email");
+    let invitee = sign_in_as(&app, &merchant, &email).await;
+    add_to_team(&app, &team, &owner, &invitee, "admin").await;
+    let joined = accept(&app, &invitee, &token).await;
+    refused(&joined, StatusCode::CONFLICT, "already_member");
 }
