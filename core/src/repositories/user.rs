@@ -1402,12 +1402,18 @@ impl UserRepository {
     /// 3. Deletes the user (cascades to personal_keys, oauth_authorizations, etc.)
     ///
     /// Returns information about what was deleted for logging.
+    ///
+    /// Synvya: before the memberships go, each owner-tenant team the person leaves gets an
+    /// `account_deleted` entry on its team change log (`owner_team_events`), in this transaction.
+    /// A customer account is deleted by `delete_customer_account`, which logs a deletion notice
+    /// instead.
     pub async fn delete_account(
         &self,
         pubkey: &str,
         tenant_id: i64,
     ) -> Result<DeleteAccountResult, RepositoryError> {
-        let tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await?;
+        super::record_account_deleted(&mut *tx, tenant_id, pubkey).await?;
         Self::delete_account_in(tx, pubkey, tenant_id).await
     }
 

@@ -47,7 +47,7 @@ pub use oauth_code::{
     OAuthCodeData, OAuthCodeRepository, StoreOAuthCodeParams, StoreOAuthCodeWithRegistrationParams,
 };
 pub use owner_team_events::{
-    add_member_logged, list_owner_team_events, record_owner_team_event,
+    add_member_logged, list_owner_team_events, record_account_deleted, record_owner_team_event,
     record_owner_team_invitation, remove_member_logged, withdraw_invitation_logged, OwnerTeamEvent,
     OwnerTeamEventRow, OwnerTeamInvitationEvent,
 };

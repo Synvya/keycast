@@ -2,7 +2,8 @@
 // ABOUTME: add and remove that write it in the same transaction as the membership change
 //
 // Key exports: `OwnerTeamEvent`, `OwnerTeamInvitationEvent`, `OwnerTeamEventRow`,
-// `record_owner_team_event`, `record_owner_team_invitation`, `add_member_logged`,
+// `record_owner_team_event`, `record_owner_team_invitation`, `record_account_deleted`,
+// `add_member_logged`,
 // `remove_member_logged`, `withdraw_invitation_logged`, `list_owner_team_events`.
 // Neighbours: `./buyer_team.rs` (`customer_team_events`, the customer tenant's log, which this
 // mirrors), `./team.rs` (the unlogged membership writes). Synvya Server reads the log through
@@ -22,7 +23,8 @@ pub struct OwnerTeamEvent<'a> {
     pub tenant_id: i64,
     pub team_id: i32,
     /// `added`, `joined` or `removed`. An owner-tenant team has no route that changes a member's
-    /// role, so the log has no `role_set`. An invitation is an `OwnerTeamInvitationEvent`.
+    /// role, so the log has no `role_set`. An invitation is an `OwnerTeamInvitationEvent`, and an
+    /// account deletion is logged by `record_account_deleted`.
     pub action: &'a str,
     pub member_pubkey: &'a str,
     /// The role added or joined with. On a removal the row holds the role the member had.
@@ -148,6 +150,39 @@ pub async fn withdraw_invitation_logged(
     .await?;
     tx.commit().await?;
     Ok(true)
+}
+
+/// Log `account_deleted` for each owner-tenant team the person belongs to, with the role they hold,
+/// in the account deletion's transaction and before the membership rows go. The person is the
+/// actor. Returns the number of entries written.
+pub async fn record_account_deleted<'e, E>(
+    executor: E,
+    tenant_id: i64,
+    member_pubkey: &str,
+) -> Result<u64, RepositoryError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let written = sqlx::query(
+        "INSERT INTO owner_team_events
+             (tenant_id, team_id, team_key_pubkeys, action, member_pubkey, member_email, role,
+              actor_pubkey, by_support)
+         SELECT $1, tu.team_id,
+                ARRAY(SELECT sk.pubkey FROM stored_keys sk
+                      WHERE sk.tenant_id = $1 AND sk.team_id = tu.team_id ORDER BY sk.id)::text[],
+                'account_deleted', $2,
+                (SELECT email FROM users WHERE pubkey = $2 AND tenant_id = $1),
+                tu.role, $2, FALSE
+         FROM team_users tu
+         JOIN teams t ON t.id = tu.team_id
+         WHERE tu.user_pubkey = $2 AND t.tenant_id = $1
+         ORDER BY tu.team_id",
+    )
+    .bind(tenant_id)
+    .bind(member_pubkey)
+    .execute(executor)
+    .await?;
+    Ok(written.rows_affected())
 }
 
 /// Add a member and log it, in one transaction. `event.role` is the role added with.

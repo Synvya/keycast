@@ -2611,6 +2611,134 @@ async fn test_owner_team_invitations_and_withdrawals_are_logged() {
     }
 }
 
+/// Deleting an owner-tenant account logs `account_deleted` on each team the person leaves, with
+/// the role they held, their email and the team's keys, and the person as the actor. A team they
+/// were not in logs nothing.
+#[tokio::test]
+#[serial]
+async fn test_owner_account_deletion_is_logged_on_each_team_it_leaves() {
+    let app = setup().await;
+    let since = (Utc::now() - Duration::seconds(5)).to_rfc3339();
+    let suffix = Uuid::new_v4();
+    // A person creates only their first team, so each team has its own owner.
+    let new_team = |name: &'static str| {
+        let app = &app;
+        async move {
+            let (_, session) = owner_person(app, &format!("{}@example.com", Uuid::new_v4())).await;
+            let created = request(
+                app,
+                Method::POST,
+                OWNER_HOST,
+                "/api/teams",
+                Some(&session),
+                json!({ "name": name }),
+            )
+            .await;
+            assert_eq!(created.status, StatusCode::OK, "{}", created.raw);
+            let team_id = created.body["team"]["id"].as_i64().unwrap() as i32;
+            let key = Keys::generate().public_key().to_hex();
+            sqlx::query(
+                "INSERT INTO stored_keys (name, team_id, pubkey, secret_key, tenant_id)
+                 VALUES ('store', $1, $2, $3, $4)",
+            )
+            .bind(team_id)
+            .bind(&key)
+            .bind(vec![1u8; 32])
+            .bind(app.owner_tenant)
+            .execute(&app.pool)
+            .await
+            .unwrap();
+            (team_id, key, session)
+        }
+    };
+    let (first, first_key, first_owner) = new_team("First store").await;
+    let (second, second_key, second_owner) = new_team("Second store").await;
+    let (other, _, _) = new_team("Other store").await;
+
+    let leaver_email = format!("leaver-{suffix}@example.com");
+    let (leaver, leaver_session) = owner_person(&app, &leaver_email).await;
+    for (team_id, role, session) in [
+        (first, "Member", &first_owner),
+        (second, "Admin", &second_owner),
+    ] {
+        let added = request(
+            &app,
+            Method::POST,
+            OWNER_HOST,
+            &format!("/api/teams/{team_id}/users"),
+            Some(session),
+            json!({ "user_pubkey": leaver, "role": role }),
+        )
+        .await;
+        assert_eq!(added.status, StatusCode::OK, "{}", added.raw);
+    }
+
+    let deleted = request(
+        &app,
+        Method::DELETE,
+        OWNER_HOST,
+        "/api/user/account",
+        Some(&leaver_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.raw);
+
+    let admin_session = admin_session(&app).await;
+    let read = request(
+        &app,
+        Method::GET,
+        OWNER_HOST,
+        &format!("/api/admin/owner-team-events?since={}", urlencode(&since)),
+        Some(&admin_session),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.raw);
+    let deletions: Vec<(Value, Value, Value, Value, Value, Value)> = read.body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "account_deleted" && e["member_pubkey"] == json!(leaver))
+        .map(|e| {
+            (
+                e["team_id"].clone(),
+                e["team_key_pubkeys"].clone(),
+                e["member_email"].clone(),
+                e["role"].clone(),
+                e["actor_pubkey"].clone(),
+                e["by_support"].clone(),
+            )
+        })
+        .collect();
+    let entry = |team_id: i32, key: &str, role: &str| {
+        (
+            json!(team_id),
+            json!([key]),
+            json!(leaver_email),
+            json!(role),
+            json!(leaver),
+            json!(false),
+        )
+    };
+    assert_eq!(
+        deletions,
+        vec![
+            entry(first, &first_key, "member"),
+            entry(second, &second_key, "admin"),
+        ],
+        "one entry per team left, with the role held; none for a team the person was not in"
+    );
+    assert!(
+        !read.body["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["team_id"] == other && e["action"] == "account_deleted"),
+        "a team the person was not in logs nothing"
+    );
+}
+
 /// Invite an email to a team, confirmed, and answer the invitation's id and link token.
 async fn invite_email(
     app: &TestApp,

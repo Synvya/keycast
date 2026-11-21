@@ -4,7 +4,8 @@
 //! `{ events, next_after }` for the tenant of the request's host, in id order,
 //! as `GET /api/admin/customer-team-events` does for the customer tenant. Each
 //! event names the team, the team's stored keys when the change was made, the
-//! action (`added`, `joined`, `removed`, `invited`, `invitation_withdrawn`),
+//! action (`added`, `joined`, `removed`, `invited`, `invitation_withdrawn`,
+//! `account_deleted`),
 //! the member's key (null on an invitation) and email, the role, who made the
 //! change and whether a support admin's access grant made it. Synvya Server
 //! reads it on a sweep and writes a store-part record for each key that is a
