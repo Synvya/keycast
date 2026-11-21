@@ -2739,6 +2739,86 @@ async fn test_owner_account_deletion_is_logged_on_each_team_it_leaves() {
     );
 }
 
+/// Deleting a customer account logs `account_deleted` on each buyer team the person leaves, with
+/// the team's key, the role they held, their email and the person as the actor. A team they were
+/// not in logs nothing.
+#[tokio::test]
+#[serial]
+async fn test_customer_account_deletion_is_logged_on_each_team_it_leaves() {
+    let app = setup().await;
+    let merchant = add_merchant(&app).await;
+    let first_owner = sign_in(&app, &merchant).await;
+    let second_owner = sign_in(&app, &merchant).await;
+    let other_owner = sign_in(&app, &merchant).await;
+    let leaver = sign_in(&app, &merchant).await;
+    let first = create_team(&app, &first_owner).await;
+    let second = create_team(&app, &second_owner).await;
+    let other = create_team(&app, &other_owner).await;
+    add_to_team(&app, &first, &first_owner, &leaver, "viewer").await;
+    add_to_team(&app, &second, &second_owner, &leaver, "admin").await;
+    let last = last_team_event_id(&app).await;
+
+    let page = format!("{}/account", merchant.origin);
+    let token = new_link(&app, &leaver.email, PURPOSE_DELETE_ACCOUNT, &page).await;
+    let verified = request(
+        &app,
+        Method::POST,
+        CUSTOMER_HOST,
+        "/api/auth/magic-link/verify",
+        None,
+        json!({ "token": token }),
+    )
+    .await;
+    let delete_session = verified.body["session_token"].as_str().unwrap();
+    let deleted = customer(
+        &app,
+        Method::DELETE,
+        "/api/customer/account",
+        delete_session,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.raw);
+
+    let events = team_events_after(&app, last).await;
+    let deletions: Vec<(Value, Value, Value, Value, Value)> = events
+        .iter()
+        .filter(|e| e["action"] == "account_deleted")
+        .map(|e| {
+            (
+                e["team_pubkey"].clone(),
+                e["member_pubkey"].clone(),
+                e["member_email"].clone(),
+                e["role"].clone(),
+                e["actor_pubkey"].clone(),
+            )
+        })
+        .collect();
+    let entry = |team: &str, role: &str| {
+        (
+            json!(team),
+            json!(leaver.pubkey),
+            json!(leaver.email),
+            json!(role),
+            json!(leaver.pubkey),
+        )
+    };
+    assert_eq!(
+        deletions,
+        vec![entry(&first, "viewer"), entry(&second, "admin")],
+        "one entry per team left, with the role held"
+    );
+    assert!(
+        !events.iter().any(|e| e["team_pubkey"] == json!(other)),
+        "a team the person was not in logs nothing"
+    );
+
+    let _ = sqlx::query("DELETE FROM customer_deletion_notices WHERE pubkey = $1")
+        .bind(&leaver.pubkey)
+        .execute(&app.pool)
+        .await;
+}
+
 /// Invite an email to a team, confirmed, and answer the invitation's id and link token.
 async fn invite_email(
     app: &TestApp,

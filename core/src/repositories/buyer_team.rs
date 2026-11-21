@@ -855,7 +855,8 @@ pub async fn find_team_signing(
 pub struct TeamEvent<'a> {
     pub tenant_id: i64,
     pub team_pubkey: &'a str,
-    /// `invited`, `invitation_withdrawn`, `joined`, `role_set` or `removed`.
+    /// `invited`, `invitation_withdrawn`, `joined`, `role_set` or `removed`. An account deletion
+    /// is logged by `record_customer_account_deleted`.
     pub action: &'a str,
     /// The invited email. None: the member's own, read from the tenant's users.
     pub member_email: Option<&'a str>,
@@ -891,6 +892,39 @@ where
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Log `account_deleted` for each buyer team the person belongs to, with the team's key, the role
+/// they hold and their email, in the account deletion's transaction and before the membership rows
+/// go. The person is the actor. Mirrors `record_account_deleted` of the owner tenant's log.
+/// Returns the number of entries written.
+pub async fn record_customer_account_deleted<'e, E>(
+    executor: E,
+    tenant_id: i64,
+    member_pubkey: &str,
+) -> Result<u64, RepositoryError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let written = sqlx::query(
+        "INSERT INTO customer_team_events
+             (tenant_id, team_pubkey, action, member_email, member_pubkey, role, actor_pubkey)
+         SELECT $1, team_pubkey, 'account_deleted',
+                (SELECT email FROM users WHERE pubkey = $2 AND tenant_id = $1),
+                $2, role, $2
+         FROM (SELECT DISTINCT ON (t.id) t.id, sk.pubkey AS team_pubkey, tu.role
+               FROM team_users tu
+               JOIN teams t ON t.id = tu.team_id
+               JOIN stored_keys sk ON sk.team_id = t.id AND sk.tenant_id = t.tenant_id
+               WHERE t.tenant_id = $1 AND tu.user_pubkey = $2
+               ORDER BY t.id, sk.id) teams_left
+         ORDER BY id",
+    )
+    .bind(tenant_id)
+    .bind(member_pubkey)
+    .execute(executor)
+    .await?;
+    Ok(written.rows_affected())
 }
 
 /// One entry of the team change log, as the admin API answers it.

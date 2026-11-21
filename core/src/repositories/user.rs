@@ -1405,8 +1405,8 @@ impl UserRepository {
     ///
     /// Synvya: before the memberships go, each owner-tenant team the person leaves gets an
     /// `account_deleted` entry on its team change log (`owner_team_events`), in this transaction.
-    /// A customer account is deleted by `delete_customer_account`, which logs a deletion notice
-    /// instead.
+    /// A customer account is deleted by `delete_customer_account`, which logs on the customer
+    /// tenant's log (`customer_team_events`) and writes a deletion notice.
     pub async fn delete_account(
         &self,
         pubkey: &str,
@@ -1419,12 +1419,18 @@ impl UserRepository {
 
     /// Delete a customer account, and in the same transaction record the notice that tells
     /// Synvya Server, so a notice exists if and only if the account is gone.
+    ///
+    /// Synvya: before the memberships go, each buyer team the person leaves gets an
+    /// `account_deleted` entry on its team change log (`customer_team_events`), in this
+    /// transaction.
     pub async fn delete_customer_account(
         &self,
         pubkey: &str,
         tenant_id: i64,
     ) -> Result<DeleteAccountResult, RepositoryError> {
         let mut tx = self.pool.begin().await?;
+
+        super::record_customer_account_deleted(&mut *tx, tenant_id, pubkey).await?;
 
         sqlx::query("INSERT INTO customer_deletion_notices (tenant_id, pubkey) VALUES ($1, $2)")
             .bind(tenant_id)
